@@ -64,6 +64,8 @@ class OwnedProcess:
             if not self.api.QueryInformationJobObject(self.job,1,c.byref(accounting),c.sizeof(accounting),None):raise OSError('Could not inspect application tree')
             if not accounting.active:
                 self.child.wait(timeout=10)
+                # A terminated onefile bootloader's kernel handle may retain its image.
+                self.child._handle.Close()
                 self.api.CloseHandle(self.job);self.job=None;return
             time.sleep(.05)
         raise TimeoutError('Application tree did not stop')

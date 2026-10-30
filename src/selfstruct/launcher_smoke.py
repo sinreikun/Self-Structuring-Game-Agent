@@ -18,7 +18,10 @@ def smoke(binary, report):
     from .owned_process import start_application
     children=[]
     key=Ed25519PrivateKey.generate();public=key.public_key().public_bytes(Encoding.Raw,PublicFormat.Raw).hex()
-    with tempfile.TemporaryDirectory() as temp:
+    # Windows scanners may briefly retain a terminated executable. Do not let
+    # disposable directory cleanup mask the actual update assertions. Jobs are
+    # explicitly terminated below, including already-exited bootloader parents.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
         root=Path(temp);source=root/'download';shutil.copyfile(binary,source)
         def envelope(version,sequence):
             payload=json.dumps({'schema':1,'protocol':1,'channel':'Development','sequence':sequence,'version':version,'expires':time.time()+1000,
