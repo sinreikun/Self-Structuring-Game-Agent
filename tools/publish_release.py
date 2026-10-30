@@ -16,7 +16,7 @@ import base64
 from tools.inference_identity import component_hashes
 
 ASSETS = ('SelfStruct.exe','SHA256SUMS.txt','THIRD_PARTY_NOTICES.txt','build-info.json',
-          'window-validation.json','inference-validation.json')
+          'window-validation.json','inference-validation.json','SelfStructLauncher.exe','launcher-validation.json')
 
 
 def gh(*args: str) -> str:
@@ -39,6 +39,7 @@ def verify_artifacts(folder: Path, commit: str, allow_reuse: bool=False) -> dict
     expected=(folder/'SHA256SUMS.txt').read_text(encoding='utf-8').split()[0]
     if not (info['platform']=='win32' and info['commit']==commit and info['sha256']==expected==hashes['SelfStruct.exe']):
         raise ValueError('Artifact identity or digest does not match verified CI')
+    if info.get('launcher_sha256')!=hashes['SelfStructLauncher.exe']:raise ValueError('Launcher digest mismatch')
     with (folder/'SelfStruct.exe').open('rb') as stream:
         header=stream.read(64)
         if header[:2]!=b'MZ':raise ValueError('Not a Windows executable')
@@ -46,7 +47,7 @@ def verify_artifacts(folder: Path, commit: str, allow_reuse: bool=False) -> dict
         pe=stream.read(6)
         if pe[:4]!=b'PE\0\0' or struct.unpack_from('<H',pe,4)[0]!=0x8664:
             raise ValueError('Not a Windows x64 executable')
-    for name in ('window-validation.json','inference-validation.json'):
+    for name in ('window-validation.json','inference-validation.json','launcher-validation.json'):
         status=json.loads((folder/name).read_text(encoding='utf-8')).get('status')
         if status!='passed' and not (allow_reuse and name=='inference-validation.json' and status=='reused' and info.get('validation_scope')=='target-process'):
             raise ValueError('Required validation did not pass')
@@ -76,6 +77,14 @@ def main():
         folder=Path(temp)
         gh('run','download',str(run_id),'--repo',repository,'--name','SelfStruct-Windows-x64','--dir',str(folder))
         hashes=verify_artifacts(folder,obj['sha'],allow_reuse=True)
+        from selfstruct.resources import verify_catalog
+        from selfstruct.release import UPDATE_KEY
+        for channel in ('Stable','Development'):
+            envelope=json.loads((Path('updates')/(channel+'.json')).read_text(encoding='utf-8'))
+            manifest=verify_catalog(envelope,UPDATE_KEY)
+            item=manifest['application']
+            if manifest['protocol']!=1 or manifest['channel']!=channel or item['sha256']!=hashes['SelfStruct.exe'] or item['size']!=(folder/'SelfStruct.exe').stat().st_size or f'/download/{tag}/SelfStruct.exe' not in item['url']:
+                raise ValueError('Signed manifest differs from verified body')
         inference=json.loads((folder/'inference-validation.json').read_text(encoding='utf-8'))
         if inference.get('status')=='reused':
             baseline=inference['baseline_tag']
@@ -111,7 +120,7 @@ def main():
             return
         if release is None:
             gh('release','create',tag,'--repo',repository,'--verify-tag','--draft','--prerelease',
-               '--latest=false','--title',f'SelfStruct {tag} — 背面動作対応の開発版','--notes-file',str(notes))
+               '--latest=false','--title',f'SelfStruct {tag} — 自律研究・診断・固定Launcher対応','--notes-file',str(notes))
         current=json.loads(gh('release','view',tag,'--repo',repository,'--json','isDraft'))
         if not current['isDraft']:raise ValueError('Release became public before upload; refusing changes')
         gh('release','upload',tag,*[str(folder/name) for name in ASSETS],'--repo',repository,'--clobber')

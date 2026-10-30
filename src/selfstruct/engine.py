@@ -12,6 +12,7 @@ import json
 
 from PIL import Image
 
+from .activity import Activity
 from .config import Config, InstanceLock, RootFiles, atomic_write, write_json
 from .research import LocalLLM, Scientist
 from .sandbox import Revisions, difference, features
@@ -29,9 +30,11 @@ class Controller:
         self.instance_lock = InstanceLock(self.root / "host" / "experiment.lock")
         self.closed = False
         self.messages: queue.Queue[str] = queue.Queue(maxsize=100)
+        self.telemetry = {}
         self.latest: Image.Image | None = None
         self.latest_before: Image.Image | None = None
         self.status = "停止中"
+        self.activity = Activity()
         self.started = time.monotonic()
         self.steps = 0
         self.last_progress = time.monotonic()
@@ -39,9 +42,11 @@ class Controller:
         self.paused = threading.Event()
         self.cancel_input = threading.Event()
         self.thread: threading.Thread | None = None
+        self.monitor_thread = None
         self.game = game
         self.restarts = 0
         self.error = ""
+        self.protect_until = 0.
         self.experiment = self._experiment()
         self.store = Store(self.experiment, config.quota_bytes)
         self.store.account_root = self.root
@@ -54,7 +59,7 @@ class Controller:
         self.session = self.store.session(config.mode, config.resume)
         self._restore_learning()
         self.scientist = Scientist(self.store, self.revisions, LocalLLM(config.llm_url, config.llm_model),
-                                   config.keys, config.research_every, self.notify)
+                                   config.keys, config.research_every, self.notify, self.activity)
         handler = RotatingFileHandler(self.root / "host" / "host.log", maxBytes=2 * 1024**2, backupCount=2, encoding="utf-8")
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
         self.log_handler = handler
@@ -142,6 +147,8 @@ class Controller:
             return
         self.stopped.clear()
         self.scientist.start()
+        self.monitor_thread=threading.Thread(target=self.monitor, name="telemetry", daemon=True)
+        self.monitor_thread.start()
         self.thread = threading.Thread(target=self.run, name="player", daemon=True)
         self.thread.start()
         threading.Thread(target=self.watchdog, name="watchdog", daemon=True).start()
@@ -152,6 +159,7 @@ class Controller:
         if self.game:
             self.game.release()
         self.status = "一時停止中"
+        self.activity.update(phase=self.status)
 
     def stop(self):
         self.stopped.set()
@@ -171,11 +179,22 @@ class Controller:
                 raise TimeoutError("ゲーム操作の終了を待っています。")
         if self.scientist.thread.ident is not None:
             self.scientist.close()
+        if self.monitor_thread:self.monitor_thread.join(timeout=15)
         self.store.close()
         logging.getLogger("selfstruct").removeHandler(self.log_handler)
         self.log_handler.close()
         self.instance_lock.close()
         self.closed = True
+
+    def monitor(self):
+        while not self.stopped.is_set():
+            try:
+                old_stage=self.store.storage_state
+                self.store.collect()
+                if self.store.storage_state!=old_stage and self.store.storage_state!='通常':self.activity.emit('gc')
+                self.telemetry={'counts':self.store.counts(),'storage':self.store.storage_snapshot()}
+            except Exception: log.exception('Telemetry failed')
+            if self.stopped.wait(2):break
 
     def watchdog(self):
         while not self.stopped.wait(.01):
@@ -201,6 +220,7 @@ class Controller:
                                         target_hwnd=self.config.target_hwnd,on_wait=lambda:setattr(self,'last_progress',time.monotonic()),
                                         cancel=self.stopped)
             self.status = "ゲームへ接続中"
+            self.activity.update(phase=self.status, connection="接続中",revision=self.agent_id)
             self.game.start()
             if isinstance(self.game,WindowsGame):
                 state_path=self.root/'host'/'experiment.json'
@@ -208,6 +228,7 @@ class Controller:
                 if state.get('target_exe') and state['target_exe'].casefold()!=self.game.target_exe.casefold():
                     raise ValueError('前回と異なるゲーム本体が見つかりました。NEWBORNで開始してください。')
                 state['target_exe']=self.game.target_exe;write_json(state_path,state)
+            self.activity.update(connection="接続済み")
             unchanged = 0
             while not self.stopped.is_set():
                 self.last_progress = time.monotonic()
@@ -233,6 +254,9 @@ class Controller:
                     self.recover_game("ゲームとの接続を再検出し、必要に応じて再起動しました。")
                 except Exception as exc:
                     log.exception("Runtime failure")
+                    self.store.protect_recent("runtime-error")
+                    self.protect_until = time.time()+30
+                    self.activity.emit("error")
                     self.game.release()
                     self.scientist.abort_trial(repr(exc))
                     self.revisions.rollback()
@@ -244,6 +268,8 @@ class Controller:
                         raise RuntimeError("復旧回数の上限に達しました。診断情報を保存して停止しました。") from exc
         except Exception as exc:
             log.exception("Host stopped")
+            self.store.protect_recent("host-error")
+            self.activity.emit("error")
             self.error = str(exc) if isinstance(exc, (ValueError, GameUnavailable, RuntimeError, CapacityError)) else "実験装置に問題が発生しました。開発者詳細に診断情報を保存しました。"
             self.notify(self.error)
         finally:
@@ -255,9 +281,14 @@ class Controller:
                 self.game.release()
                 self.game.stop()
             self.status = "停止中"
+            self.activity.update(phase=self.status,connection="切断")
             self.stopped.set()
 
     def recover_game(self, message: str, restart: bool=False):
+        self.activity.update(recovery="接続を復旧中",phase="復旧中")
+        self.activity.emit("recovery")
+        self.store.protect_recent("recovery")
+        self.protect_until=time.time()+30
         self.game.release()
         if self.restarts >= self.config.max_restarts:
             raise RuntimeError("ゲームの復旧回数の上限に達しました。実験装置の状態を確認してください。")
@@ -269,6 +300,7 @@ class Controller:
             try:self.game.connect()
             except GameUnavailable:self.game.restart()
         self.notify(message)
+        self.activity.update(recovery="",connection="接続済み")
 
     def step(self) -> float:
         started = time.perf_counter()
@@ -283,6 +315,7 @@ class Controller:
         trial = self.scientist.trial_agent(self.steps)
         revision, agent = trial if trial else (self.agent_id, self.agent)
         agent.pixels(raw)
+        self.activity.update(phase="観測中",revision=revision,attention=())
         def observe(request):
             image = before
             if "event" in request:
@@ -295,13 +328,17 @@ class Controller:
             if (not isinstance(box, list) or len(box) != 4 or any(not isinstance(v, int) for v in box) or
                     not (0 <= box[0] < box[2] <= width and 0 <= box[1] < box[3] <= height)):
                 raise ValueError("Invalid observation region")
+            self.activity.update(attention=tuple(box))
             pixels = image.crop(tuple(box)).convert("L").resize((32, 32))
             return {"width": width, "height": height, "gray": list(pixels.tobytes()), "observed": time.time()}
-        agent.requests(self.files, self.store.reserve, observe, self.dispatch)
+        agent.requests(self.files, lambda n:self.store.reserve(n,critical=False), observe, self.dispatch)
         if "research_due" in agent.exports:
             self.scientist.automatic = bool(agent.call("research_due", self.steps))
         index, duration, wait, pred = agent.action(feature, len(self.config.keys))
-        before_hash = self.store.image(before)
+        self.activity.update(phase="入力中", action=self.config.keys[index],duration=duration,prediction=pred,
+                             next="入力後の画面を観測します")
+        self.activity.emit("action",key=self.config.keys[index])
+        before_hash = self.store.image(before,critical=time.time()<self.protect_until)
         eid = self.store.begin(self.session, before_hash, self.config.keys[index], duration,
                                self.game.generation, revision, feature, pred)
         try:
@@ -315,9 +352,12 @@ class Controller:
         self.cancel_input.wait(wait)
         after_image = self.game.capture()
         after, after_raw = features(after_image)
-        after_hash = self.store.image(after_image)
+        after_hash = self.store.image(after_image,critical=time.time()<self.protect_until)
         change = difference(before, after_image)
         self.store.finish(eid, after_hash, change, time.perf_counter() - started)
+        if time.time()<self.protect_until:self.store.pin([eid],"error-after")
+        self.activity.update(phase="結果を確認中",change=change,last_observed=time.time(),next="次の入力と予測を選びます")
+        self.activity.emit("change" if change>.01 else "unchanged")
         self.agent.pixels(after_raw, 1024)
         if not self.scientist.live:
             self.agent.call("learn", feature, index, after, int(change > .01))
@@ -336,6 +376,12 @@ class Controller:
 
     def dispatch(self, request: dict) -> dict:
         op = request["op"]
+        if op == "describe":
+            from .capabilities import validate_description
+            description=validate_description(request,self.agent_id)
+            self.store.reserve(len(json.dumps(description).encode())+4096)
+            write_json(self.store.root/'host'/'capabilities.json',description)
+            return {"recorded":True}
         if op == "job":
             job = self.store.get_job(request["id"])
             data = json.loads(job["payload"])

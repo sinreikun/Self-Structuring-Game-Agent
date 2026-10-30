@@ -4,8 +4,6 @@ on:
     branches: [main]
     paths:
       - '.github/release-request.json'
-      - '.github/workflows/publish.yml'
-      - 'tools/publish_release.py'
   workflow_dispatch:
 permissions:
   contents: read
@@ -24,6 +22,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - run: python -m pip install -e .
       - name: Verify existing CI artifact and publish prerelease
         env:
           GH_TOKEN: ${{ github.token }}

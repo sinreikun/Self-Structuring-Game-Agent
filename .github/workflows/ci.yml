@@ -1,6 +1,12 @@
 name: Test and Windows EXE
 on:
   push:
+    branches: [main]
+    paths-ignore:
+      - 'updates/**'
+      - '.github/release-request.json'
+      - 'docs/**'
+      - 'README.md'
   pull_request:
   workflow_dispatch:
     inputs:
@@ -44,6 +50,18 @@ jobs:
         run: python tools/build.py
         env:
           SELFSTRUCT_VALIDATION_SCOPE: ${{ steps.validation.outputs.scope }}
+      - if: runner.os == 'Windows'
+        name: Build stable launcher
+        run: python tools/build_launcher.py
+      - if: runner.os == 'Windows'
+        name: Verify packaged stable launcher with native bodies
+        shell: pwsh
+        run: |
+          $body = Join-Path $env:GITHUB_WORKSPACE 'dist/SelfStruct.exe'
+          $report = Join-Path $env:GITHUB_WORKSPACE 'dist/launcher-validation.json'
+          $arguments = '--launcher-self-test "{0}" "{1}"' -f $body, $report
+          $proc = Start-Process -FilePath .\dist\SelfStructLauncher.exe -ArgumentList $arguments -Wait -PassThru
+          if ($proc.ExitCode -ne 0 -or !(Test-Path $report)) { throw 'Packaged stable launcher validation failed' }
       - if: runner.os == 'Windows' && steps.validation.outputs.scope == 'full'
         shell: pwsh
         run: |
@@ -86,7 +104,7 @@ jobs:
           $arguments = '--process-self-test --test-window-exe "{0}" --test-window-script "{1}" --test-launcher-script "{2}" --self-test-report "{3}"' -f $targetPython, $targetScript, $launcher, $report
           $proc = Start-Process -FilePath .\dist\SelfStruct.exe -ArgumentList $arguments -Wait -PassThru
           if ($proc.ExitCode -ne 0 -or !(Test-Path $report)) { throw 'Packaged process selection failed' }
-      - if: runner.os == 'Windows' && steps.validation.outputs.scope == 'full' && (github.ref_type == 'tag' || inputs.validate_model)
+      - if: runner.os == 'Windows' && steps.validation.outputs.scope == 'full' && (github.event_name == 'push' || inputs.validate_model)
         name: Verify real managed inference
         shell: pwsh
         run: python tools/check_managed_inference.py --root "$env:RUNNER_TEMP/selfstruct-model-check" --report dist/inference-validation.json
@@ -99,6 +117,8 @@ jobs:
           name: SelfStruct-Windows-x64
           path: |
             dist/SelfStruct.exe
+            dist/SelfStructLauncher.exe
+            dist/launcher-validation.json
             dist/SHA256SUMS.txt
             dist/THIRD_PARTY_NOTICES.txt
             dist/build-info.json

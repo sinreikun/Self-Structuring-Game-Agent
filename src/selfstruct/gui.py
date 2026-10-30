@@ -41,6 +41,19 @@ class App:
         style.configure("TLabel", font=("Yu Gothic UI", 10))
         style.configure("TButton", padding=8, font=("Yu Gothic UI", 10))
         style.configure("Title.TLabel", font=("Yu Gothic UI", 20, "bold"))
+        window.configure(background='#141a20')
+        style.configure('.',background='#1c252e',foreground='#dce5ed',fieldbackground='#111920',bordercolor='#354451')
+        style.configure('TButton',background='#2d414e',foreground='#e9f0f5')
+        style.map('TButton',background=[('active','#3e5969')])
+        style.configure('TNotebook.Tab',padding=(16,8),background='#22313c')
+        style.map('TNotebook.Tab',background=[('selected','#3b5362')])
+        style.map('TCombobox',fieldbackground=[('readonly','#111920')],foreground=[('readonly','#dce5ed')],selectbackground=[('readonly','#273d4c')])
+        style.configure('TEntry',fieldbackground='#111920',insertcolor='#dce5ed')
+        style.configure('Treeview',fieldbackground='#111920',background='#111920',foreground='#dce5ed')
+        from .layout import Layout
+        self.layout=Layout(default_root()/'host'/'layout.json')
+        self.layout.window('main',window)
+        self.last_preview=None
         self.tabs = ttk.Notebook(window)
         self.tabs.pack(fill="both", expand=True, padx=12, pady=12)
         self.home = ttk.Frame(self.tabs, padding=16)
@@ -51,11 +64,25 @@ class App:
             self.tabs.add(frame, text=title)
         self._home()
         self._setup()
-        self.book_text = tk.Text(self.book, wrap="word", font=("Yu Gothic UI", 11))
+        launcher_status=default_root()/'runtime'/'launcher-status.json'
+        if launcher_status.is_file():
+            try:
+                message=json.loads(launcher_status.read_text(encoding='utf-8')).get('message','')
+                if message:self.activity.set(prose(message))
+            except (OSError,ValueError):pass
+        self.note_category=tk.StringVar(value='現在')
+        categories=ttk.Combobox(self.book,textvariable=self.note_category,values=['現在','発見','仮説','支持','反証','自己改善'],state='readonly')
+        categories.pack(anchor='w',pady=(0,10));categories.bind('<<ComboboxSelected>>',self.refresh_text)
+        self.book_text = tk.Text(self.book, wrap="word", font=("Yu Gothic UI", 11),background='#111920',foreground='#dce5ed',insertbackground='#dce5ed')
         self.book_text.pack(fill="both", expand=True)
         self.raw_text = tk.Text(self.details, wrap="none", font=("Consolas", 10))
         self.raw_text.pack(fill="both", expand=True)
+        self.capabilities=ttk.Frame(self.tabs,padding=16)
+        self.tabs.add(self.capabilities,text='能力接続図')
+        self.graph=tk.Canvas(self.capabilities,background='#111920',highlightthickness=0)
+        self.graph.pack(fill='both',expand=True)
         self.tabs.bind("<<NotebookTabChanged>>", self.refresh_text)
+        self.layout.notebook('main-tabs',self.tabs)
         if not self.config.game_exe:
             self.tabs.select(self.setup)
         elif self.config.auto_run:
@@ -80,7 +107,7 @@ class App:
         toolbar = ttk.Frame(self.home)
         toolbar.pack(fill="x", pady=8)
         for title, command in (("START", self.start), ("PAUSE", self.pause), ("STOP", self.stop),
-                               ("NEWBORN", self.newborn), ("EXPORT", self.export)):
+                               ("NEWBORN", self.newborn), ("診断ZIPをコピー", self.export)):
             ttk.Button(toolbar, text=title, command=command).pack(side="left", padx=(0, 8))
         ttk.Label(toolbar, text="入力の停止：PAUSE / STOP", foreground="#953535").pack(side="right")
         self.metrics = tk.StringVar(value="経験 0　仮説 0　支持 0　反証 0　技能 0　自己改善 0")
@@ -88,8 +115,24 @@ class App:
         self.view_mode = tk.StringVar(value="現在の画面")
         selection = ttk.Combobox(self.home, textvariable=self.view_mode, state="readonly", values=["現在の画面", "入力前後の比較", "差分画像"])
         selection.pack(anchor="w")
-        self.preview = ttk.Label(self.home, text="対象ゲームの画面は開始後に表示されます。", anchor="center", background="#162027", foreground="#c9d7dd")
-        self.preview.pack(fill="both", expand=True, pady=12)
+        self.console=ttk.Panedwindow(self.home,orient='vertical')
+        self.console.pack(fill='both',expand=True,pady=8)
+        screen=ttk.Frame(self.console);readout=ttk.Frame(self.console,padding=(4,8))
+        self.console.add(screen,weight=5);self.console.add(readout,weight=1)
+        self.layout.pane('lab-console',self.console)
+        self.preview=tk.Canvas(screen,background='#10171d',highlightthickness=0,height=330)
+        self.preview.pack(fill='both',expand=True)
+        self.llm_status=tk.StringVar(value='● LLM 待機')
+        self.llm_label=ttk.Label(readout,textvariable=self.llm_status)
+        self.llm_label.pack(anchor='w')
+        self.current_activity=tk.StringVar(value='現在：観測を待っています')
+        ttk.Label(readout,textvariable=self.current_activity,wraplength=1050).pack(anchor='w')
+        self.timeline=tk.StringVar(value='最近のイベントは開始後に表示されます。')
+        ttk.Label(readout,textvariable=self.timeline,wraplength=1050,foreground='#a8bbc9').pack(anchor='w',pady=5)
+        self.storage_label=tk.StringVar(value='保存領域 —')
+        ttk.Label(readout,textvariable=self.storage_label).pack(anchor='e')
+        self.adoption=tk.StringVar()
+        ttk.Label(readout,textvariable=self.adoption,foreground='#7fd2af').pack(anchor='w')
         self.activity = tk.StringVar(value="画面の意味やキーの意味を、最初から与えることはありません。")
         ttk.Label(self.home, textvariable=self.activity, wraplength=1050).pack(anchor="w")
         ttk.Label(self.home, text="背面で入力を受け付けるゲームが対象です。対象ゲームを操作しても停止しません。止めるときはPAUSE / STOPを押してください。最小化には対応していません。", wraplength=1050).pack(anchor="w", pady=8)
@@ -290,19 +333,52 @@ class App:
         self.status.set("次のSTARTで、ゲーム固有の経験を持たない新しい個体を作成します。")
 
     def export(self):
-        if not self.controller:
-            messagebox.showinfo("診断情報", "実験開始後に利用できます。保存済みの個体はExperiencedで開けます。")
-            return
-        path = filedialog.asksaveasfilename(defaultextension=".zip", initialfile="研究記録.zip")
-        if path:
-            self.task(lambda: self.controller.store.export(Path(path)), lambda _: self.activity.set("研究ノートと診断情報を書き出しました。"))
+        if self.busy:return
+        from .diagnostics import create_diagnostics,copy_file
+        ctrl=self.controller
+        snapshot=ctrl.activity.snapshot() if ctrl else None
+        config=self.config
+        gui={'tab':self.tabs.index(self.tabs.select()),'state':self.status.get()}
+        def generate():
+            store=ctrl.store if ctrl else None
+            owned=None
+            if store is None:
+                state=Path(config.root)/'host'/'experiment.json'
+                if state.is_file():
+                    metadata=json.loads(state.read_text(encoding='utf-8'))
+                    candidate=(Path(config.root)/'experiments'/metadata['id']).resolve()
+                    if candidate.is_relative_to((Path(config.root)/'experiments').resolve()):
+                        from .store import Store
+                        owned=Store(candidate,config.quota_bytes);owned.account_root=Path(config.root);store=owned
+            try:return create_diagnostics(Path(config.root),store=store,config=config,activity=snapshot,gui=gui)
+            finally:
+                if owned:owned.close()
+        def copied(path):
+            try:
+                copy_file(path,self.window.winfo_id())
+                self.activity.set('診断ZIPを作成してコピーしました。添付欄へ貼り付けられます。')
+            except OSError:
+                self.activity.set('診断ZIPを作成しましたが、クリップボードへのコピーに失敗しました。')
+            self.raw_text.insert('end',f'診断ZIP: {path}\n')
+        self.task(generate,copied)
 
     def refresh_text(self, _=None):
         if not self.controller:
             return
         if self.tabs.select() == str(self.book):
             self.book_text.delete("1.0", "end")
-            self.book_text.insert("1.0", prose(self.controller.store.book()))
+            category=self.note_category.get()
+            ctrl=self.controller
+            if category=='現在':
+                a=ctrl.activity.snapshot()
+                text=f'研究ノート — 現在\n\n現在の注目：{a.purpose}\n現在の研究：{a.experiment}\n最近の変化：{a.change:.3f}\n未確認：画面変化の意味と因果関係\n次の実験：{a.next}'
+                hypotheses=ctrl.store.note_rows('仮説',3)
+                text+='\n\n現在の仮説\n'+'\n'.join(prose(r['text']) for r in hypotheses)
+            elif category=='自己改善':text='\n\n'.join(prose(r['summary']) for r in ctrl.store.reports())
+            else:text='\n\n'.join(prose(r['text']) for r in ctrl.store.note_rows(category))
+            self.book_text.insert('1.0',text or 'まだ記録はありません。')
+        if self.tabs.select()==str(self.capabilities):
+            self.render_graph()
         if self.tabs.select() == str(self.details):
             self.raw_text.delete("1.0", "end")
             self.raw_text.insert("1.0", self.controller.revisions.source() + "\n\n" + json.dumps(self.controller.store.reports(), ensure_ascii=False, indent=2))
@@ -312,20 +388,23 @@ class App:
                     file.seek(max(0, path.stat().st_size - 65536))
                     self.raw_text.insert("end", "\n" + file.read().decode(errors="replace"))
 
-    def check_update(self):
-        if self.controller or self.busy:
+    def render_graph(self):
+        self.graph.delete('all')
+        path=self.controller.store.root/'host'/'capabilities.json'
+        if not path.exists():
+            self.graph.create_text(30,30,anchor='nw',fill='#dce5ed',text='Agentからの能力自己記述を待っています。Hostから能力やゲームの意味は与えません。')
             return
-        from . import __version__
-        from .release import UPDATE_KEY, UPDATE_URL
-        from .update import Updater
-        updater = Updater(Path(self.config.root), self.config.quota_bytes, UPDATE_KEY, UPDATE_URL.format(channel=self.config.channel))
-        def ready(prepared):
-            if prepared is None:
-                self.status.set("現在の版は最新です。")
-            elif messagebox.askyesno("本体の更新", "検証済みの更新を取得しました。アプリを再起動して更新しますか？"):
-                updater.handoff(prepared)
-                self.close()
-        self.task(lambda: updater.prepare(self.config.channel, __version__), ready)
+        data=json.loads(path.read_text(encoding='utf-8'))
+        positions={n['id']:(150+(i%3)*290,70+(i//3)*130) for i,n in enumerate(data['nodes'])}
+        for a,b in data['edges']:
+            self.graph.create_line(*positions[a],*positions[b],fill='#698ea5',arrow='last')
+        for node in data['nodes']:
+            x,y=positions[node['id']]
+            self.graph.create_rectangle(x-125,y-40,x+125,y+40,fill='#263d4b',outline='#668398')
+            self.graph.create_text(x,y,text=node['description']+'\n'+node['role']+f" ／ {node['uses']}回",width=235,fill='#e1eaf0')
+
+    def check_update(self):
+        self.status.set('固定Launcherから起動すると、起動時に公式更新を確認します。経験とAgent世代は引き継ぎます。')
 
     def poll(self):
         try:
@@ -359,13 +438,22 @@ class App:
                 if identity!=saved:
                     self.config=replace(self.config,target_pid=identity[0],target_created=identity[1],target_exe=identity[2],target_hwnd=identity[3])
                     self.config.save(self.config_path)
-            self.status.set(ctrl.status + f" ／ 稼働 {int(time.monotonic() - ctrl.started)}秒 ／ 世代 {len(list(ctrl.revisions.root.glob('*/agent.wat')))}")
-            while not ctrl.messages.empty():
-                self.activity.set(prose(ctrl.messages.get_nowait()))
-            known = ctrl.store.knowledge_rows()
-            reports = ctrl.store.reports()
-            self.metrics.set(f"経験 {ctrl.steps}　発見 {sum(r['kind']=='observation' for r in known)}　仮説 {sum(r['kind']=='hypothesis' for r in known)}　支持 {sum(r['validation'] in {'supported','reproduced'} for r in known)}　反証 {sum(r['validation']=='refuted' for r in known)}　技能 {sum(r['kind']=='skill' for r in known)}　自己改善 {sum(r['adopted'] for r in reports)}")
-            if ctrl.latest:
+            a=ctrl.activity.snapshot()
+            self.status.set(ctrl.status + f" ／ 稼働 {int(time.monotonic()-ctrl.started)}秒")
+            while not ctrl.messages.empty():self.activity.set(prose(ctrl.messages.get_nowait()))
+            self.llm_status.set('● LLM '+a.llm)
+            self.llm_label.configure(foreground={'推論中':'#7fe0ae','評価中':'#e5bf72','復旧中':'#e5bf72','エラー':'#ee9191'}.get(a.llm,'#9aabb9'))
+            self.current_activity.set(f'現在：{a.phase} ／ 研究：{a.experiment}\n直前：{a.action} {a.duration:.2f}秒 ／ 変化 {a.change:.3f} ／ 次：{a.next}')
+            self.timeline.set('\n'.join(e.text for e in a.events[-3:]))
+            self.adoption.set(a.adoption if time.time()-a.adoption_at<20 else '')
+            telemetry=ctrl.telemetry;c=telemetry.get('counts',{});storage=telemetry.get('storage',{})
+            self.metrics.set(f"経験 {c.get('experience',ctrl.steps)}　発見 {c.get('discoveries',0)}　仮説 {c.get('hypotheses',0)}　支持 {c.get('supported',0)}　反証 {c.get('refuted',0)}　技能 {c.get('skills',0)}　自己改善 {c.get('improvements',0)}　世代 {a.revision[:8]}")
+            if storage:
+                text=f"保存領域 {storage['used']/1024**3:.2f} / {storage['quota']/1024**3:g}GB"
+                if storage['stage']!='通常':text+=' ／ 保存領域を自動整理しています'
+                self.storage_label.set(text)
+            if ctrl.latest and (id(ctrl.latest),self.view_mode.get(),self.preview.winfo_width(),self.preview.winfo_height(),a.attention)!=self.last_preview:
+                self.last_preview=(id(ctrl.latest),self.view_mode.get(),self.preview.winfo_width(),self.preview.winfo_height(),a.attention)
                 image = ctrl.latest.copy()
                 if ctrl.latest_before and self.view_mode.get() == "差分画像":
                     image = ImageChops.difference(ctrl.latest_before.resize(image.size), image)
@@ -377,7 +465,13 @@ class App:
                     image = combined
                 image.thumbnail((max(100, self.preview.winfo_width()), max(100, self.preview.winfo_height())))
                 self.photo = ImageTk.PhotoImage(image)
-                self.preview.configure(image=self.photo, text="")
+                self.preview.delete('all')
+                x=(self.preview.winfo_width()-image.width)//2;y=(self.preview.winfo_height()-image.height)//2
+                self.preview.create_image(x,y,anchor='nw',image=self.photo)
+                if a.attention and self.view_mode.get()=='現在の画面':
+                    left,top,right,bottom=a.attention
+                    sx=image.width/ctrl.latest.width;sy=image.height/ctrl.latest.height
+                    self.preview.create_rectangle(x+left*sx,y+top*sy,x+right*sx,y+bottom*sy,outline='#80d9be',width=2)
         if not self.closing:
             self.window.after(500, self.poll)
 
@@ -398,5 +492,6 @@ class App:
         self.task(finish, lambda _: self.destroy())
 
     def destroy(self):
+        self.layout.save()
         self.closing = True
         self.window.destroy()

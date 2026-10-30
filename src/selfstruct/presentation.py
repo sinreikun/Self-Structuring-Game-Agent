@@ -41,3 +41,42 @@ def system_info() -> dict:
             pass
     return {"cpu": platform.processor() or platform.machine(), "ram": ram,
             "free": shutil.disk_usage(os.path.expanduser("~")).free / 1024**3}
+
+
+def event_message(kind: str, data: dict | None = None) -> str:
+    data=data or {}
+    messages={
+        'llm_start':'研究用LLMへ分析を依頼しました。',
+        'llm_timeout':'研究用LLMの応答が時間内に完了しませんでした。後で再試行します。',
+        'llm_error':'研究用LLMの応答を確認できませんでした。後で再試行します。',
+        'replay':'新しい改善案を過去経験で検証しています。',
+        'rejected':'改善候補を試しましたが、現在の方法を上回らなかったため採用しませんでした。',
+        'adopted':'新しい能力を採用しました。画面変化の予測方法を改善しました。',
+        'comparison':'同じ条件で、新しい方法と現在の方法を比較しています。',
+        'recovery':'ゲームとの接続を復旧しています。',
+        'error':'異常の前後の観測を保護しました。診断情報へ記録しています。',
+        'gc':'保存領域を自動整理しています。研究の根拠は保持します。',
+        'change':'画面変化を確認しました。',
+        'unchanged':'入力前後で大きな画面変化はありませんでした。',
+    }
+    if kind=='action':
+        from .windows import KEY_CODES
+        key=data.get('key','')
+        return f'{key}を入力しました。' if key in KEY_CODES else '許可された入力を実行しました。'
+    return messages.get(kind,'研究の進行を記録しました。')
+
+
+def gpu_info() -> list[str]:
+    import os
+    if os.name!='nt':return ['未取得']
+    import ctypes as c
+    from ctypes import wintypes as w
+    class Device(c.Structure):
+        _fields_=[('cb',w.DWORD),('name',w.WCHAR*32),('description',w.WCHAR*128),('flags',w.DWORD),('id',w.WCHAR*128),('key',w.WCHAR*128)]
+    result=[];i=0
+    while i<32:
+        device=Device(cb=c.sizeof(Device))
+        if not c.windll.user32.EnumDisplayDevicesW(None,i,c.byref(device),0):break
+        if device.description:result.append(device.description)
+        i+=1
+    return result or ['未取得']

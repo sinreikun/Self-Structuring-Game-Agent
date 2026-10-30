@@ -150,6 +150,7 @@ actionとchange_probabilityは指定入力の後に画像が変化する確率�
 許可操作はop=write/read/delete/mkdir/list、相対path、writeにはtext。応答は16384に長さ4バイトlittle endian、その後JSON。
 これはAgent専用作業領域だけを扱います。自分のagent.watを書いても本番世代には直接反映されず、候補評価が必要です。
 op=observeでは任意のbox=[左,上,右,下]領域の32x32輝度配列grayと原画面サイズを得られます。fresh=trueで再観測、event=根拠IDとphase=before/afterで過去原画像を再解析できます。ゲームの意味ラベルは与えられません。
+op=describe,nodes=[{{id,description,role,input,output,uses,active,effectiveness}}],edges=[[id,id]]で自分が構成した能力と接続を日本語で報告できます。権限やゲーム意味は追加しません。未報告の能力をHostが推測して表示することはありません。
 op=research,prompt=研究指示で非同期LLM作業を依頼し、返されたjobをop=job,id=jobで確認できます。op=candidate,path=作業領域のWATファイルで自分の改善候補を提出できます。任意のresearch_due(経験数:i32)->i32をexportし0を返すと初期の自動研究役を停止し、独自の役割分割・研究指示で内部構造を置き換えられます。
 評価器は時間順Replayでlearnを実行し、未確認予測はBrier損失0.25。
 失敗・過剰一般化・unknownを隠さないでください。
@@ -158,9 +159,11 @@ op=research,prompt=研究指示で非同期LLM作業を依頼し、返されたj
 
 
 class Scientist:
-    def __init__(self, store: Store, revisions: Revisions, client: LocalLLM, keys: list[str], every: int, notify):
+    def __init__(self, store: Store, revisions: Revisions, client: LocalLLM, keys: list[str], every: int, notify, activity=None):
         self.store, self.revisions, self.client = store, revisions, client
         self.keys, self.every, self.notify = keys, every, notify
+        from .activity import Activity
+        self.activity = activity or Activity()
         self.stop_event = threading.Event()
         self.wake = threading.Event()
         self.lock = threading.Lock()
@@ -170,6 +173,20 @@ class Scientist:
         self.automatic = True
         self.recover_llm = None
         self.thread = threading.Thread(target=self.run, name="research", daemon=True)
+
+    def complete(self, *args, **kwargs):
+        self.activity.update(llm='推論中')
+        self.activity.emit('llm_start')
+        try:
+            result=self.client.complete(*args,**kwargs)
+            self.activity.update(llm='待機')
+            return result
+        except TimeoutError:
+            self.activity.update(llm='エラー');self.activity.emit('llm_timeout')
+            raise
+        except Exception:
+            self.activity.update(llm='エラー');self.activity.emit('llm_error')
+            raise
 
     def start(self):
         self.thread.start()
@@ -193,6 +210,7 @@ class Scientist:
     def trial_result(self, row: dict, raw: bytes, after_raw: bytes, after: int) -> None:
         with self.lock:
             live = self.live
+            if live:self.store.pin([row['id']],'live-trial')
             if not live:
                 return
             action = self.keys.index(row["action"])
@@ -222,7 +240,12 @@ class Scientist:
                 self.revisions.promote(live["revision"])
             self.store.report(live["revision"], adopted, summary, {"replay": live["replay"], "live": live["metrics"]})
             self.store.set_job(live["job"], "complete", {"revision": live["revision"], "adopted": adopted})
+            self.store.pin([r['id'] for r in bm['samples']], 'evaluation-'+live['revision'])
+            self.store.unpin('live-trial')
             self.live = None
+            self.activity.update(llm='待機',comparison='完了',candidate='')
+            self.activity.emit('adopted' if adopted else 'rejected')
+            if adopted:self.activity.update(adoption=summary)
             self.notify(summary)
 
     def abort_trial(self, reason: str) -> None:
@@ -231,6 +254,8 @@ class Scientist:
                 self.store.report(self.live["revision"], False, "候補の動作異常を検出し、安定版の探索へ戻りました。", {"error": reason})
                 self.store.set_job(self.live["job"], "failed", {"error": reason})
                 self.live = None
+                self.store.unpin('live-trial')
+                self.activity.update(comparison='中断',candidate='')
 
     def run(self):
         try:
@@ -247,10 +272,13 @@ class Scientist:
             self.wake.clear()
             if self.stop_event.is_set() or self.live or self.revisions.state["trial"]:
                 continue
-            rows = self.store.rows(256)
+            with self.store.lock:
+                rows = self.store.rows(256)
+                self.store.pin([r['id'] for r in rows],'research-current')
             self.store.validate_claims()
             pending = self.store.jobs()
             if not pending and (not self.automatic or len(rows) < max(48, self.every) or rows[-1]["id"] - self.last_event < self.every):
+                self.store.unpin('research-current')
                 continue
             if rows:
                 self.last_event = rows[-1]["id"]
@@ -259,7 +287,7 @@ class Scientist:
             try:
                 payload = json.loads(pending[0]["payload"]) if pending else {}
                 if pending and pending[0]["kind"] == "agent_llm":
-                    response = self.client.complete(payload["prompt"], max_tokens=2048)
+                    response = self.complete(payload["prompt"], max_tokens=2048)
                     self.store.set_job(jid, "complete", {"prompt": payload["prompt"], "response": response})
                 elif payload.get("source"):
                     self.evaluate_proposal(payload["source"], payload["after"], jid)
@@ -267,6 +295,8 @@ class Scientist:
                     self.study(rows, jid)
                 self.failed_calls = 0
             except (ValueError, TimeoutError, MemoryError) as error:
+                self.activity.update(llm="エラー",comparison="棄却")
+                self.activity.emit("rejected")
                 log.exception("Candidate rejected")
                 self.store.report("candidate", False, "候補の実行・出力・資源制限を検証し、不適合のため棄却しました。", {"job": jid, "error": str(error)[:4000]})
                 self.store.set_job(jid, "failed")
@@ -278,19 +308,27 @@ class Scientist:
                 self.store.set_job(jid, "pending")
                 if self.recover_llm and 2 <= self.failed_calls <= 4:
                     try:
+                        self.activity.update(llm='復旧中')
                         self.recover_llm()
+                        self.activity.update(llm='待機')
                         self.notify("管理中のローカル推論を再起動しました。研究を再開します。")
                     except Exception:
                         log.exception("Managed inference recovery failed")
                 self.notify("研究用の推論を再試行します。画面と入力の経験収集は継続しています。" if self.failed_calls < 5 else
                             "ローカル推論が繰り返し失敗しています。モデルの稼働状態を確認してください。経験収集は継続中です。")
 
+            finally:
+                self.store.unpin('research-current')
+
     def study(self, rows: list[dict], jid: str):
+        self.activity.update(experiment="未確認の変化条件と観測方法を研究",next="仮説を形成して独立の経験で検証")
         self.notify("過去の経験を比較し、未確認の規則と観測方法を研究しています。")
         # Deterministic summaries are observations, not labels for game objects.
         for key in self.keys:
             selected = [r for r in rows if r["action"] == key]
-            if len(selected) >= 8:
+            with self.store.lock:
+                existing=self.store.db.execute("SELECT 1 FROM knowledge WHERE kind='observation' AND text LIKE ?",(f"入力候補{self.keys.index(key)+1}の後%",)).fetchone()
+            if len(selected) >= 8 and not existing:
                 index = self.keys.index(key) + 1
                 self.store.knowledge("observation", f"入力候補{index}の後、画面変化を{len(selected)}回中{sum(r['change'] > .01 for r in selected)}回観測しました。意味と因果関係は未確認です。",
                                      "observed", "unknown", [r["id"] for r in selected[-32:]])
@@ -298,7 +336,7 @@ class Scientist:
                      {"action": self.keys.index(r["action"])} for r in rows[-64:]]
         prompt = "過去の自己改善評価（コードの不備は修正し、同じ失敗を繰り返さないこと）:\n" + json.dumps(self.store.reports()[:2], ensure_ascii=False)[:6000] + "\n"
         prompt += PROMPT.format(source=self.revisions.source(), rows=json.dumps(summaries))
-        response = self.client.complete(prompt, json_mode=True)
+        response = self.complete(prompt, json_mode=True)
         self.store.proposal(jid, response)
         if response.strip().startswith("```"):
             response = response.strip().split("\n", 1)[1].rsplit("```", 1)[0]
@@ -331,9 +369,13 @@ class Scientist:
             self.store.set_job(jid, "pending")
             return
         self.store.reserve(len(source.encode()) + 1024**2)
+        self.activity.update(llm='評価中',comparison='過去経験で比較',experiment='予測方法の改善を検証')
+        self.activity.emit('replay')
+        self.store.pin([r['id'] for r in future],'evaluation-'+jid)
         result = evaluate(source, self.revisions.source(), future, self.store.root / "evidence", self.keys)
         historical = self.store.regression_rows(after_id)
         if historical:
+            self.store.pin([r['id'] for r in historical],'evaluation-'+jid)
             regression = evaluate(source, self.revisions.source(), historical, self.store.root / "evidence", self.keys)
             base, candidate = regression["baseline"], regression["candidate"]
             broken = any(a["known"] and a["loss"] < .04 and b["loss"] > .16
@@ -343,9 +385,13 @@ class Scientist:
         if not result["passed"]:
             self.store.report("candidate", False, "新しい経験で予測精度と過去成功例を検証し、改善不足の候補を棄却しました。", result)
             self.store.set_job(jid, "complete")
+            self.activity.update(llm='待機',comparison='棄却')
+            self.activity.emit('rejected')
             return
         revision = self.revisions.create(source)
         with self.lock:
             self.live = {"revision": revision, "agent": Sandbox(source), "base": self.revisions.load(), "job": jid,
                          "replay": result, "metrics": {"base": {"samples": []}, "agent": {"samples": []}}}
+        self.activity.update(llm='待機',candidate=revision,comparison='実機で交互比較')
+        self.activity.emit('comparison')
         self.notify("保存経験で改善を確認しました。実際の入力で短い交互比較を行っています。")

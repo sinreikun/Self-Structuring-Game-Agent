@@ -22,7 +22,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from .config import atomic_write, write_json
 
 
-TRUSTED_HOSTS = {"api.github.com", "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com",
+TRUSTED_HOSTS = {"raw.githubusercontent.com", "api.github.com", "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com",
                  "huggingface.co", "cdn-lfs.huggingface.co", "cdn-lfs-us-1.hf.co", "cdn-lfs.hf.co",
                  "cas-bridge.xethub.hf.co", "transfer.xethub.hf.co", "us.aws.cdn.hf.co"}
 
@@ -51,12 +51,12 @@ def fetch_json(url: str, hosts: set[str] = TRUSTED_HOSTS) -> dict:
     return json.loads(raw)
 
 
-def verify_catalog(envelope: dict, public_key: str) -> dict:
+def verify_catalog(envelope: dict, public_key: str, allow_expired: bool = False) -> dict:
     payload = base64.b64decode(envelope["payload"], validate=True)
     Ed25519PublicKey.from_public_bytes(bytes.fromhex(public_key)).verify(
         base64.b64decode(envelope["signature"], validate=True), payload)
     catalog = json.loads(payload)
-    if catalog.get("schema") != 1 or catalog["expires"] < time.time():
+    if catalog.get("schema") != 1 or (not allow_expired and catalog["expires"] < time.time()):
         raise ValueError("配布情報が期限切れか未対応です。")
     return catalog
 
@@ -91,7 +91,7 @@ class Gateway:
                 partial.unlink()
                 offset = 0
             used = sum(p.stat().st_size for p in self.root.rglob("*") if p.is_file())
-            if used + (size - offset) + 4 * 1024**2 > self.quota or shutil.disk_usage(folder).free < size - offset + 4 * 1024**2:
+            if used + (size - offset) + 4 * 1024**2 > int(self.quota*.95) or shutil.disk_usage(folder).free < size - offset + 4 * 1024**2:
                 raise OSError("取得に必要な保存容量がありません。")
             headers = {"User-Agent": "SelfStruct/0.1", "Accept-Encoding": "identity"}
             if offset:
@@ -147,7 +147,7 @@ class Gateway:
             infos = archive.infolist() if zipped else archive.getmembers()
             total = sum(info.file_size if zipped else info.size for info in infos)
             used = sum(p.stat().st_size for p in self.root.rglob("*") if p.is_file())
-            if total > 2 * 1024**3 or used + total > self.quota:
+            if total > 2 * 1024**3 or used + total > int(self.quota*.95):
                 raise ValueError("展開容量が上限を超えています。")
             for info in infos:
                 path = Path((info.filename if zipped else info.name).replace("\\", "/"))
@@ -175,7 +175,7 @@ class Gateway:
                         if current is None:
                             raise ValueError("共有ライブラリの参照先がありません。")
                         if current.isfile():
-                            if sum(p.stat().st_size for p in self.root.rglob("*") if p.is_file()) + target_path.stat().st_size > self.quota:
+                            if sum(p.stat().st_size for p in self.root.rglob("*") if p.is_file()) + target_path.stat().st_size > int(self.quota*.95):
                                 raise ValueError("展開容量が上限を超えています。")
                             shutil.copy2(target_path, dest / info.name)
                             break
