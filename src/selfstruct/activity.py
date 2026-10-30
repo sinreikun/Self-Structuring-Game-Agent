@@ -14,6 +14,14 @@ class SemanticEvent:
 
 
 @dataclass(frozen=True)
+class TraceEvent:
+    sequence: int
+    at: float
+    kind: str
+    text: str
+
+
+@dataclass(frozen=True)
 class RealtimeActivity:
     phase: str = '停止中'
     purpose: str = '画面と入力の関係を観測'
@@ -32,6 +40,7 @@ class RealtimeActivity:
     last_observed: float = 0
     attention: tuple = ()
     events: tuple[SemanticEvent, ...] = ()
+    trace: tuple[TraceEvent, ...] = ()
     adoption: str = ''
     adoption_at: float = 0
 
@@ -40,6 +49,7 @@ class Activity:
     def __init__(self):
         self._lock = threading.Lock()
         self._value = RealtimeActivity()
+        self._sequence = 0
 
     def snapshot(self) -> RealtimeActivity:
         with self._lock: return self._value
@@ -47,7 +57,15 @@ class Activity:
     def update(self, **changes):
         with self._lock: self._value = replace(self._value, **changes)
 
+    def record(self,kind: str,text: str):
+        with self._lock:
+            self._sequence+=1
+            entry=TraceEvent(self._sequence,time.time(),kind,str(text)[:160])
+            self._value=replace(self._value,trace=(*self._value.trace[-199:],entry))
+
     def emit(self, kind: str, **data):
+        prefix={'llm_start':'LLM','llm_timeout':'LLM','llm_error':'LLM','replay':'EVAL','comparison':'EVAL','rejected':'REJECT','adopted':'PROMOTE','recovery':'RECOVER'}.get(kind)
+        if prefix:self.record(prefix,kind)
         text = event_message(kind, data)
         with self._lock:
             event = SemanticEvent(time.time(),kind,text)

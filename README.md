@@ -88,3 +88,7 @@ Windowsでは `dist/SelfStruct.exe`、Linuxでは `dist/SelfStruct` を生成し
 ウィンドウ位置・通常サイズ・最大化・分割位置・タブはバージョン付きLayoutに保存します。モニタが外れた場合は現在の表示領域に補正します。配置のUI IDはゲーム知識・Agentデータには含めません。
 
 署名付き本体更新の公開手順は [更新配布](docs/application-update.md)、保持規則と検証上の限界は [設計](docs/architecture.md)・[検証](docs/validation.md) を参照してください。
+
+### GGUF検索とPC負荷表示（0.3）
+
+研究室はゲーム画面を左に大きく表示し、右側で現在の研究・入力履歴・実処理のLIVE TRACE・能力接続図・PC全体の負荷を確認できます。初回設定では固定2択に代わり、GGUFモデルを検索し、量子化・容量・PC適合・ライセンスを確認してそのまま導入できます。手元のGGUFや外部ローカル接続先も引き続き利用できます。[検索・適合判定の範囲と制限](docs/model-browser.md)を参照してください。固定Launcher 1.0.0は更新不要です。

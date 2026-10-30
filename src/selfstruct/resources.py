@@ -248,8 +248,31 @@ class ManagedLLM:
         gateway = Gateway(self.root, self.quota)
         engine_item = Catalog.resolve_engine()
         engine = gateway.extract_engine(gateway.download(engine_item, "engine", progress, cancel))
-        model_item = Catalog(self.root / "host" / "catalog.json").resolve_model(selected)
-        model = gateway.download(model_item, "model", progress, cancel)
+        if selected.get('local_path'):
+            source=Path(selected['local_path'])
+            with source.open('rb') as file:
+                if file.read(4)!=b'GGUF':raise ValueError('GGUF形式を確認できません。')
+            digest=Gateway.digest(source)
+            model_item={'name':source.name,'sha256':digest,'size':source.stat().st_size,'license':'ユーザー指定・要確認'}
+            model=self.root/'assets'/'model'/digest/'artifact'
+            model.parent.mkdir(parents=True,exist_ok=True)
+            if source.stat().st_size+sum(p.stat().st_size for p in self.root.rglob('*') if p.is_file())>self.quota*.95:
+                raise OSError('取得に必要な保存容量がありません。')
+            partial=model.with_suffix('.part')
+            with source.open('rb') as src,partial.open('wb') as dst:
+                done=0
+                while chunk:=src.read(1024**2):
+                    if cancel.is_set():raise InterruptedError('導入を中断しました。')
+                    dst.write(chunk);done+=len(chunk);progress(done,model_item['size'])
+            if Gateway.digest(partial)!=digest:raise ValueError('モデルの完全性を確認できません。')
+            os.replace(partial,model)
+            write_json(model.parent/'receipt.json',model_item)
+        else:
+            from .model_catalog import ModelCatalog
+            model_item = ModelCatalog().resolve(selected)
+            model = gateway.download(model_item, "model", progress, cancel)
+        with model.open('rb') as file:
+            if file.read(4)!=b'GGUF':raise ValueError('GGUF形式を確認できません。')
         old = json.loads(self.state_path.read_text(encoding="utf-8")) if self.state_path.exists() else None
         self.stop()
         state = {"engine": str(engine), "model": str(model), "engine_sha256": Gateway.digest(engine),
@@ -258,6 +281,8 @@ class ManagedLLM:
             self.start(state, cancel=cancel)
             from .research import LocalLLM
             LocalLLM("http://127.0.0.1:8766/v1", "local").complete("日本語で短く挨拶してください。", max_tokens=32)
+            state['validation']={'startup':True,'minimal_inference':True,'checked_at':time.time(),'japanese_quality':'未評価','json':'未試験','code':'未試験'}
+            state['model_info']=model_item
             write_json(self.state_path, state)
         except Exception:
             self.stop()

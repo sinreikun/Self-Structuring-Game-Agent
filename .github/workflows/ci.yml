@@ -52,8 +52,8 @@ jobs:
         env:
           SELFSTRUCT_VALIDATION_SCOPE: ${{ steps.validation.outputs.scope }}
       - if: runner.os == 'Windows'
-        name: Build stable launcher
-        run: python tools/build_launcher.py
+        name: Reuse fixed Launcher 1.0.0
+        run: python tools/reuse_stable_launcher.py
       - if: runner.os == 'Windows' && steps.validation.outputs.scope == 'full'
         shell: pwsh
         run: |

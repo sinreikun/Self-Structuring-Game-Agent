@@ -150,7 +150,7 @@ actionとchange_probabilityは指定入力の後に画像が変化する確率�
 許可操作はop=write/read/delete/mkdir/list、相対path、writeにはtext。応答は16384に長さ4バイトlittle endian、その後JSON。
 これはAgent専用作業領域だけを扱います。自分のagent.watを書いても本番世代には直接反映されず、候補評価が必要です。
 op=observeでは任意のbox=[左,上,右,下]領域の32x32輝度配列grayと原画面サイズを得られます。fresh=trueで再観測、event=根拠IDとphase=before/afterで過去原画像を再解析できます。ゲームの意味ラベルは与えられません。
-op=describe,nodes=[{{id,description,role,input,output,uses,active,effectiveness}}],edges=[[id,id]]で自分が構成した能力と接続を日本語で報告できます。権限やゲーム意味は追加しません。未報告の能力をHostが推測して表示することはありません。
+op=describe,nodes=[{{id,description,role,input,output,uses,active,effectiveness,created_generation,status}}],edges=[[id,id]]で自分が構成した能力と接続を日本語で報告できます。権限やゲーム意味は追加しません。未報告の能力をHostが推測して表示することはありません。
 op=research,prompt=研究指示で非同期LLM作業を依頼し、返されたjobをop=job,id=jobで確認できます。op=candidate,path=作業領域のWATファイルで自分の改善候補を提出できます。任意のresearch_due(経験数:i32)->i32をexportし0を返すと初期の自動研究役を停止し、独自の役割分割・研究指示で内部構造を置き換えられます。
 評価器は時間順Replayでlearnを実行し、未確認予測はBrier損失0.25。
 失敗・過剰一般化・unknownを隠さないでください。

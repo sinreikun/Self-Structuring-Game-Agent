@@ -168,12 +168,15 @@ def test_observatory_gui_diagnostics_layout_activity_and_no_full_knowledge_poll(
         assert copied[0].parent==tmp_path/'data'/'exports'/'diagnostics'
         app.layout.save()
         saved=json.loads(app.layout.path.read_text())
-        assert 'lab-console' in saved['elements'] and 'main' in saved['elements']
-        assert app.llm_status.get().startswith('● LLM')
+        assert 'lab-horizontal' in saved['elements'] and 'main' in saved['elements']
+        assert app.llm_status.get().startswith('○ LLM')
+        assert app.live_trace.get('1.0','end').strip()
+        assert app.input_log.get('1.0','end').strip()
+        assert app.preview.winfo_width()>app.mini_graph.winfo_width()
         assert not errors
     finally:
         if app.controller:app.controller.close()
-        app.llm.stop();app.closing=True;window.destroy()
+        app.llm.stop();app.performance_monitor.stop.set();app.closing=True;window.destroy()
 
 
 def test_ten_gib_budget_under_pressure_starts_research_and_gc(tmp_path):

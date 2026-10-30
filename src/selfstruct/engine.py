@@ -23,6 +23,11 @@ log = logging.getLogger(__name__)
 
 
 class Controller:
+    def record_sent(self,eid,timestamp,key,duration):
+        self.store.sent(eid,timestamp)
+        self.activity.record('ACT',f'{key} hold={duration*1000:.0f}ms')
+        self.activity.emit('action',key=key)
+
     def __init__(self, config: Config, game=None):
         self.config = config
         self.root = Path(config.root).resolve()
@@ -318,6 +323,7 @@ class Controller:
             self.confirm_steps = 0
             self._restore_learning()
         before = self.game.capture()
+        self.activity.record("OBS",f"frame={self.steps} region=full")
         feature, raw = features(before)
         self.agent.pixels(raw)
         trial = self.scientist.trial_agent(self.steps)
@@ -337,6 +343,7 @@ class Controller:
                     not (0 <= box[0] < box[2] <= width and 0 <= box[1] < box[3] <= height)):
                 raise ValueError("Invalid observation region")
             self.activity.update(attention=tuple(box))
+            self.activity.record("OBS",f"crop={box}")
             pixels = image.crop(tuple(box)).convert("L").resize((32, 32))
             return {"width": width, "height": height, "gray": list(pixels.tobytes()), "observed": time.time()}
         agent.requests(self.files, lambda n:self.store.reserve(n,critical=False), observe, lambda request:self.dispatch(request,revision))
@@ -345,12 +352,12 @@ class Controller:
         index, duration, wait, pred = agent.action(feature, len(self.config.keys))
         self.activity.update(phase="入力中", action=self.config.keys[index],duration=duration,prediction=pred,
                              next="入力後の画面を観測します")
-        self.activity.emit("action",key=self.config.keys[index])
+        self.activity.record("PRED",f"p(change)={pred:.4f}")
         before_hash = self.store.image(before,critical=time.time()<self.protect_until or bool(self.scientist.live) or self.revisions.state["trial"])
         eid = self.store.begin(self.session, before_hash, self.config.keys[index], duration,
                                self.game.generation, revision, feature, pred)
         try:
-            self.game.act(self.config.keys[index], duration, self.cancel_input, lambda timestamp: self.store.sent(eid, timestamp))
+            self.game.act(self.config.keys[index], duration, self.cancel_input, lambda timestamp: self.record_sent(eid,timestamp,self.config.keys[index],duration))
         except BaseException:
             self.store.interrupt(eid)
             raise
@@ -363,12 +370,15 @@ class Controller:
         after_hash = self.store.image(after_image,critical=time.time()<self.protect_until or bool(self.scientist.live) or self.revisions.state["trial"])
         change = difference(before, after_image)
         self.store.finish(eid, after_hash, change, time.perf_counter() - started)
+        self.activity.record("DIFF",f"score={change:.4f}")
+        self.activity.record("STORE",f"event={eid}")
         if time.time()<self.protect_until:self.store.pin([eid],"error-after")
         self.activity.update(phase="結果を確認中",change=change,last_observed=time.time(),next="次の入力と予測を選びます")
         self.activity.emit("change" if change>.01 else "unchanged")
         self.agent.pixels(after_raw, 1024)
         if not self.scientist.live:
             self.agent.call("learn", feature, index, after, int(change > .01))
+            self.activity.record("LEARN",f"feature={feature}")
         self.scientist.trial_result({"id": eid, "action": self.config.keys[index], "feature": feature, "change": change}, raw, after_raw, after)
         self.latest_before, self.latest = before, after_image
         self.steps += 1

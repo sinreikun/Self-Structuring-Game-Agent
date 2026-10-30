@@ -15,7 +15,15 @@ def validate_description(request, revision):
             if not isinstance(value,str) or len(value)>240:raise ValueError('Invalid description')
             item[key]=prose(value)
         item['uses']=max(0,min(int(node.get('uses',0)),2**31-1))
-        item['active']=bool(node.get('active',False));result.append(item)
+        item['active']=bool(node.get('active',False))
+        generation=node.get('created_generation')
+        if generation is not None:
+            if type(generation)!=int or not 0<=generation<=1000000:raise ValueError('Invalid creation generation')
+            item['created_generation']=generation
+        status=node.get('status','使用中' if item['active'] else '待機中')
+        if status not in {'使用中','待機中','試験中','廃止候補'}:raise ValueError('Invalid capability status')
+        item['status']=status
+        result.append(item)
     links=[]
     for edge in edges:
         if not isinstance(edge,list) or len(edge)!=2 or any(e not in ids for e in edge):raise ValueError('Invalid capability edge')

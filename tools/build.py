@@ -25,7 +25,7 @@ for license_path in runtime_licenses:
         if text not in seen:
             notices.append(f'\nRuntime license: {license_path.name}\n'+text)
             seen.add(text)
-for name in ("Pillow", "wasmtime", "cryptography", "cffi", "importlib_resources", "pycparser", "pyinstaller"):
+for name in ("psutil", "Pillow", "wasmtime", "cryptography", "cffi", "importlib_resources", "pycparser", "pyinstaller"):
     distribution = metadata.distribution(name)
     notices.append(f"\n{'='*60}\n{name} {distribution.version}\n")
     for file in distribution.files or []:

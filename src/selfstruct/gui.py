@@ -15,7 +15,10 @@ from PIL import Image, ImageChops, ImageTk
 from .config import Config, default_root
 from .engine import Controller
 from .presentation import error_message, prose, system_info
-from .resources import Catalog, ManagedLLM
+from .resources import ManagedLLM
+
+UI_FONT = "Yu Gothic UI" if os.name == "nt" else "Noto Sans CJK JP"
+MONO_FONT = "Consolas" if os.name == "nt" else "Noto Sans Mono CJK JP"
 
 
 class App:
@@ -38,9 +41,10 @@ class App:
         window.protocol("WM_DELETE_WINDOW", self.close)
         style = ttk.Style()
         style.theme_use("clam")
-        style.configure("TLabel", font=("Yu Gothic UI", 10))
-        style.configure("TButton", padding=8, font=("Yu Gothic UI", 10))
-        style.configure("Title.TLabel", font=("Yu Gothic UI", 20, "bold"))
+        style.configure('.',font=(UI_FONT,10))
+        style.configure("TLabel", font=(UI_FONT, 10))
+        style.configure("TButton", padding=8, font=(UI_FONT, 10))
+        style.configure("Title.TLabel", font=(UI_FONT, 20, "bold"))
         window.configure(background='#141a20')
         style.configure('.',background='#1c252e',foreground='#dce5ed',fieldbackground='#111920',bordercolor='#354451')
         style.configure('TButton',background='#2d414e',foreground='#e9f0f5')
@@ -54,9 +58,10 @@ class App:
         self.layout=Layout(default_root()/'host'/'layout.json')
         self.layout.window('main',window)
         self.last_preview=None
+        self.graph_nodes=set();self.graph_new={}
         self.tabs = ttk.Notebook(window)
-        self.tabs.pack(fill="both", expand=True, padx=12, pady=12)
-        self.home = ttk.Frame(self.tabs, padding=16)
+        self.tabs.pack(fill="both", expand=True, padx=6, pady=6)
+        self.home = ttk.Frame(self.tabs, padding=4)
         self.setup = ttk.Frame(self.tabs, padding=16)
         self.book = ttk.Frame(self.tabs, padding=16)
         self.details = ttk.Frame(self.tabs, padding=16)
@@ -73,10 +78,10 @@ class App:
         self.note_category=tk.StringVar(value='現在')
         categories=ttk.Combobox(self.book,textvariable=self.note_category,values=['現在','発見','仮説','支持','反証','自己改善'],state='readonly')
         categories.pack(anchor='w',pady=(0,10));categories.bind('<<ComboboxSelected>>',self.refresh_text)
-        self.book_text = tk.Text(self.book, wrap="word", font=("Yu Gothic UI", 11),background='#111920',foreground='#dce5ed',insertbackground='#dce5ed')
+        self.book_text = tk.Text(self.book, wrap="word", font=(UI_FONT, 11),background='#111920',foreground='#dce5ed',insertbackground='#dce5ed')
         self.book_text.pack(fill="both", expand=True)
         ttk.Button(self.details,text='研究記録を保存（診断提出用とは別）',command=self.export_research).pack(anchor='w',pady=(0,8))
-        self.raw_text = tk.Text(self.details, wrap="none", font=("Consolas", 10))
+        self.raw_text = tk.Text(self.details, wrap="none", font=(MONO_FONT, 10))
         self.raw_text.pack(fill="both", expand=True)
         self.capabilities=ttk.Frame(self.tabs,padding=16)
         self.tabs.add(self.capabilities,text='能力接続図')
@@ -102,42 +107,64 @@ class App:
             window.after(1000, lambda: health_marker.write_text("healthy"))
 
     def _home(self):
-        ttk.Label(self.home, text="画面から、理解を育てる。", style="Title.TLabel").pack(anchor="w")
         self.status = tk.StringVar(value="初回設定を確認してSTARTを押してください。")
-        ttk.Label(self.home, textvariable=self.status, wraplength=1050).pack(anchor="w", pady=8)
-        toolbar = ttk.Frame(self.home)
-        toolbar.pack(fill="x", pady=8)
-        for title, command in (("START", self.start), ("PAUSE", self.pause), ("STOP", self.stop),
-                               ("NEWBORN", self.newborn), ("診断ZIPをコピー", self.export)):
-            ttk.Button(toolbar, text=title, command=command).pack(side="left", padx=(0, 8))
-        ttk.Label(toolbar, text="入力の停止：PAUSE / STOP", foreground="#953535").pack(side="right")
-        self.metrics = tk.StringVar(value="経験 0　仮説 0　支持 0　反証 0　技能 0　自己改善 0")
-        ttk.Label(self.home, textvariable=self.metrics).pack(anchor="w", pady=8)
-        self.view_mode = tk.StringVar(value="現在の画面")
-        selection = ttk.Combobox(self.home, textvariable=self.view_mode, state="readonly", values=["現在の画面", "入力前後の比較", "差分画像"])
-        selection.pack(anchor="w")
-        self.console=ttk.Panedwindow(self.home,orient='vertical')
-        self.console.pack(fill='both',expand=True,pady=8)
-        screen=ttk.Frame(self.console);readout=ttk.Frame(self.console,padding=(4,8))
-        self.console.add(screen,weight=5);self.console.add(readout,weight=1)
-        self.layout.pane('lab-console',self.console)
-        self.preview=tk.Canvas(screen,background='#10171d',highlightthickness=0,height=330)
+        self.console = ttk.Panedwindow(self.home, orient='horizontal')
+        self.console.pack(fill='both', expand=True)
+        screen=ttk.Frame(self.console)
+        readout=ttk.Frame(self.console,padding=8,width=340)
+        readout.pack_propagate(False)
+        self.console.add(screen,weight=4);self.console.add(readout,weight=0)
+        if 'lab-horizontal' not in self.layout.entries:
+            self.console.after(180,lambda:self.console.sashpos(0,max(450,self.console.winfo_width()-350)))
+        self.layout.pane('lab-horizontal',self.console)
+        self.view_mode=tk.StringVar(value='現在の画面')
+        ttk.Combobox(screen,textvariable=self.view_mode,state='readonly',values=['現在の画面','入力前後の比較','差分画像'],width=22).pack(anchor='w')
+        self.preview=tk.Canvas(screen,background='#06090c',highlightthickness=1,highlightbackground='#63717e')
         self.preview.pack(fill='both',expand=True)
-        self.llm_status=tk.StringVar(value='● LLM 待機')
-        header=ttk.Frame(readout);header.pack(fill='x')
-        self.llm_label=ttk.Label(header,textvariable=self.llm_status)
-        self.llm_label.pack(side='left')
-        self.current_activity=tk.StringVar(value='現在：観測を待っています')
-        ttk.Label(readout,textvariable=self.current_activity,wraplength=1050).pack(anchor='w')
+        self.preview.create_text(24,30,anchor='nw',fill='#91a5b3',text='ゲーム画面は接続後に表示されます。')
+        self.llm_status=tk.StringVar(value='○ LLM 待機')
+        self.llm_label=ttk.Label(readout,textvariable=self.llm_status)
+        self.llm_label.pack(anchor='w')
+        self.current_activity=tk.StringVar(value='現在：停止中\n研究：観測を待っています\n直前：—\n次：STARTで開始')
+        ttk.Label(readout,textvariable=self.current_activity,wraplength=320).pack(fill='x',pady=6)
         self.timeline=tk.StringVar(value='最近のイベントは開始後に表示されます。')
-        ttk.Label(readout,textvariable=self.timeline,wraplength=1050,foreground='#a8bbc9').pack(anchor='w',pady=5)
-        self.storage_label=tk.StringVar(value='保存領域 —')
-        ttk.Label(header,textvariable=self.storage_label).pack(side='right')
+        ttk.Label(readout,textvariable=self.timeline,wraplength=320,foreground='#a8bbc9').pack(fill='x',pady=6)
         self.adoption=tk.StringVar()
-        ttk.Label(readout,textvariable=self.adoption,foreground='#7fd2af').pack(anchor='w')
-        self.activity = tk.StringVar(value="画面の意味やキーの意味を、最初から与えることはありません。")
-        ttk.Label(self.home, textvariable=self.activity, wraplength=1050).pack(anchor="w")
-        ttk.Label(self.home, text="背面で入力を受け付けるゲームが対象です。対象ゲームを操作しても停止しません。止めるときはPAUSE / STOPを押してください。最小化には対応していません。", wraplength=1050).pack(anchor="w", pady=8)
+        ttk.Label(readout,textvariable=self.adoption,wraplength=320,foreground='#7fd2af').pack(fill='x')
+        streams=ttk.Panedwindow(readout,orient='horizontal');streams.pack(fill='both',expand=True)
+        for name,title,width in [('input_log','入力ログ',18),('live_trace','LIVE TRACE',27)]:
+            frame=ttk.Frame(streams);streams.add(frame,weight=1)
+            ttk.Label(frame,text=title).pack(anchor='w')
+            widget=tk.Text(frame,height=10,width=width,background='#06090c',foreground='#91a5b3',font=(MONO_FONT,9),state='disabled',wrap='none',borderwidth=0)
+            widget.pack(fill='both',expand=True);widget.tag_configure('fresh',foreground='#dceee7')
+            setattr(self,name,widget);self.layout.panel('lab-'+name,frame)
+        self.layout.pane('lab-streams',streams)
+        ttk.Label(readout,text='自作器官接続図').pack(anchor='w',pady=(8,0))
+        self.mini_graph=tk.Canvas(readout,background='#06090c',height=160,highlightthickness=0)
+        self.mini_graph.pack(fill='both',expand=True)
+        self.mini_graph.create_text(10,20,anchor='nw',fill='#91a5b3',text='Agentからの自己記述を待っています')
+        self.mini_graph.bind('<MouseWheel>',lambda e:self.mini_graph.yview_scroll(-1 if e.delta>0 else 1,'units'))
+        self.mini_graph.bind('<Button-1>',lambda _:self.tabs.select(self.capabilities))
+        self.pc_performance=tk.StringVar(value='PC負荷を取得中…')
+        ttk.Label(readout,textvariable=self.pc_performance,wraplength=320).pack(fill='x',pady=6)
+        footer=ttk.Frame(self.home);footer.pack(fill='x',pady=(8,0))
+        for title,command in [('START',self.start),('PAUSE',self.pause),('STOP',self.stop),('NEWBORN',self.newborn),('診断ZIPをコピー',self.export)]:
+            ttk.Button(footer,text=title,command=command).pack(side='left',padx=(0,4))
+        self.metrics=tk.StringVar(value='経験 0　発見 0　仮説 0　支持 0　反証 0　技能 0　自己改善 0　世代 1')
+        ttk.Label(self.home,textvariable=self.metrics).pack(anchor='e')
+        storage=ttk.Frame(self.home);storage.pack(fill='x')
+        ttk.Label(storage,textvariable=self.status).pack(side='left')
+        self.storage_label=tk.StringVar(value='保存領域 —')
+        ttk.Style().configure('Storage.Horizontal.TProgressbar',background='#64ab8b')
+        self.storage_bar=ttk.Progressbar(storage,length=180,maximum=100,style="Storage.Horizontal.TProgressbar")
+        self.storage_bar.pack(side='right')
+        ttk.Label(storage,textvariable=self.storage_label).pack(side='right',padx=8)
+        self.activity=tk.StringVar()
+        ttk.Label(self.home,textvariable=self.activity,wraplength=1050).pack(anchor='w')
+        self.trace_sequence=0
+        from .performance import PerformanceMonitor
+        self.performance_monitor=PerformanceMonitor(Path(self.config.root))
+        self.performance_monitor.start()
 
     def _setup(self):
         ttk.Label(self.setup, text="はじめの設定", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 12))
@@ -157,7 +184,9 @@ class App:
         for row, (name, label, value) in enumerate(entries, 3):
             ttk.Label(self.setup, text=label).grid(row=row, column=0, sticky="w", pady=5)
             var = self.fields[name] = tk.StringVar(value=value)
-            ttk.Entry(self.setup, textvariable=var, width=65).grid(row=row, column=1, sticky="ew", padx=8)
+            entry=ttk.Entry(self.setup, textvariable=var, width=65)
+            entry.grid(row=row, column=1, sticky="ew", padx=8)
+            if name=="llm_url":self.llm_url_entry=entry
             if name in {"game_exe", "root"}:
                 ttk.Button(self.setup, text="選択", command=lambda n=name: self.browse(n)).grid(row=row, column=2)
         self.setup.columnconfigure(1, weight=1)
@@ -170,18 +199,27 @@ class App:
         ttk.Separator(self.setup).grid(row=row+3, column=0, columnspan=3, sticky="ew", pady=14)
         info = system_info()
         ttk.Label(self.setup, text=f"PCの目安：空きメモリ {info['ram']:.1f}GB ／ 空き容量 {info['free']:.1f}GB ／ CPU推論に対応").grid(row=row+4, column=0, columnspan=3, sticky="w")
-        catalog = Catalog(Path(self.config.root) / "host" / "catalog.json")
-        self.models = catalog.data["models"]
-        suggested = max((x for x in self.models if x["ram_gb"] <= info["ram"]), key=lambda x: x["ram_gb"], default=self.models[0])
-        self.model = tk.StringVar(value=suggested["name"])
-        ttk.Label(self.setup, text="ローカルLLM").grid(row=row+5, column=0, sticky="w", pady=8)
-        ttk.Combobox(self.setup, textvariable=self.model, values=[x["name"] for x in self.models], state="readonly", width=50).grid(row=row+5, column=1, sticky="w", padx=8)
-        ttk.Label(self.setup, text="選ぶだけで公式配布元から推論エンジンとモデルを取得・検証します。既存のローカル接続先も利用できます。", wraplength=950).grid(row=row+6, column=0, columnspan=3, sticky="w", pady=8)
-        ttk.Button(self.setup, text="選択したLLMを自動導入", command=self.install_model).grid(row=row+7, column=1, sticky="w", padx=8)
-        ttk.Button(self.setup, text="取得を中断", command=self.download_cancel.set).grid(row=row+7, column=2)
-        self.progress = tk.StringVar(value="モデルの再配布条件：Apache-2.0 ／ 推論エンジン：MIT")
-        ttk.Label(self.setup, textvariable=self.progress, wraplength=900).grid(row=row+8, column=0, columnspan=3, sticky="w", pady=8)
-        ttk.Button(self.setup, text="公式更新を確認", command=self.check_update).grid(row=row+9, column=1, sticky="w", padx=8)
+        ttk.Label(self.setup,text='ローカルLLM — 用途やPCに合うGGUFを探して導入できます。').grid(row=row+5,column=0,columnspan=3,sticky='w',pady=8)
+        choices=ttk.Frame(self.setup);choices.grid(row=row+6,column=0,columnspan=3,sticky='w')
+        for label,command in [('おすすめモデルを使う',lambda:self.open_models(True)),('モデルを検索する',self.open_models),('手元のGGUFを使う',self.import_model),('外部ローカルLLMへ接続',self.use_external_llm)]:
+            ttk.Button(choices,text=label,command=command).pack(side='left',padx=3)
+        self.progress=tk.StringVar(value='モデルのライセンス・容量を確認してから導入してください。')
+        ttk.Label(self.setup,textvariable=self.progress,wraplength=950).grid(row=row+7,column=0,columnspan=3,sticky='w',pady=8)
+        ttk.Button(self.setup,text='取得を中断',command=self.download_cancel.set).grid(row=row+8,column=2)
+        ttk.Button(self.setup,text='公式更新を確認',command=self.check_update).grid(row=row+8,column=1,sticky='w')
+
+    def open_models(self,recommended=False):
+        from .model_browser import ModelBrowser
+        ModelBrowser(self,recommended)
+
+    def use_external_llm(self):
+        if self.fields['llm_url'].get()=='http://127.0.0.1:8766/v1':self.fields['llm_url'].set('http://127.0.0.1:1234/v1')
+        self.llm_url_entry.focus_set();self.llm_url_entry.selection_range(0,'end')
+        self.progress.set('ローカル推論接続先を入力して設定を保存してください。STARTで接続を確認します。')
+
+    def import_model(self):
+        path=filedialog.askopenfilename(filetypes=[('GGUFモデル','*.gguf')])
+        if path:self.install_model({'local_path':path,'name':Path(path).name})
 
     def browse(self, name):
         path = filedialog.askdirectory() if name == "root" else filedialog.askopenfilename(filetypes=[("実行ファイル", "*.exe"), ("すべて", "*.*")])
@@ -241,7 +279,7 @@ class App:
                 self.events.put(("error", (error_message(exc), traceback.format_exc())))
         threading.Thread(target=worker, daemon=True).start()
 
-    def install_model(self):
+    def install_model(self, selected):
         if self.controller or self.busy:
             return
         try:
@@ -250,7 +288,6 @@ class App:
         except Exception as exc:
             messagebox.showerror("設定を確認してください", error_message(exc))
             return
-        selected = next(x for x in self.models if x["name"] == self.model.get())
         self.download_cancel.clear()
         def install():
             self.llm.stop()
@@ -258,6 +295,7 @@ class App:
             def progress(done, total):
                 self.events.put(("progress", f"必要ファイルを取得中 {done / max(total, 1):.0%}"))
             self.llm.install(selected, progress, self.download_cancel)
+            self.events.put(("managed_ready", None))
         self.progress.set("配布情報を確認しています。")
         self.task(install, lambda _: self.progress.set("導入と推論試験が完了しました。STARTで始められます。"))
 
@@ -301,6 +339,8 @@ class App:
 
     def started(self, controller):
         self.controller = controller
+        self.graph_stamp=None
+        self.trace_sequence=0
         self.tabs.select(self.home)
 
     def pause(self):
@@ -321,7 +361,7 @@ class App:
 
     def closed_controller(self, _):
         self.controller = None
-        self.llm_status.set('● LLM 待機')
+        self.llm_status.set('○ LLM 待機')
         self.llm_label.configure(foreground='#9aabb9')
         self.status.set("停止しました。経験と研究内容を保存しました。")
 
@@ -411,8 +451,45 @@ class App:
             self.graph.create_line(*positions[a],*positions[b],fill='#698ea5',arrow='last')
         for node in data['nodes']:
             x,y=positions[node['id']]
-            self.graph.create_rectangle(x-125,y-40,x+125,y+40,fill='#263d4b',outline='#668398')
-            self.graph.create_text(x,y,text=node['description']+'\n'+node['role']+f" ／ {node['uses']}回",width=235,fill='#e1eaf0')
+            box=self.graph.create_rectangle(x-125,y-40,x+125,y+40,fill='#294c48' if node.get('active') else '#172630',outline='#668398')
+            label=self.graph.create_text(x,y,text=node['description']+'\n'+node['role']+f" ／ {node['uses']}回",width=235,fill='#e1eaf0')
+            def show(_,item=node):
+                lines=[item['description'],f"状態：{item.get('status','未報告')}",f"役割：{item['role']}",f"入力：{item['input']}",f"出力：{item['output']}",f"使用回数：{item['uses']}",f"有効性：{item['effectiveness']}",f"作成世代：{item.get('created_generation','未報告')}"]
+                messagebox.showinfo('Agentの能力自己記述','\n'.join(lines),parent=self.window)
+            self.graph.tag_bind(box,'<Button-1>',show);self.graph.tag_bind(label,'<Button-1>',show)
+
+    def render_streams(self,a):
+        fresh=[e for e in a.trace if e.sequence>self.trace_sequence]
+        if fresh:self.trace_sequence=fresh[-1].sequence
+        for widget,rows in [(self.live_trace,a.trace[-35:]),(self.input_log,tuple(e for e in a.trace if e.kind=='ACT')[-10:])]:
+            widget.configure(state='normal');widget.delete('1.0','end')
+            for event in rows:
+                stamp=time.strftime('%H:%M:%S',time.localtime(event.at))
+                widget.insert('end',f'{stamp} {event.kind} {event.text}\n','fresh' if time.time()-event.at<1 else '')
+            widget.see('end');widget.configure(state='disabled')
+
+    def render_mini_graph(self):
+        canvas=self.mini_graph
+        path=self.controller.revisions.root/self.controller.agent_id/'capabilities.json'
+        try:
+            stamp=(str(path),path.stat().st_mtime_ns,canvas.winfo_width(),any(time.time()-at<20 for at in self.graph_new.values()))
+            if stamp==getattr(self,'graph_stamp',None):return
+            self.graph_stamp=stamp;data=json.loads(path.read_text(encoding='utf-8'))
+        except (OSError,ValueError):
+            canvas.delete('all');canvas.create_text(10,20,anchor='nw',fill='#91a5b3',text='Agentからの自己記述を待っています');return
+        canvas.delete('all')
+        nodes=data.get('nodes',[]);width=max(120,canvas.winfo_width())
+        identities={n['id'] for n in nodes}
+        for identity in identities-self.graph_nodes:self.graph_new[identity]=time.time()
+        self.graph_nodes=identities
+        positions={n['id']:(width/2,25+i*42) for i,n in enumerate(nodes)}
+        for source,target in data.get('edges',[]):
+            if source in positions and target in positions:canvas.create_line(*positions[source],*positions[target],fill='#607b8a',arrow='last')
+        for node in nodes:
+            x,y=positions[node['id']];active=node.get('active',False)
+            canvas.create_rectangle(10,y-15,width-10,y+15,fill='#294c48' if active else '#172630',outline='#9cdfba' if time.time()-self.graph_new.get(node['id'],0)<20 else '#668398')
+            canvas.create_text(x,y,text=node.get('description','')[:30],fill='#dce5ed',width=width-30)
+        canvas.configure(scrollregion=canvas.bbox('all'))
 
     def check_update(self):
         self.status.set('固定Launcherから起動すると、起動時に公式更新を確認します。経験とAgent世代は引き継ぎます。')
@@ -430,6 +507,10 @@ class App:
                     self.busy = False
                     self.status.set(data[0])
                     self.raw_text.insert("end", data[1] + "\n")
+                elif kind == "managed_ready":
+                    self.fields["llm_url"].set("http://127.0.0.1:8766/v1")
+                    self.config=replace(self.config,llm_url="http://127.0.0.1:8766/v1",llm_model="local")
+                    self.config.save(self.config_path)
                 elif kind == "progress":
                     self.progress.set(data)
         except queue.Empty:
@@ -440,6 +521,7 @@ class App:
         elif not self.busy and self.stop_pending:
             self.stop_pending = False
             self.stop()
+        self.pc_performance.set(self.performance_monitor.text())
         ctrl = self.controller
         if ctrl:
             game=ctrl.game
@@ -452,9 +534,11 @@ class App:
             a=ctrl.activity.snapshot()
             self.status.set(ctrl.status + f" ／ 稼働 {int(time.monotonic()-ctrl.started)}秒")
             while not ctrl.messages.empty():self.activity.set(prose(ctrl.messages.get_nowait()))
-            self.llm_status.set('● LLM '+a.llm)
+            self.llm_status.set(('●' if a.llm=='推論中' else '○')+' LLM '+a.llm)
             self.llm_label.configure(foreground={'推論中':'#7fe0ae','評価中':'#e5bf72','復旧中':'#e5bf72','エラー':'#ee9191'}.get(a.llm,'#9aabb9'))
-            self.current_activity.set(f'現在：{a.phase} ／ 研究：{a.experiment}\n直前：{a.action} {a.duration:.2f}秒 ／ 変化 {a.change:.3f} ／ 次：{a.next}')
+            self.current_activity.set(f'現在：{a.phase}\n研究：{a.experiment}\n直前：{a.action} / {a.duration*1000:.0f}ms / 変化 {a.change:.3f}\n次：{a.next}')
+            self.render_streams(a)
+            self.render_mini_graph()
             self.timeline.set('\n'.join(e.text for e in a.events[-3:]))
             self.adoption.set(a.adoption if time.time()-a.adoption_at<20 else '')
             telemetry=ctrl.telemetry;c=telemetry.get('counts',{});storage=telemetry.get('storage',{})
@@ -463,6 +547,8 @@ class App:
                 text=f"保存領域 {storage['used']/1024**3:.2f} / {storage['quota']/1024**3:g}GB"
                 if storage['stage']!='通常':text+=' ／ 保存領域を自動整理しています'
                 self.storage_label.set(text)
+                self.storage_bar["value"]=100*storage["used"]/max(1,storage["quota"])
+                ttk.Style().configure("Storage.Horizontal.TProgressbar",background="#df9870" if self.storage_bar["value"]>=80 else "#64ab8b")
             if ctrl.latest and (ctrl.steps,self.view_mode.get(),self.preview.winfo_width(),self.preview.winfo_height(),a.attention)!=self.last_preview:
                 self.last_preview=(ctrl.steps,self.view_mode.get(),self.preview.winfo_width(),self.preview.winfo_height(),a.attention)
                 image = ctrl.latest.copy()
@@ -503,6 +589,7 @@ class App:
         self.task(finish, lambda _: self.destroy())
 
     def destroy(self):
+        self.performance_monitor.stop.set()
         self.layout.save()
         self.closing = True
         self.window.destroy()
