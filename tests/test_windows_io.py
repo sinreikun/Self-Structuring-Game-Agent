@@ -35,12 +35,14 @@ def test_real_capture_input_release_and_restart():
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Requires Windows desktop APIs')
-def test_background_input_and_capture_do_not_touch_foreground_app():
+def test_message_compatible_background_window_does_not_touch_foreground_app():
     import tkinter as tk
     from selfstruct.windows import WindowsGame
     from selfstruct.sandbox import difference
-    game = WindowsGame(sys.executable,[str(Path('tests/fixtures/window_game.py').resolve())],
-                       'SelfStruct I/O Test',['A'])
+    # A toolkit that discards key messages on deactivation is not a supported
+    # background-input consumer. Exercise the native message contract explicitly.
+    game = WindowsGame(sys.executable,[str(Path('tests/fixtures/message_window.py').resolve())],
+                       'SelfStruct Message Test',['A'])
     other = None
     try:
         game.start()
