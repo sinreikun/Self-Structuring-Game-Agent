@@ -75,3 +75,34 @@ def test_invalid_signature_and_unknown_schema_fall_back_and_expired_local_is_usa
     assert launcher.run()
     binary.write_bytes(b'corrupt')
     with pytest.raises(RuntimeError):launcher.run()
+
+
+@pytest.mark.skipif(__import__('os').name!='nt',reason='Windows application job')
+def test_owned_job_stops_child_after_launcher_parent_already_exited():
+    import os
+    import sys
+    from selfstruct.owned_process import start_application
+    app=start_application([sys.executable,str(Path('tests/fixtures/launcher.py').resolve())],dict(os.environ),retain_job=True)
+    try:
+        assert app.wait(timeout=10)==0
+        info=app.Accounting()
+        assert app.api.QueryInformationJobObject(app.job,1,__import__('ctypes').byref(info),__import__('ctypes').sizeof(info),None)
+        assert info.active>=1
+        app.terminate_tree()
+        assert app.job is None
+    finally:
+        app.terminate_tree()
+
+
+@pytest.mark.skipif(__import__('os').name!='nt',reason='Windows application job')
+def test_detaching_healthy_application_does_not_kill_it():
+    import os
+    import sys
+    from selfstruct.owned_process import start_application
+    app=start_application([sys.executable,str(Path('tests/fixtures/message_window.py').resolve())],dict(os.environ))
+    try:
+        app.detach()
+        assert app.job is None and app.poll() is None
+    finally:
+        if app.poll() is None:app.child.terminate()
+        app.child.wait(timeout=10)
