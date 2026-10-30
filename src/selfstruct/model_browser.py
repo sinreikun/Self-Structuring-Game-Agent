@@ -50,9 +50,7 @@ class ModelBrowser:
         self.ack=tk.BooleanVar();ttk.Checkbutton(controls,text='配布元のモデルカード・ライセンス条件を確認しました',variable=self.ack).pack(anchor='w')
         self.install_button=ttk.Button(controls,text='選択した量子化を導入・推論試験',command=self.install)
         self.install_button.pack(anchor='e',pady=8)
-        app.layout.pane('model-browser-panes',panes)
-        if 'model-browser-panes' not in app.layout.entries:
-            panes.after(180,lambda:panes.sashpos(0,max(60,int(panes.winfo_height()*.35))))
+        app.layout.pane('model-browser-panes',panes,default_fraction=.35)
         self.window.after(100,self.poll)
         if recommended:self.search()
 

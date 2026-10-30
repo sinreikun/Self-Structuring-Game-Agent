@@ -108,11 +108,11 @@ def test_local_gguf_import_validates_and_failed_probe_preserves_old_registration
     monkeypatch.setattr(llm,'start',lambda state=None,**k:starts.append(state) or True)
     monkeypatch.setattr('selfstruct.research.LocalLLM.complete',lambda *a,**k:(_ for _ in ()).throw(TimeoutError('timeout')))
     with pytest.raises(TimeoutError):llm.install({'local_path':str(source)},lambda *a:None,threading.Event())
-    assert json.loads(llm.state_path.read_text())==old
+    assert json.loads(llm.state_path.read_text(encoding='utf-8'))==old
     assert starts[-1]==old
     monkeypatch.setattr('selfstruct.research.LocalLLM.complete',lambda *a,**k:'こんにちは')
     llm.install({'local_path':str(source)},lambda *a:None,threading.Event())
-    state=json.loads(llm.state_path.read_text())
+    state=json.loads(llm.state_path.read_text(encoding='utf-8'))
     assert state['validation']['minimal_inference']
     assert state['validation']['code']=='未試験'
     assert state['model_info']['license']=='ユーザー指定・要確認'

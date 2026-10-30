@@ -58,7 +58,7 @@ class Layout:
             try:widget.state('zoomed')
             except Exception:pass
 
-    def pane(self,id,widget):
+    def pane(self,id,widget,default_fraction=None,default_tail=180):
         self.widgets[id]=('pane',widget)
         def restore():
             entry=self.entries.get(id,{})
@@ -66,11 +66,14 @@ class Layout:
             positions=entry.get('sashes',[])
             if not isinstance(positions,list):return
             extent=widget.winfo_height() if str(widget.cget('orient'))=='vertical' else widget.winfo_width()
-            if not positions and len(widget.panes())==2:positions=[max(80,extent-180)]
+            if not widget.winfo_ismapped() or extent<100:return
+            if not positions and len(widget.panes())==2:
+                positions=[int(extent*default_fraction) if default_fraction is not None else max(80,extent-default_tail)]
             for i,value in enumerate(positions[:max(0,len(widget.panes())-1)]):
                 if type(value)==int:
                     try:widget.sashpos(i,max(50,min(value,max(50,extent-50))))
                     except Exception:pass
+        widget.bind("<Map>",lambda _:widget.after_idle(restore),add="+")
         widget.after(150,restore)
 
     def notebook(self,id,widget):

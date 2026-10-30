@@ -115,9 +115,7 @@ class App:
         readout=ttk.Frame(self.console,padding=8,width=340)
         readout.pack_propagate(False)
         self.console.add(screen,weight=4);self.console.add(readout,weight=0)
-        if 'lab-horizontal' not in self.layout.entries:
-            self.console.after(180,lambda:self.console.sashpos(0,max(450,self.console.winfo_width()-350)))
-        self.layout.pane('lab-horizontal',self.console)
+        self.layout.pane('lab-horizontal',self.console,default_tail=350)
         self.layout.panel('lab-game-screen',screen)
         self.layout.panel('lab-activity',readout)
         self.view_mode=tk.StringVar(value='現在の画面')
