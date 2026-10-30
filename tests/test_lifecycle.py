@@ -21,6 +21,7 @@ def test_autonomous_research_candidate_live_promotion_and_rollback(tmp_path, mon
                                         "evidence":[evidence],"action":0,"change_probability":.95}],
                            "problem":"予測が未確認のままです。", "reason":"独立した経験で変化の頻度を予測します。", "wat":proposal})
     monkeypatch.setattr("selfstruct.research.LocalLLM.complete", complete)
+    monkeypatch.setattr("selfstruct.research.LocalLLM.count_tokens",lambda self,prompt:2000)
     ctrl = Controller(Config(root=str(tmp_path), keys=["A", "B"], research_every=48,
                              quota_bytes=128*1024**2, restart_after=10000), SyntheticGame())
     fast_id = ctrl.revisions.create(fast)

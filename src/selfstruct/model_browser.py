@@ -32,7 +32,7 @@ class ModelBrowser:
         ttk.Label(self.window,text=f'CPU：{system_info()["cpu"]} / 空きRAM {self.pc.get("ram",0):.1f}GB / ディスク {self.pc.get("free",0):.1f}GB',wraplength=1050).pack(fill='x',padx=10)
         self.status=tk.StringVar(value='GGUF配布メタデータで検索します。適合度は目安で、速度や研究成功を保証しません。')
         ttk.Label(self.window,textvariable=self.status,wraplength=1050).pack(fill='x',padx=10,pady=6)
-        ttk.Label(self.window,text='ライセンス絞り込みは既知の寛容ライセンス識別子に基づく目安です。独自条件はモデルカードで確認してください。\n高性能＝14B以上の規模目安。VRAM条件は容量比較であり、現在の管理RuntimeはCPU版です。',wraplength=1050).pack(side='bottom',fill='x',padx=10,pady=6)
+        ttk.Label(self.window,text='ライセンス絞り込みは既知の寛容ライセンス識別子に基づく目安です。独自条件はモデルカードで確認してください。\n高性能＝14B以上の規模目安。VRAM条件は容量比較であり、対応PCではGPU版を自動導入します。',wraplength=1050).pack(side='bottom',fill='x',padx=10,pady=6)
         panes=ttk.Panedwindow(self.window,orient='vertical');panes.pack(fill='both',expand=True,padx=10)
         upper=ttk.Frame(panes);lower=ttk.Frame(panes);panes.add(upper,weight=1);panes.add(lower,weight=1)
         columns=('author','scale','updated','downloads','license','quants','size','fit')

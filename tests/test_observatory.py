@@ -147,7 +147,7 @@ def test_observatory_gui_diagnostics_layout_activity_and_no_full_knowledge_poll(
     monkeypatch.setattr(gui,'default_root',lambda:tmp_path/'settings')
     monkeypatch.setattr(gui,'Controller',lambda config:Controller(config,SyntheticGame()))
     monkeypatch.setattr('selfstruct.research.LocalLLM.health',lambda self:None)
-    monkeypatch.setattr('selfstruct.resources.ManagedLLM.start',lambda self:False)
+    monkeypatch.setattr('selfstruct.resources.ManagedLLM.start',lambda self,**kwargs:False)
     copied=[];monkeypatch.setattr(diagnostics,'copy_file',lambda path,owner:copied.append(path))
     exe=tmp_path/'game.exe';exe.touch()
     Config(root=str(tmp_path/'data'),game_exe=str(exe),keys=['A','B'],research_every=10000).save(tmp_path/'settings'/'host'/'settings.json')

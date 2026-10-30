@@ -100,7 +100,7 @@ def test_local_gguf_import_validates_and_failed_probe_preserves_old_registration
     from selfstruct.config import write_json
     source=tmp_path/'user.gguf';source.write_bytes(b'GGUF'+b'x'*30)
     engine=tmp_path/'assets'/'engine'/'llama-server';engine.parent.mkdir(parents=True);engine.write_bytes(b'engine')
-    monkeypatch.setattr(Catalog,'resolve_engine',lambda:{'engine':'fixture'})
+    monkeypatch.setattr(Catalog,'resolve_engine',lambda **kwargs:{'engine':'fixture'})
     monkeypatch.setattr(Gateway,'download',lambda *a,**k:engine)
     monkeypatch.setattr(Gateway,'extract_engine',lambda *a:engine)
     llm=ManagedLLM(tmp_path,100*1024**2);old={'engine':'old','model':'old','engine_sha256':'old','model_sha256':'old'}

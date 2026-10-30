@@ -27,29 +27,70 @@ class LocalLLM:
         if parsed.scheme != "http" or parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
             raise ValueError("LLM must be local")
         self.url, self.model = url.rstrip("/"), model
+        self.managed = parsed.port==8766
         # A loopback inference engine must not send prompts through an external proxy.
         self.opener = build_opener(ProxyHandler({}))
 
     def health(self) -> None:
         with self.opener.open(self.url + "/models", timeout=3) as response:
-            if not json.loads(response.read(65536)).get("data"):
+            models=json.loads(response.read(65536)).get("data")
+            if models:self.loaded_model=models[0].get("id",self.model)
+            if not models:
                 raise OSError("LLM has no loaded model")
 
-    def complete(self, prompt: str, max_tokens: int = 4096, json_mode: bool = False) -> str:
-        payload = {"model": self.model, "messages": [{"role": "user", "content": prompt}],
-                   "temperature": .2, "max_tokens": max_tokens}
-        if json_mode:
-            payload["response_format"] = {"type": "json_object"}
-        body = json.dumps(payload).encode()
-        req = Request(self.url + "/chat/completions", data=body, headers={"Content-Type": "application/json"})
-        with self.opener.open(req, timeout=120) as response:
-            data = response.read(512 * 1024 + 1)
-        if len(data) > 512 * 1024:
-            raise ValueError("LLM response too large")
-        choice = json.loads(data)["choices"][0]
-        if choice.get("finish_reason") == "length":
-            raise ValueError("推論の出力が途中で終了しました。未完成の提案は実行しません。")
-        return choice["message"]["content"]
+    def count_tokens(self,prompt):
+        req=Request(self.url.removesuffix('/v1')+'/tokenize',data=json.dumps({'content':prompt,'add_special':True}).encode(),headers={'Content-Type':'application/json'})
+        with self.opener.open(req,timeout=3) as response:
+            return len(json.loads(response.read(1024**2))['tokens'])
+
+    def complete(self, prompt: str, max_tokens: int = 2048, json_mode: bool = False,
+                 *, allow_partial=False, timeout=600, cancel=None) -> str:
+        import http.client
+        import socket
+        from urllib.parse import urlparse
+        cancel=cancel or getattr(self,'cancel_event',None)
+        self.last_completion={"status":"started","max_output_tokens":max_tokens,"deadline_seconds":timeout}
+        if cancel and cancel.is_set():raise InterruptedError('推論を中断しました。')
+        parsed=urlparse(self.url)
+        connection=http.client.HTTPConnection(parsed.hostname,parsed.port or 80,timeout=3)
+        finished=threading.Event();expired=threading.Event();deadline=time.monotonic()+timeout
+        def interrupt():
+            while not finished.wait(.05):
+                if (cancel and cancel.is_set()) or time.monotonic()>=deadline:
+                    expired.set()
+                    sock=connection.sock
+                    if sock:
+                        try:sock.shutdown(socket.SHUT_RDWR)
+                        except OSError:pass
+                    return
+        watcher=threading.Thread(target=interrupt,name='inference-cancel',daemon=True)
+        payload={'model':self.model,'messages':[{'role':'user','content':prompt}],
+                 'temperature':.2,'max_tokens':max_tokens}
+        if self.managed:payload['chat_template_kwargs']={'enable_thinking':False}
+        if json_mode:payload['response_format']={'type':'json_object'}
+        watcher.start()
+        try:
+            connection.connect()
+            if cancel and cancel.is_set():raise InterruptedError('推論を中断しました。')
+            connection.sock.settimeout(timeout)
+            connection.request('POST',parsed.path+'/chat/completions',json.dumps(payload).encode(),{'Content-Type':'application/json'})
+            response=connection.getresponse()
+            if response.status!=200:raise OSError(f'Local inference HTTP {response.status}')
+            data=response.read(512*1024+1)
+            if cancel and cancel.is_set():raise InterruptedError('推論を中断しました。')
+            if expired.is_set():raise TimeoutError('推論の制限時間を超えました。')
+            if len(data)>512*1024:raise ValueError('LLM response too large')
+            choice=json.loads(data)['choices'][0]
+            self.last_completion={'finish_reason':choice.get('finish_reason'),'usage':json.loads(data).get('usage',{}),'elapsed':timeout-(deadline-time.monotonic())}
+            if choice.get('finish_reason')=='length' and not allow_partial:
+                raise ValueError('推論の出力が途中で終了しました。未完成の提案は実行しません。')
+            return choice['message'].get('content') or (choice['message'].get('reasoning_content','') if allow_partial else '')
+        except Exception:
+            if cancel and cancel.is_set():raise InterruptedError('推論を中断しました。') from None
+            if expired.is_set():raise TimeoutError('推論の制限時間を超えました。') from None
+            raise
+        finally:
+            finished.set();connection.close();watcher.join(timeout=1)
 
 
 def evaluation_worker(source: str, baseline: str, rows: list[dict], folder: str, keys: list[str], output) -> None:
@@ -162,6 +203,20 @@ op=research,prompt=研究指示で非同期LLM作業を依頼し、返されたj
 """
 
 
+def research_prompt(source,rows,keys,reports):
+    summaries=[{'id':r['id'],'a':keys.index(r['action']),'f':r['feature'],
+                'd':round(r['change'],4)} for r in rows[-16:]]
+    history=[{'summary':r['summary'][:180]} for r in reports[:2]]
+    prompt='経験の略記：a=入力番号、f=画像特徴、d=画面変化。\n'
+    prompt+='過去評価：'+json.dumps(history,ensure_ascii=False,separators=(',',':'))+'\n'
+    prompt+=PROMPT.format(source=source,rows=json.dumps(summaries,separators=(',',':')))
+    # UTF-8 byte budget is conservative for the 8192-token managed context.
+    # Never silently cut an Agent program or invent an answer to fit the budget.
+    if len(prompt.encode('utf-8'))>20000:
+        raise InferenceUnavailable('研究入力がコンテキスト予算を超えています。Agentの自己記述を短くしてください。')
+    return prompt
+
+
 class Scientist:
     def __init__(self, store: Store, revisions: Revisions, client: LocalLLM, keys: list[str], every: int, notify, activity=None):
         self.store, self.revisions, self.client = store, revisions, client
@@ -169,6 +224,7 @@ class Scientist:
         from .activity import Activity
         self.activity = activity or Activity()
         self.stop_event = threading.Event()
+        if isinstance(client,LocalLLM):client.cancel_event=self.stop_event
         self.wake = threading.Event()
         self.lock = threading.Lock()
         self.live: dict | None = None
@@ -186,6 +242,9 @@ class Scientist:
             result=self.client.complete(*args,**kwargs)
             self.activity.update(llm='待機')
             return result
+        except InterruptedError:
+            self.activity.update(llm='待機')
+            raise
         except TimeoutError as error:
             self.activity.update(llm='エラー');self.activity.emit('llm_timeout')
             raise InferenceUnavailable('LLM timeout') from error
@@ -199,7 +258,7 @@ class Scientist:
     def close(self):
         self.stop_event.set()
         self.wake.set()
-        self.thread.join(timeout=125)
+        self.thread.join(timeout=10)
         if self.thread.is_alive():
             raise TimeoutError("Research is still stopping")
 
@@ -310,6 +369,9 @@ class Scientist:
                 raise
             except Exception:
                 log.exception("Research failed")
+                if self.stop_event.is_set():
+                    self.store.set_job(jid,"pending")
+                    continue
                 self.failed_calls += 1
                 self.store.set_job(jid, "pending")
                 if self.recover_llm and 2 <= self.failed_calls <= 4:
@@ -339,11 +401,11 @@ class Scientist:
                 index = self.keys.index(key) + 1
                 self.store.knowledge("observation", f"入力候補{index}の後、画面変化を{len(selected)}回中{sum(r['change'] > .01 for r in selected)}回観測しました。意味と因果関係は未確認です。",
                                      "observed", "unknown", [r["id"] for r in selected[-32:]])
-        summaries = [{k: r[k] for k in ("id", "feature", "change", "duration", "cost")} |
-                     {"action": self.keys.index(r["action"])} for r in rows[-64:]]
-        prompt = "過去の自己改善評価（コードの不備は修正し、同じ失敗を繰り返さないこと）:\n" + json.dumps(self.store.reports()[:2], ensure_ascii=False)[:6000] + "\n"
-        prompt += PROMPT.format(source=self.revisions.source(), rows=json.dumps(summaries))
-        response = self.complete(prompt, json_mode=True)
+        prompt=research_prompt(self.revisions.source(),rows,self.keys,self.store.reports()[:2])
+        if isinstance(self.client,LocalLLM) and self.client.url=='http://127.0.0.1:8766/v1':
+            count=self.client.count_tokens(prompt)
+            if count+2048+256>8192:raise InferenceUnavailable('研究入力が8192トークンの予算を超えました。')
+        response = self.complete(prompt, max_tokens=2048, json_mode=True)
         self.store.proposal(jid, response)
         if response.strip().startswith("```"):
             response = response.strip().split("\n", 1)[1].rsplit("```", 1)[0]

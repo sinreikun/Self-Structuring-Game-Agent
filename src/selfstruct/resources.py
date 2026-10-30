@@ -7,6 +7,7 @@ import json
 import logging
 from logging.handlers import RotatingFileHandler
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -221,8 +222,8 @@ class Catalog:
                 "url": f"https://huggingface.co/{repo}/resolve/{data['sha']}/{filename}"}
 
     @staticmethod
-    def resolve_engine(target: str | None = None) -> dict:
-        suffix = "bin-win-cpu-x64.zip" if (target or os.name) == "nt" else "bin-ubuntu-x64.tar.gz"
+    def resolve_engine(target: str | None = None, backend: str = "cpu") -> dict:
+        suffix = f"bin-win-{backend}-x64.zip" if (target or os.name) == "nt" else "bin-ubuntu-x64.tar.gz"
         releases = fetch_json("https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=10")
         match = next(((release, asset) for release in releases if not release.get("draft")
                       for asset in release["assets"] if asset["name"].endswith(suffix)), None)
@@ -232,8 +233,15 @@ class Catalog:
         digest = asset.get("digest") or ""
         if not digest.startswith("sha256:"):
             raise ValueError("推論エンジンの公式SHA-256がありません。検証なしでは導入しません。")
-        return {"name": "llama.cpp CPU", "version": data["tag_name"], "license": "MIT", "trust": "Trusted",
+        return {"name": "llama.cpp "+backend.upper(), "backend": backend, "version": data["tag_name"], "license": "MIT", "trust": "Trusted",
                 "size": asset["size"], "sha256": digest.removeprefix("sha256:"), "url": asset["browser_download_url"]}
+
+
+def preferred_backend():
+    if os.name=='nt':
+        from .performance import windows_adapters
+        if any(g.get('vram_gb',0)>0 for g in windows_adapters()):return 'vulkan'
+    return 'cpu'
 
 
 class ManagedLLM:
@@ -243,10 +251,14 @@ class ManagedLLM:
         self.state_path = root / "host" / "llm.json"
         self.log = None
         self.reader = None
+        self.current_info = {}
+        self.active_state = None
+        self.offloaded_layers = 0
+        self.total_layers = 0
 
     def install(self, selected: dict, progress, cancel: threading.Event) -> None:
         gateway = Gateway(self.root, self.quota)
-        engine_item = Catalog.resolve_engine()
+        engine_item = Catalog.resolve_engine(backend=preferred_backend())
         engine = gateway.extract_engine(gateway.download(engine_item, "engine", progress, cancel))
         if selected.get('local_path'):
             source=Path(selected['local_path'])
@@ -276,24 +288,29 @@ class ManagedLLM:
         old = json.loads(self.state_path.read_text(encoding="utf-8")) if self.state_path.exists() else None
         self.stop()
         state = {"engine": str(engine), "model": str(model), "engine_sha256": Gateway.digest(engine),
-                 "model_sha256": model_item["sha256"], "previous": old}
+                 "model_sha256": model_item["sha256"], "model_info": model_item, "backend":engine_item.get("backend","cpu"), "previous": old}
         try:
             self.start(state, cancel=cancel)
+            state=dict(self.active_state or state)
+            state["backend"]=self.current_info.get("backend",state.get("backend","cpu"))
             from .research import LocalLLM
             if cancel.is_set():raise InterruptedError('導入を中断しました。')
-            response=LocalLLM("http://127.0.0.1:8766/v1", "local").complete("日本語で短く挨拶してください。", max_tokens=32)
+            probe=LocalLLM("http://127.0.0.1:8766/v1", "local")
+            response=probe.complete("日本語で短く挨拶してください。", max_tokens=128,allow_partial=True,cancel=cancel)
             if cancel.is_set():raise InterruptedError('導入を中断しました。')
             if not response.strip():raise ValueError('最小推論試験で応答を確認できませんでした。')
-            state['validation']={'startup':True,'minimal_inference':True,'checked_at':time.time(),'japanese_quality':'未評価','json':'未試験','code':'未試験'}
+            state['validation']={'completion':getattr(probe,'last_completion',{}),'startup':True,'minimal_inference':True,'checked_at':time.time(),'japanese_quality':'未評価','json':'未試験','code':'未試験'}
             state['model_info']=model_item
             write_json(self.state_path, state)
-        except Exception:
+            write_json(self.root/'host'/'llm-install-result.json',{'status':'passed','model':model_item.get('name',''),'at':time.time()})
+        except Exception as error:
+            write_json(self.root/'host'/'llm-install-result.json',{'status':'failed','model':model_item.get('name',''),'error_type':type(error).__name__,'error':str(error)[:1000],'rolled_back':bool(old),'at':time.time()})
             self.stop()
             if old:
                 self.start(old)
             raise
 
-    def start(self, state: dict | None = None, cancel: threading.Event | None = None) -> bool:
+    def start(self, state: dict | None = None, cancel: threading.Event | None = None, *, auto_gpu=True) -> bool:
         if self.process and self.process.poll() is None:
             return True
         if self.process or self.log:
@@ -302,6 +319,22 @@ class ManagedLLM:
             if not self.state_path.exists():
                 return False
             state = json.loads(self.state_path.read_text(encoding="utf-8"))
+        if state.get('backend')=='vulkan' and auto_gpu:
+            try:
+                result=self.start(state,cancel,auto_gpu=False)
+                if not self.offloaded_layers:raise OSError('GPUへの層の転送を確認できませんでした。ドライバーまたはVRAM容量を確認してください。')
+                return result
+            except InterruptedError:raise
+            except Exception as error:
+                self.stop()
+                gateway=Gateway(self.root,self.quota)
+                cpu=state.get('cpu_fallback')
+                if not cpu:
+                    item=Catalog.resolve_engine(backend='cpu')
+                    path=gateway.extract_engine(gateway.download(item,'engine',cancel=cancel))
+                    cpu={'engine':str(path),'engine_sha256':Gateway.digest(path)}
+                fallback={**state,**cpu,'backend':'cpu','gpu_error':str(error)[:500]}
+                return self.start(fallback,cancel,auto_gpu=False)
         engine, model = Path(state["engine"]), Path(state["model"])
         for path, digest in ((engine, state["engine_sha256"]), (model, state["model_sha256"])):
             if not path.resolve().is_relative_to((self.root / "assets").resolve()) or Gateway.digest(path) != digest:
@@ -315,20 +348,52 @@ class ManagedLLM:
             path = (expanded / name).resolve()
             if not path.is_relative_to(expanded) or Gateway.digest(path) != digest:
                 raise ValueError("推論エンジンの共有ライブラリの完全性を確認できません。")
+        if auto_gpu and state.get('backend','cpu')=='cpu' and preferred_backend()=='vulkan':
+            try:
+                gateway=Gateway(self.root,self.quota)
+                item=Catalog.resolve_engine(backend='vulkan')
+                gpu_engine=gateway.extract_engine(gateway.download(item,'engine',cancel=cancel))
+                upgraded={**state,'engine':str(gpu_engine),'engine_sha256':Gateway.digest(gpu_engine),'backend':'vulkan',
+                          'cpu_fallback':{'engine':str(engine),'engine_sha256':state['engine_sha256']}}
+                self.start(upgraded,cancel=cancel)
+                upgraded=dict(self.active_state or upgraded)
+                write_json(self.state_path,upgraded)
+                return True
+            except InterruptedError:raise
+            except Exception as error:
+                self.stop()
+                return self.start({**state,'gpu_error':str(error)[:500]},cancel,auto_gpu=False)
+        self.offloaded_layers=0;self.total_layers=0
+        info=state.get('model_info') or {}
+        if not info:
+            receipt=model.parent/'receipt.json'
+            if receipt.exists():info=json.loads(receipt.read_text(encoding='utf-8'))
+        display_name=info.get('name','取得済みモデル '+state['model_sha256'][:10])
+        if info.get('url','').startswith('https://huggingface.co/'):
+            display_name='/'.join(urlparse(info['url']).path.strip('/').split('/')[:2])
+        self.current_info={'name':display_name,'backend':state.get('backend','cpu'),'status':'読込中','gpu_layers':0,'gpu_error':state.get('gpu_error','')}
         log_path = self.root / "host" / "llm.log"
         # Bound logs across restarts.
         if log_path.exists() and log_path.stat().st_size > 4 * 1024**2:
             log_path.unlink()
+        log_path.parent.mkdir(parents=True,exist_ok=True)
         self.log = RotatingFileHandler(log_path, maxBytes=1024**2, backupCount=2, encoding="utf-8")
-        self.process = subprocess.Popen([str(engine), "-m", str(model), "--host", "127.0.0.1", "--port", "8766",
-                                         "--alias", "local", "-c", "8192", "--parallel", "1"],
+        command=[str(engine), '-m', str(model), '--host', '127.0.0.1', '--port', '8766',
+                 '--alias','local','-c','8192','--parallel','1','-lv','4']
+        if state.get('backend')=='vulkan':command+=['-ngl','auto','--fit','on','--fit-target','1024']
+        else:command+=['-ngl','0']
+        self.process = subprocess.Popen(command,
                                         cwd=str(engine.parent), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         stream, handler = self.process.stdout, self.log
         def drain():
             try:
                 while data := stream.readline(8192):
-                    handler.emit(logging.LogRecord("llm", logging.INFO, "", 0, data.decode(errors="replace").rstrip(), (), None))
+                    text=data.decode(errors='replace').rstrip()
+                    match=re.search(r'offloaded (\d+)/(\d+) layers',text)
+                    if match:
+                        self.offloaded_layers=int(match[1]);self.total_layers=int(match[2])
+                    handler.emit(logging.LogRecord("llm", logging.INFO, "", 0, text, (), None))
             finally:
                 stream.close()
         self.reader = threading.Thread(target=drain, name="llm-log", daemon=True)
@@ -345,6 +410,9 @@ class ManagedLLM:
                 raise OSError("推論エンジンの起動に失敗しました。")
             try:
                 client.health()
+                self.active_state=dict(state)
+                self.current_info={**self.current_info,'status':'利用可能','gpu_layers':self.offloaded_layers,'total_layers':self.total_layers}
+                write_json(self.root/'host'/'llm-runtime.json',self.current_info)
                 return True
             except OSError:
                 time.sleep(.5)

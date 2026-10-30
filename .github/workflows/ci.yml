@@ -119,7 +119,11 @@ jobs:
       - if: runner.os == 'Windows' && steps.validation.outputs.scope == 'full' && (github.event_name == 'push' || inputs.validate_model)
         name: Verify real managed inference
         shell: pwsh
-        run: python tools/check_managed_inference.py --root "$env:RUNNER_TEMP/selfstruct-model-check" --report dist/inference-validation.json
+        run: |
+          python tools/check_managed_inference.py --root "$env:RUNNER_TEMP/selfstruct-model-check" --report dist/inference-validation.json
+          if ($LASTEXITCODE -ne 0) { throw 'Managed inference validation failed' }
+          python -m tools.check_real_research --model-root "$env:RUNNER_TEMP/selfstruct-model-check" --experiment-root "$env:RUNNER_TEMP/selfstruct-real-research" --report dist/inference-validation.json
+          if ($LASTEXITCODE -ne 0) { throw 'Real research validation failed' }
       - if: runner.os == 'Windows' && steps.validation.outputs.scope == 'target-process'
         name: Reuse verified unchanged inference baseline
         run: python -m tools.select_validation --reuse-report dist/inference-validation.json

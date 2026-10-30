@@ -112,7 +112,7 @@ def create_diagnostics(root: Path, store=None, config=None, activity=None, gui=N
                         put(f'assets-metadata/{kind}-{index}.json',json.dumps(redact(safe),ensure_ascii=False))
                     except (OSError,ValueError):pass
             # Explicit allowlist: no model/runtime, environment dump, arbitrary Agent files.
-            for name in ('host.log','host.log.1','llm.log','llm.json'):
+            for name in ('host.log','host.log.1','llm.log','llm.json','llm-runtime.json','llm-install-result.json'):
                 path=root/'host'/name
                 if path.is_file() and not path.is_symlink():
                     with path.open('rb') as f:

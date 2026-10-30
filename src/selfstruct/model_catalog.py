@@ -54,11 +54,15 @@ def fit(size,pc,context=8192):
     ram=pc.get('ram',0);free=pc.get('free',0)
     if free and free<gb+.5:return '非推奨','空きディスク容量不足'
     if not ram:return '要確認','空きRAMを取得できません'
+    vram=max((g.get('vram_gb',0) for g in pc.get('gpus',[])),default=0)
+    detail=f'context {context} / 空きRAM {ram:.1f}GB / 専用VRAM {vram:.1f}GB。KVキャッシュ・ドライバー・速度はモデル依存'
+    if vram>0 and ram>=3:
+        if gb+overhead-1.5<max(0,vram-1):return '推奨','GPU推論の見込み / '+detail
+        if need<ram+max(0,vram-2)-2:return 'CPU併用見込み','一部をVRAMへ転送する見込み / '+detail
     if need>ram:return '非推奨',f'推定RAM {need:.1f}GB / 空き {ram:.1f}GB'
     if need>ram*.8:return 'メモリ余裕少',f'推定RAM {need:.1f}GB'
-    vram=max((g.get('vram_gb',0) for g in pc.get('gpus',[])),default=0)
     label='推奨' if need<ram*.65 and gb<8 else '動作見込み'
-    return label,f'CPU Runtime / 推定RAM {need:.1f}GB、context {context}。VRAM {vram:.1f}GB。速度・KVキャッシュはモデル依存'
+    return label,f'CPU推論の見込み / 推定RAM {need:.1f}GB / '+detail
 
 
 def matches(data,selected,pc):
@@ -82,7 +86,7 @@ def matches(data,selected,pc):
     limits=[v for k,v in caps.items() if k in selected]
     if limits:candidates=[f for f in candidates if any(lo<f['size']/1024**3<=hi for lo,hi in limits)]
     if 'このPCで推奨' in selected:candidates=[f for f in candidates if fit(f['size'],pc)[0]=='推奨']
-    if 'RAM内に収まりやすい' in selected:candidates=[f for f in candidates if fit(f['size'],pc)[0] in {'推奨','動作見込み'}]
+    if 'RAM内に収まりやすい' in selected:candidates=[f for f in candidates if f['size']/1024**3+3<pc.get('ram',0)]
     if 'VRAM内に収まりやすい' in selected:
         vram=max((g.get('vram_gb',0) for g in pc.get('gpus',[])),default=0)
         candidates=[f for f in candidates if f['size']/1024**3+3<vram]

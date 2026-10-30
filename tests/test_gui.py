@@ -16,7 +16,7 @@ def test_gui_start_pause_stop_newborn(tmp_path, monkeypatch):
     monkeypatch.setattr(gui, 'default_root', lambda: tmp_path / 'settings')
     monkeypatch.setattr(gui, 'Controller', lambda config: Controller(config, SyntheticGame()))
     monkeypatch.setattr('selfstruct.research.LocalLLM.health', lambda self: None)
-    monkeypatch.setattr('selfstruct.resources.ManagedLLM.start', lambda self: False)
+    monkeypatch.setattr('selfstruct.resources.ManagedLLM.start', lambda self,**kwargs: False)
     executable = tmp_path / 'game.exe'
     executable.touch()
     config = Config(root=str(tmp_path/'data'), game_exe=str(executable), keys=['A','B'], research_every=10000)
@@ -41,6 +41,9 @@ def test_gui_start_pause_stop_newborn(tmp_path, monkeypatch):
     try:
         app.start()
         until(lambda: app.controller and app.controller.steps >= 3)
+        app.llm.current_info={"name":"Test/Model-GGUF","backend":"vulkan","gpu_layers":12,"total_layers":20,"status":"利用可能"}
+        app.poll()
+        assert "Test/Model-GGUF" in app.active_model.get() and "12/20層" in app.active_model.get()
         app.pause()
         assert app.controller.paused.is_set()
         assert not app.controller.game.held
@@ -62,5 +65,6 @@ def test_gui_start_pause_stop_newborn(tmp_path, monkeypatch):
         if app.controller:
             app.controller.close()
         app.llm.stop()
+        app.performance_monitor.stop.set()
         app.closing = True
         window.destroy()

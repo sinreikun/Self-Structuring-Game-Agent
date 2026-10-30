@@ -123,9 +123,13 @@ class App:
         self.preview=tk.Canvas(screen,background='#06090c',highlightthickness=1,highlightbackground='#63717e')
         self.preview.pack(fill='both',expand=True)
         self.preview.create_text(24,30,anchor='nw',fill='#91a5b3',text='ゲーム画面は接続後に表示されます。')
+        self.pc_performance=tk.StringVar(value='PC負荷を取得中…')
+        ttk.Label(readout,textvariable=self.pc_performance,wraplength=320).pack(side='bottom',fill='x',pady=6)
         self.llm_status=tk.StringVar(value='○ LLM 待機')
         self.llm_label=ttk.Label(readout,textvariable=self.llm_status)
         self.llm_label.pack(anchor='w')
+        self.active_model=tk.StringVar(value='使用モデル：未接続')
+        ttk.Label(readout,textvariable=self.active_model,wraplength=320,foreground='#a8c9dd').pack(fill='x',pady=4)
         self.current_activity=tk.StringVar(value='現在：停止中\n研究：観測を待っています\n直前：—\n次：STARTで開始')
         ttk.Label(readout,textvariable=self.current_activity,wraplength=320).pack(fill='x',pady=6)
         self.timeline=tk.StringVar(value='最近のイベントは開始後に表示されます。')
@@ -147,8 +151,6 @@ class App:
         self.mini_graph.bind('<MouseWheel>',lambda e:self.mini_graph.yview_scroll(-1 if e.delta>0 else 1,'units'))
         self.layout.panel('lab-capability-graph',self.mini_graph)
         self.mini_graph.bind('<Button-1>',lambda _:self.tabs.select(self.capabilities))
-        self.pc_performance=tk.StringVar(value='PC負荷を取得中…')
-        ttk.Label(readout,textvariable=self.pc_performance,wraplength=320).pack(fill='x',pady=6)
         footer=ttk.Frame(self.home);footer.pack(fill='x',pady=(8,0))
         for title,command in [('START',self.start),('PAUSE',self.pause),('STOP',self.stop),('NEWBORN',self.newborn),('診断ZIPをコピー',self.export)]:
             ttk.Button(footer,text=title,command=command).pack(side='left',padx=(0,4))
@@ -318,9 +320,12 @@ class App:
                 self.llm.stop()
                 self.llm = ManagedLLM(Path(config.root), config.quota_bytes)
             if config.llm_url == "http://127.0.0.1:8766/v1":
-                self.llm.start()
+                self.llm.start(cancel=self.download_cancel)
             from .research import LocalLLM
-            LocalLLM(config.llm_url, config.llm_model).health()
+            client=LocalLLM(config.llm_url,config.llm_model)
+            client.health()
+            if self.download_cancel.is_set():raise InterruptedError('開始を中断しました。')
+            self.external_model_name=getattr(client,"loaded_model",config.llm_model)
             controller = Controller(config)
             if config.llm_url == "http://127.0.0.1:8766/v1" and self.llm.state_path.exists():
                 def recover_llm():
@@ -336,11 +341,14 @@ class App:
         except Exception as exc:
             messagebox.showerror("設定を確認してください", error_message(exc))
             return
+        self.download_cancel.clear()
         self.status.set("ローカル推論とゲームの接続を確認しています。")
         self.task(operation, self.started)
 
     def started(self, controller):
         self.controller = controller
+        if self.download_cancel.is_set():
+            self.stop();return
         self.graph_stamp=None
         self.trace_sequence=0
         self.tabs.select(self.home)
@@ -350,6 +358,7 @@ class App:
             self.controller.pause()
 
     def stop(self):
+        self.download_cancel.set()
         self.config = replace(self.config, auto_run=False)
         self.config.save(self.config_path)
         if self.controller:
@@ -524,6 +533,13 @@ class App:
             self.stop_pending = False
             self.stop()
         self.pc_performance.set(self.performance_monitor.text())
+        info=self.llm.current_info
+        if self.config.llm_url!='http://127.0.0.1:8766/v1':
+            self.active_model.set('使用モデル：'+getattr(self,'external_model_name',self.config.llm_model)+' / 外部ローカル接続（GPU使用は接続先で管理）')
+        elif info:
+            layers=info.get('gpu_layers',0)
+            mode=f"GPU / VRAM使用 / {layers}/{info.get('total_layers','?')}層" if layers else ('GPUオフロード未確認' if info.get('backend')=='vulkan' else 'CPU推論')
+            self.active_model.set('使用モデル：'+info['name']+'\n推論：'+mode+' / '+info.get('status','')+('（GPU起動失敗のためCPUへ復帰）' if info.get('gpu_error') else ''))
         ctrl = self.controller
         if ctrl:
             game=ctrl.game
