@@ -16,6 +16,10 @@ from .store import CapacityError, Store
 log = logging.getLogger(__name__)
 
 
+class InferenceUnavailable(RuntimeError):
+    """No candidate was evaluated: the inference request itself failed."""
+
+
 class LocalLLM:
     def __init__(self, url: str, model: str):
         from urllib.parse import urlparse
@@ -181,12 +185,12 @@ class Scientist:
             result=self.client.complete(*args,**kwargs)
             self.activity.update(llm='待機')
             return result
-        except TimeoutError:
+        except TimeoutError as error:
             self.activity.update(llm='エラー');self.activity.emit('llm_timeout')
-            raise
-        except Exception:
+            raise InferenceUnavailable('LLM timeout') from error
+        except Exception as error:
             self.activity.update(llm='エラー');self.activity.emit('llm_error')
-            raise
+            raise InferenceUnavailable('LLM request failed') from error
 
     def start(self):
         self.thread.start()
@@ -317,6 +321,7 @@ class Scientist:
                         log.exception("Managed inference recovery failed")
                 self.notify("研究用の推論を再試行します。画面と入力の経験収集は継続しています。" if self.failed_calls < 5 else
                             "ローカル推論が繰り返し失敗しています。モデルの稼働状態を確認してください。経験収集は継続中です。")
+                self.stop_event.wait(min(60,5*2**min(self.failed_calls,4)))
 
             finally:
                 self.store.unpin('research-current')

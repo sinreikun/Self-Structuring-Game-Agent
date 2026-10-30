@@ -116,3 +116,26 @@ def test_local_gguf_import_validates_and_failed_probe_preserves_old_registration
     assert state['validation']['minimal_inference']
     assert state['validation']['code']=='未試験'
     assert state['model_info']['license']=='ユーザー指定・要確認'
+
+
+def test_inference_timeout_is_not_scientific_candidate_rejection(tmp_path):
+    from selfstruct.research import Scientist
+    from selfstruct.store import Store
+    from selfstruct.sandbox import Revisions
+    class Client:
+        def complete(self,*a,**k):raise TimeoutError('fixture')
+    store=Store(tmp_path,100*1024**2);activity=Activity()
+    scientist=Scientist(store,Revisions(tmp_path/'agents'),Client(),['A'],10000,lambda *a:None,activity)
+    jid=store.job('agent_llm',{'prompt':'test'})
+    scientist.start();scientist.tick()
+    try:
+        import time
+        deadline=time.monotonic()+5
+        while time.monotonic()<deadline and scientist.failed_calls==0:time.sleep(.01)
+        assert scientist.failed_calls==1
+        assert not store.reports()
+        assert 'llm_timeout' in [event.kind for event in activity.snapshot().events]
+        assert 'rejected' not in [event.kind for event in activity.snapshot().events]
+        assert activity.snapshot().comparison=='待機'
+        assert any(job['id']==jid for job in store.jobs())
+    finally:scientist.close();store.close()
