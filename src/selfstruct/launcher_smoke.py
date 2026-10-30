@@ -15,6 +15,7 @@ def smoke(binary, report):
     from .resources import Gateway
     def progress(stage):report.write_text(json.dumps({'status':'running','stage':stage}),encoding='utf-8')
     progress('loading verification runtime')
+    from .owned_process import start_application
     children=[]
     key=Ed25519PrivateKey.generate();public=key.public_key().public_bytes(Encoding.Raw,PublicFormat.Raw).hex()
     with tempfile.TemporaryDirectory() as temp:
@@ -24,7 +25,7 @@ def smoke(binary, report):
                 'application':{'size':source.stat().st_size,'sha256':Gateway.digest(source)}}).encode()
             return {'payload':base64.b64encode(payload).decode(),'signature':base64.b64encode(key.sign(payload)).decode()}
         def spawn(args,env):
-            child=subprocess.Popen(args,env=env);children.append(child);return child
+            child=start_application(args,env,retain_job=True);children.append(child);return child
         first=envelope('1.0.0',1)
         original=Gateway.download
         Gateway.download=lambda *args:source
@@ -47,6 +48,6 @@ def smoke(binary, report):
         finally:
             Gateway.download=original
             for child in children:
-                if child.poll() is None:stop_owned_process(child)
+                stop_owned_process(child)
         report.write_text(json.dumps({'status':'passed','checks':['same launcher: two native body generations','native GUI health acknowledgment','invalid executable rollback','offline native stable body startup'],
             'human_desktop_test':False}),encoding='utf-8')

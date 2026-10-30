@@ -5,17 +5,21 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import struct
 import time
 import uuid
 
 from .config import InstanceLock, default_root, write_json
 from .resources import Gateway, fetch_json, verify_catalog
+from .owned_process import start_application
 
 LAUNCHER_VERSION='1.0.0'
 
 
 def stop_owned_process(child):
     """PyInstaller onefile has a bootloader parent and a GUI child on Windows."""
+    if hasattr(child,'terminate_tree'):
+        child.terminate_tree();return
     if child.poll() is not None:return
     if os.name=='nt' and isinstance(child,subprocess.Popen):
         command=Path(os.environ.get('SystemRoot','C:/Windows'))/'System32'/'taskkill.exe'
@@ -31,7 +35,7 @@ def stop_owned_process(child):
 
 
 class Launcher:
-    def __init__(self, root, key, url, channel='Development', fetch=fetch_json, spawn=subprocess.Popen, timeout=60):
+    def __init__(self, root, key, url, channel='Development', fetch=fetch_json, spawn=start_application, timeout=60):
         self.root=Path(root)/'runtime';self.root.mkdir(parents=True,exist_ok=True)
         self.key=key;self.url=url;self.channel=channel;self.fetch=fetch;self.spawn=spawn;self.timeout=timeout
         self.state_path=self.root/'state.json';self.message=''
@@ -52,6 +56,12 @@ class Launcher:
             if manifest.get('channel')!=self.channel or manifest.get('protocol')!=1:return None
             item=manifest['application'];binary=folder/'SelfStruct.exe'
             if binary.is_symlink() or binary.stat().st_size!=item['size'] or Gateway.digest(binary)!=item['sha256']:return None
+            with binary.open('rb') as stream:
+                header=stream.read(64)
+                if len(header)!=64 or header[:2]!=b'MZ':return None
+                stream.seek(struct.unpack_from('<I',header,0x3c)[0])
+                pe=stream.read(6)
+                if len(pe)!=6 or pe[:4]!=b'PE\0\0' or struct.unpack_from('<H',pe,4)[0]!=0x8664:return None
             return binary
         except Exception:return None
 
@@ -97,6 +107,7 @@ class Launcher:
             return False
         finally:
             marker.unlink(missing_ok=True)
+            if healthy and hasattr(child,'detach'):child.detach()
             if not healthy and child.poll() is None:
                 stop_owned_process(child)
 
@@ -123,7 +134,7 @@ class Launcher:
                 self.state['pending']=candidate;self.save()
                 self.status()
                 try: healthy=self.launch(candidate)
-                except (OSError,TimeoutError): healthy=False
+                except (OSError,TimeoutError,ValueError): healthy=False
                 if healthy:
                     self.state.update(current=candidate,**{'last-known-good':candidate,'previous-known-good':stable},pending=None,sequence=sequence)
                     self.save();self.collect_versions();return True
