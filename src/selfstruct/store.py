@@ -72,6 +72,10 @@ class Store:
         with self.db:
             self.db.execute("UPDATE events SET state='interrupted' WHERE state IN ('pending','sent')")
             self.db.execute("UPDATE jobs SET state='pending' WHERE state='running'")
+            # Reconcile once on open, including actions written by an older body
+            # after application rollback. Live GUI reads use this constant-size row.
+            lifetime=self.db.execute("SELECT (SELECT count(*) FROM events WHERE state<>'compacted')+(SELECT coalesce(sum(count),0) FROM compacted)").fetchone()[0]
+            self.db.execute("INSERT INTO meta VALUES ('events_lifetime',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(str(lifetime),))
             for report in self.db.execute('SELECT id,metrics FROM reports').fetchall():
                 self.pin(self.metric_evidence(json.loads(report['metrics'])), 'report-'+str(report['id']))
 
@@ -264,6 +268,7 @@ class Store:
               process_generation,revision,analyzer,state,feature,prediction)
               VALUES (?,?,?,?,?,?,?,?,?,?,?)""", (session, before, action, duration, None, generation,
                                                    revision, revision, "pending", feature, prediction))
+            self.db.execute("UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='events_lifetime'")
             return cur.lastrowid
 
     def sent(self, event: int, timestamp: float):
@@ -340,7 +345,7 @@ class Store:
 
     def counts(self) -> dict:
         with self.lock:
-            result={"experience":self.db.execute("SELECT (SELECT count(*) FROM events WHERE state<>'compacted')+(SELECT coalesce(sum(count),0) FROM compacted)").fetchone()[0],
+            result={"experience":int(self.db.execute("SELECT value FROM meta WHERE key='events_lifetime'").fetchone()[0]),
                     "improvements":self.db.execute("SELECT count(*) FROM reports WHERE adopted=1").fetchone()[0]}
             for name,condition in {"discoveries":"kind='observation'", "hypotheses":"kind='hypothesis'",
                 "supported":"validation IN ('supported','reproduced')", "refuted":"validation='refuted'", "skills":"kind='skill'"}.items():

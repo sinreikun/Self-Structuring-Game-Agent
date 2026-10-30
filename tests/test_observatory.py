@@ -278,3 +278,15 @@ def test_storage_breakdown_separates_models_evidence_runtime_and_archives(tmp_pa
     assert result['models']==2000 and result['engine_archives']==1000 and result['engine_runtime']==3000
     assert result['evidence_images']>0 and result['database_and_wal']>0
     store.close()
+
+
+def test_experience_counter_survives_reopen_and_older_application_writes(tmp_path):
+    store=Store(tmp_path,64*1024**2);sid=store.session('Newborn',False)
+    add(store,sid,Image.new('RGB',(16,16)))
+    assert store.counts()['experience']==1
+    # Previous bodies do not know the counter; their durable event still counts.
+    with store.db:store.db.execute("INSERT INTO events(session,state) VALUES (?,'interrupted')",(sid,))
+    store.close()
+    store=Store(tmp_path,64*1024**2)
+    assert store.counts()['experience']==2
+    store.close()
