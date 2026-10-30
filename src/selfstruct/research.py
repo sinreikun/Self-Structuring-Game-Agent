@@ -208,7 +208,20 @@ op=research,prompt=研究指示で非同期LLM作業を依頼し、返されたj
 def research_prompt(source,rows,keys,reports):
     summaries=[{'id':r['id'],'a':keys.index(r['action']),'f':r['feature'],
                 'd':round(r['change'],4)} for r in rows[-16:]]
-    history=[{'summary':r['summary'][:180]} for r in reports[:2]]
+    history=[]
+    for report in reports[:2]:
+        entry={'summary':report['summary'][:180]}
+        metrics=report.get('metrics',{})
+        if isinstance(metrics,str):
+            try:metrics=json.loads(metrics)
+            except ValueError:metrics={}
+        if isinstance(metrics,dict):
+            if metrics.get('error'):entry['error']=str(metrics['error'])[:300]
+            for name in ('baseline','candidate'):
+                measured=metrics.get(name,{})
+                if isinstance(measured,dict) and isinstance(measured.get('loss'),(int,float)):
+                    entry[name+'_loss']=measured['loss']
+        history.append(entry)
     prompt='経験の略記：a=入力番号、f=画像特徴、d=画面変化。\n'
     prompt+='過去評価：'+json.dumps(history,ensure_ascii=False,separators=(',',':'))+'\n'
     prompt+=PROMPT.format(source=source,rows=json.dumps(summaries,separators=(',',':')))

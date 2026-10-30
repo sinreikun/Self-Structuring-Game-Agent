@@ -130,3 +130,11 @@ def test_cancel_interrupts_body_after_connection_close_headers(endpoint):
     while not state['headers_sent'] and time.monotonic()<deadline:time.sleep(.01)
     cancel.set();worker.join(timeout=2)
     assert not worker.is_alive() and isinstance(errors[0],InterruptedError)
+
+
+def test_compact_feedback_preserves_candidate_errors_without_replay_arrays():
+    from pathlib import Path
+    report={'summary':'候補の検証失敗','metrics':json.dumps({'error':'invalid WAT: missing memory export','baseline':{'loss':.25,'samples':['large-array']*10000}})}
+    prompt=research_prompt(Path('src/selfstruct/assets/seed.wat').read_text(),[],['A'],[report])
+    assert 'missing memory export' in prompt and 'baseline_loss' in prompt
+    assert 'large-array' not in prompt and len(prompt.encode())<8000
