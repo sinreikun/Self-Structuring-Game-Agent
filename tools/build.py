@@ -57,5 +57,6 @@ try:
 except (OSError,subprocess.CalledProcessError):
     commit = None
 (dist/'build-info.json').write_text(json.dumps({'version':metadata.version('selfstruct'),'commit':commit,
+    'validation_scope':os.environ.get('SELFSTRUCT_VALIDATION_SCOPE','full'),
     'platform':sys.platform,'python':sys.version.split()[0],'sha256':digest},indent=2),encoding='utf-8')
 (dist/'SHA256SUMS.txt').write_text(f'{digest}  {binary.name}\n',encoding='utf-8')

@@ -107,8 +107,11 @@ class Controller:
             path = self.root / "experiments" / state["id"]
             if not path.resolve().is_relative_to((self.root / "experiments").resolve()):
                 raise ValueError("Invalid experiment")
-            if state["keys"] != self.config.keys or state["game_exe"] != self.config.game_exe:
+            same_target=bool(state.get('target_exe') and self.config.target_exe and state['target_exe'].casefold()==self.config.target_exe.casefold())
+            if state["keys"] != self.config.keys or (state["game_exe"] != self.config.game_exe and not same_target):
                 raise ValueError("引き継ぐ個体とゲーム・入力一覧が異なります。NEWBORNで新規個体を作成してください。")
+            if state.get('target_exe') and self.config.target_exe and not same_target:
+                raise ValueError('前回と異なるゲーム本体が選択されています。NEWBORNで開始してください。')
             if state["mode"] != self.config.mode and self.config.mode != "Experienced":
                 raise ValueError("異なる知識モードの個体は引き継げません。")
             if self.config.mode == "Experienced" and state["mode"] == "Guided":
@@ -119,7 +122,7 @@ class Controller:
         identifier = uuid.uuid4().hex
         path = self.root / "experiments" / identifier
         path.mkdir(parents=True)
-        write_json(active_path, {"id": identifier, "mode": self.config.mode, "keys": self.config.keys, "game_exe": self.config.game_exe})
+        write_json(active_path, {"id": identifier, "mode": self.config.mode, "keys": self.config.keys, "game_exe": self.config.game_exe,'target_exe':self.config.target_exe})
         return path
 
     def notify(self, text: str):
@@ -192,9 +195,19 @@ class Controller:
         try:
             if self.game is None:
                 self.config.validate()
-                self.game = WindowsGame(self.config.game_exe, self.config.game_args, self.config.window_title, self.config.keys)
+                self.game = WindowsGame(self.config.game_exe, self.config.game_args, self.config.window_title, self.config.keys,
+                                        mode=self.config.connection_mode,target_pid=self.config.target_pid,
+                                        target_created=self.config.target_created,target_exe=self.config.target_exe,
+                                        target_hwnd=self.config.target_hwnd,on_wait=lambda:setattr(self,'last_progress',time.monotonic()),
+                                        cancel=self.stopped)
             self.status = "ゲームへ接続中"
             self.game.start()
+            if isinstance(self.game,WindowsGame):
+                state_path=self.root/'host'/'experiment.json'
+                state=json.loads(state_path.read_text(encoding='utf-8'))
+                if state.get('target_exe') and state['target_exe'].casefold()!=self.game.target_exe.casefold():
+                    raise ValueError('前回と異なるゲーム本体が見つかりました。NEWBORNで開始してください。')
+                state['target_exe']=self.game.target_exe;write_json(state_path,state)
             unchanged = 0
             while not self.stopped.is_set():
                 self.last_progress = time.monotonic()
@@ -206,7 +219,7 @@ class Controller:
                     change = self.step()
                     unchanged = unchanged + 1 if change <= .001 else 0
                     if unchanged >= self.config.restart_after:
-                        self.recover_game("画面変化が長時間確認できないため、有限の復帰試行後にゲームを再起動しました。")
+                        self.recover_game("画面変化が長時間確認できないため、有限の復帰試行を行いました。",restart=True)
                         unchanged = 0
                 except WindowMinimized as exc:
                     self.game.release()
@@ -244,18 +257,17 @@ class Controller:
             self.status = "停止中"
             self.stopped.set()
 
-    def recover_game(self, message: str):
+    def recover_game(self, message: str, restart: bool=False):
         self.game.release()
         if self.restarts >= self.config.max_restarts:
             raise RuntimeError("ゲームの復旧回数の上限に達しました。実験装置の状態を確認してください。")
         self.restarts += 1
         self.scientist.abort_trial("Game restarted during comparison")
-        try:
-            self.game.connect()
-        except GameUnavailable:
+        if restart:
             self.game.restart()
         else:
-            self.game.restart()
+            try:self.game.connect()
+            except GameUnavailable:self.game.restart()
         self.notify(message)
 
     def step(self) -> float:

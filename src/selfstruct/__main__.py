@@ -12,6 +12,8 @@ def main():
     parser.add_argument("--health-marker", type=Path)
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument('--io-self-test', action='store_true')
+    parser.add_argument('--process-self-test', action='store_true')
+    parser.add_argument('--test-launcher-script',type=Path)
     parser.add_argument('--test-window-exe', type=Path)
     parser.add_argument('--test-window-script', type=Path)
     parser.add_argument('--self-test-report', type=Path)
@@ -23,6 +25,12 @@ def main():
     if args.self_test:
         from .smoke import smoke
         smoke()
+        return
+    if args.process_self_test:
+        if not all((args.test_window_exe,args.test_window_script,args.test_launcher_script,args.self_test_report)):
+            parser.error('Process self-test requires executable, window, launcher and report paths')
+        from .smoke import process_target_smoke
+        process_target_smoke(args.test_window_exe,args.test_window_script,args.test_launcher_script,args.self_test_report)
         return
     if args.io_self_test:
         if not all((args.test_window_exe,args.test_window_script,args.self_test_report)):

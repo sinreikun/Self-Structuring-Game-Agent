@@ -33,6 +33,11 @@ class Config:
     root: str = field(default_factory=lambda: str(default_root()))
     game_exe: str = ""
     game_args: list[str] = field(default_factory=list)
+    connection_mode: str = 'launch'
+    target_pid: int = 0
+    target_created: int = 0
+    target_exe: str = ''
+    target_hwnd: int = 0
     window_title: str = ""
     keys: list[str] = field(default_factory=lambda: ["UP", "DOWN", "LEFT", "RIGHT", "ENTER", "SPACE"])
     quota_bytes: int = 10 * 1024**3
@@ -50,6 +55,10 @@ class Config:
     model_id: str = ""
 
     def validate(self, require_game: bool = True) -> None:
+        if self.connection_mode not in {'launch','launcher','attach'}:
+            raise ValueError('対象ゲームへの接続方法を選択してください。')
+        if self.connection_mode=='attach' and (self.target_pid<=0 or self.target_created<=0 or not self.target_exe):
+            raise ValueError('起動中のプロセスから対象ゲームを選択してください。')
         if self.mode not in {"Newborn", "Experienced", "Guided"}:
             raise ValueError("個体の種類が不正です。")
         if self.channel not in {"Stable", "Development"}:
@@ -61,11 +70,13 @@ class Config:
         from .windows import KEY_CODES
         if any(key not in KEY_CODES for key in self.keys):
             raise ValueError("許可できないキーが含まれています。")
-        if require_game and not Path(self.game_exe).is_file():
+        if require_game and self.connection_mode!='attach' and not Path(self.game_exe).is_file():
             raise ValueError("対象ゲームの実行ファイルを選択してください。")
         root = Path(self.root).resolve()
-        if require_game and (root == Path(self.game_exe).resolve().parent or root in Path(self.game_exe).resolve().parents):
-            raise ValueError("ゲーム本体を含まない専用の保存先を選択してください。")
+        if require_game:
+            for executable in (self.game_exe,self.target_exe):
+                if executable and (root == Path(executable).resolve().parent or root in Path(executable).resolve().parents):
+                    raise ValueError("ゲーム本体を含まない専用の保存先を選択してください。")
         from urllib.parse import urlparse
         endpoint = urlparse(self.llm_url)
         if endpoint.scheme != "http" or endpoint.hostname not in {"127.0.0.1", "localhost", "::1"}:

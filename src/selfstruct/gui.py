@@ -97,19 +97,26 @@ class App:
     def _setup(self):
         ttk.Label(self.setup, text="はじめの設定", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 12))
         self.fields: dict[str, tk.StringVar] = {}
-        entries = [("game_exe", "対象ゲーム", self.config.game_exe), ("window_title", "ウィンドウ名の一部（空欄可）", self.config.window_title),
+        self.connection_methods={'実行ファイルから起動':'launch','ランチャーから起動':'launcher','起動中のプロセスに接続':'attach'}
+        self.connection_method=tk.StringVar(value=next(label for label,value in self.connection_methods.items() if value==self.config.connection_mode))
+        ttk.Label(self.setup,text='接続方法').grid(row=1,column=0,sticky='w')
+        ttk.Combobox(self.setup,textvariable=self.connection_method,values=list(self.connection_methods),state='readonly',width=34).grid(row=1,column=1,sticky='w',padx=8)
+        ttk.Button(self.setup,text='起動中から選択',command=self.choose_process).grid(row=1,column=2)
+        self.selected_process=tk.StringVar(value=f'接続先プロセス: {Path(self.config.target_exe).name}' if self.config.target_exe else 'ランチャーを使う場合は「ランチャーから起動」を選び、ゲーム本体の起動を待ちます。')
+        ttk.Label(self.setup,textvariable=self.selected_process,wraplength=950).grid(row=2,column=0,columnspan=3,sticky='w',pady=5)
+        entries = [("game_exe", "ゲーム・ランチャーの実行ファイル", self.config.game_exe), ("window_title", "ウィンドウ名の一部（空欄可）", self.config.window_title),
                    ("game_args", "起動オプション（空欄可）", __import__('subprocess').list2cmdline(self.config.game_args)),
                    ("root", "作業・保存フォルダ", self.config.root), ("keys", "許可キー（カンマ区切り・Num0〜Num9対応）", ",".join(self.config.keys)),
                    ("quota", "保存容量の上限（GB）", str(self.config.quota_bytes / 1024**3)),
                    ("llm_url", "ローカル推論接続先（詳細設定）", self.config.llm_url)]
-        for row, (name, label, value) in enumerate(entries, 1):
+        for row, (name, label, value) in enumerate(entries, 3):
             ttk.Label(self.setup, text=label).grid(row=row, column=0, sticky="w", pady=5)
             var = self.fields[name] = tk.StringVar(value=value)
             ttk.Entry(self.setup, textvariable=var, width=65).grid(row=row, column=1, sticky="ew", padx=8)
             if name in {"game_exe", "root"}:
                 ttk.Button(self.setup, text="選択", command=lambda n=name: self.browse(n)).grid(row=row, column=2)
         self.setup.columnconfigure(1, weight=1)
-        row = len(entries) + 1
+        row = len(entries) + 3
         self.mode = tk.StringVar(value=self.config.mode)
         ttk.Label(self.setup, text="開始方法").grid(row=row, column=0, sticky="w")
         ttk.Combobox(self.setup, textvariable=self.mode, state="readonly", values=["Newborn", "Experienced", "Guided"]).grid(row=row, column=1, sticky="w", padx=8)
@@ -135,11 +142,30 @@ class App:
         path = filedialog.askdirectory() if name == "root" else filedialog.askopenfilename(filetypes=[("実行ファイル", "*.exe"), ("すべて", "*.*")])
         if path:
             self.fields[name].set(path)
+            if name=='game_exe':
+                self.config=replace(self.config,target_pid=0,target_created=0,target_exe='',target_hwnd=0)
+                self.connection_method.set('実行ファイルから起動')
+                self.selected_process.set('実行ファイルから起動します。ランチャーの場合は接続方法を切り替えてください。')
+
+    def choose_process(self):
+        if self.controller or self.busy:
+            messagebox.showinfo('接続先の変更','先にSTOPしてから接続先を変更してください。');return
+        from .process_picker import ProcessPicker
+        ProcessPicker(self.window,self.selected_target)
+
+    def selected_target(self,item):
+        self.config=replace(self.config,target_pid=item.process.pid,target_created=item.process.created,
+                            target_exe=item.process.exe,target_hwnd=item.hwnd)
+        self.connection_method.set('起動中のプロセスに接続')
+        if not self.fields['game_exe'].get():self.fields['game_exe'].set(item.process.exe)
+        self.fields['window_title'].set('')
+        self.selected_process.set(f'{item.process.name} — {item.title}（プロセスID {item.process.pid}）。STOP後もゲームは終了しません。')
 
     def read_settings(self) -> Config:
         from .windows import parse_arguments
         args = parse_arguments(self.fields["game_args"].get())
         result = replace(self.config, root=self.fields["root"].get(), game_exe=self.fields["game_exe"].get(),
+                         connection_mode=self.connection_methods[self.connection_method.get()],
                          game_args=args, window_title=self.fields["window_title"].get(),
                          keys=[x.strip().upper() for x in self.fields["keys"].get().split(",") if x.strip()],
                          quota_bytes=int(float(self.fields["quota"].get()) * 1024**3), llm_url=self.fields["llm_url"].get(),
@@ -326,6 +352,13 @@ class App:
             self.stop()
         ctrl = self.controller
         if ctrl:
+            game=ctrl.game
+            if game and getattr(game,'process',None) and getattr(game,'target_exe',''):
+                identity=(game.target_pid,game.target_created,game.target_exe,game.hwnd)
+                saved=(self.config.target_pid,self.config.target_created,self.config.target_exe,self.config.target_hwnd)
+                if identity!=saved:
+                    self.config=replace(self.config,target_pid=identity[0],target_created=identity[1],target_exe=identity[2],target_hwnd=identity[3])
+                    self.config.save(self.config_path)
             self.status.set(ctrl.status + f" ／ 稼働 {int(time.monotonic() - ctrl.started)}秒 ／ 世代 {len(list(ctrl.revisions.root.glob('*/agent.wat')))}")
             while not ctrl.messages.empty():
                 self.activity.set(prose(ctrl.messages.get_nowait()))

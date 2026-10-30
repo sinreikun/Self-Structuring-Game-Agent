@@ -114,5 +114,39 @@ def window_smoke(executable: Path, script: Path, report: Path):
         game.stop()
 
 
+def process_target_smoke(executable: Path, script: Path, launcher: Path, report: Path):
+    """Focused packaged check for attach/detach and launcher handoff only."""
+    import subprocess
+    from .processes import process_info,enumerate_windows
+    from .windows import WindowsGame
+    from .config import write_json
+    external=subprocess.Popen([str(executable),str(script)])
+    attached=None;launched=None
+    try:
+        deadline=time.monotonic()+15
+        window=None
+        while time.monotonic()<deadline:
+            info=process_info(external.pid)
+            found=enumerate_windows({info.pid:info}) if info else []
+            if found:window=found[0];break
+            time.sleep(.05)
+        assert window,'Existing test process did not create its window'
+        attached=WindowsGame('',[],'',['A'],mode='attach',target_pid=info.pid,target_created=info.created,
+                             target_exe=info.exe,target_hwnd=window.hwnd)
+        attached.start();attached.capture();attached.act('A',.02,threading.Event())
+        attached.stop();assert external.poll() is None,'STOP terminated the attached process'
+        launched=WindowsGame(str(executable),[str(launcher)],'SelfStruct Message Test',['A'],mode='launcher')
+        launched.start()
+        assert launched.process.pid not in {launched.root_process.pid,external.pid}
+        launched.capture();launched.act('A',.02,threading.Event())
+        launched.stop()
+        write_json(report,{'status':'passed','checks':['running process selection','attach preserves external process',
+                  'launcher child adoption','launcher exit tolerated','packaged window capture']})
+    finally:
+        if attached:attached.stop()
+        if launched:launched.stop()
+        if external.poll() is None:external.terminate();external.wait(timeout=5)
+
+
 if __name__ == "__main__":
     smoke()

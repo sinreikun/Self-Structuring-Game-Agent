@@ -12,6 +12,8 @@ import re
 import struct
 import subprocess
 import tempfile
+import base64
+from tools.inference_identity import component_hashes
 
 ASSETS = ('SelfStruct.exe','SHA256SUMS.txt','THIRD_PARTY_NOTICES.txt','build-info.json',
           'window-validation.json','inference-validation.json')
@@ -25,7 +27,7 @@ def api(path: str):
     return json.loads(gh('api',path))
 
 
-def verify_artifacts(folder: Path, commit: str) -> dict[str,str]:
+def verify_artifacts(folder: Path, commit: str, allow_reuse: bool=False) -> dict[str,str]:
     hashes={}
     for name in ASSETS:
         path=folder/name
@@ -45,7 +47,8 @@ def verify_artifacts(folder: Path, commit: str) -> dict[str,str]:
         if pe[:4]!=b'PE\0\0' or struct.unpack_from('<H',pe,4)[0]!=0x8664:
             raise ValueError('Not a Windows x64 executable')
     for name in ('window-validation.json','inference-validation.json'):
-        if json.loads((folder/name).read_text(encoding='utf-8')).get('status')!='passed':
+        status=json.loads((folder/name).read_text(encoding='utf-8')).get('status')
+        if status!='passed' and not (allow_reuse and name=='inference-validation.json' and status=='reused' and info.get('validation_scope')=='target-process'):
             raise ValueError('Required validation did not pass')
     return hashes
 
@@ -72,7 +75,32 @@ def main():
     with tempfile.TemporaryDirectory(prefix='selfstruct-release-') as temp:
         folder=Path(temp)
         gh('run','download',str(run_id),'--repo',repository,'--name','SelfStruct-Windows-x64','--dir',str(folder))
-        hashes=verify_artifacts(folder,obj['sha'])
+        hashes=verify_artifacts(folder,obj['sha'],allow_reuse=True)
+        inference=json.loads((folder/'inference-validation.json').read_text(encoding='utf-8'))
+        if inference.get('status')=='reused':
+            baseline=inference['baseline_tag']
+            if not re.fullmatch(r'v\d+\.\d+\.\d+-dev\.\d+',baseline):raise ValueError('Invalid inference baseline')
+            baseline_release=api(f'{prefix}/releases/tags/{baseline}')
+            if baseline_release['draft']:raise ValueError('Inference baseline is not published')
+            with tempfile.TemporaryDirectory() as prior:
+                for name in ('inference-validation.json','build-info.json'):
+                    gh('release','download',baseline,'--repo',repository,'--pattern',name,'--dir',prior)
+                    prior_file=Path(prior)/name
+                    metadata=next(asset for asset in baseline_release['assets'] if asset['name']==name)
+                    if metadata.get('digest')!='sha256:'+hashlib.sha256(prior_file.read_bytes()).hexdigest():raise ValueError('Baseline digest mismatch')
+                if json.loads((Path(prior)/'inference-validation.json').read_text(encoding='utf-8')).get('status')!='passed':raise ValueError('Baseline did not execute inference checks')
+                prior_info=json.loads((Path(prior)/'build-info.json').read_text(encoding='utf-8'))
+                baseline_commit=prior_info['commit']
+                if not re.fullmatch(r'[0-9a-f]{40}',baseline_commit):raise ValueError('Invalid baseline commit')
+                binary=next(asset for asset in baseline_release['assets'] if asset['name']=='SelfStruct.exe')
+                if binary.get('digest')!='sha256:'+prior_info['sha256']:raise ValueError('Baseline executable digest mismatch')
+            def remote_read(ref,name):
+                data=api(f'{prefix}/contents/{name}?ref={ref}')
+                return base64.b64decode(data['content'])
+            current=component_hashes(lambda name:remote_read(obj['sha'],name))
+            previous=component_hashes(lambda name:remote_read(baseline_commit,name))
+            if current!=previous or current!=inference['component_hashes']:
+                raise ValueError('Inference code differs from the validated baseline')
         releases=api(f'{prefix}/releases?per_page=100')
         release=next((item for item in releases if item['tag_name']==tag),None)
         if release and not release['draft']:

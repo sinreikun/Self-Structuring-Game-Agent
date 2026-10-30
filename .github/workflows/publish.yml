@@ -27,4 +27,4 @@ jobs:
       - name: Verify existing CI artifact and publish prerelease
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python tools/publish_release.py
+        run: python -m tools.publish_release
