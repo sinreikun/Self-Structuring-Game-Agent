@@ -92,6 +92,15 @@ def create_diagnostics(root: Path, store=None, config=None, activity=None, gui=N
                     path=store.root/'evidence'/(digest+'.png')
                     if path.is_file() and path.stat().st_size<=2*1024**2:
                         put('evidence/'+path.name,path.read_bytes())
+                for filename in ('checkpoint.json','activity.json'):
+                    path=store.root/'host'/filename
+                    if path.is_file() and path.stat().st_size<65536:
+                        try:put('experiment/'+filename,json.dumps(redact(json.loads(path.read_text(encoding='utf-8'))),ensure_ascii=False))
+                        except (OSError,ValueError):pass
+                path=store.root/'agents'/'revisions'/'state.json'
+                if path.is_file() and path.stat().st_size<65536:
+                    try:put('experiment/revisions.json',json.dumps(redact(json.loads(path.read_text(encoding='utf-8'))),ensure_ascii=False))
+                    except (OSError,ValueError):pass
             # Explicit allowlist: no model/runtime, environment dump, arbitrary Agent files.
             for name in ('host.log','host.log.1','llm.log','llm.json'):
                 path=root/'host'/name

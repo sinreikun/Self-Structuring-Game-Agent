@@ -32,6 +32,7 @@ class Store:
         self.lock = threading.RLock()
         self._usage_bytes = 0
         self._usage_at = 0.
+        self._tracked_db_bytes = 0.
         self._gc_at = 0.
         self.storage_state = "通常"
         self.gc_thresholds = (.80, .90, .95, .98)
@@ -86,6 +87,13 @@ class Store:
 
     def usage(self, force: bool = False) -> int:
         with self.lock:
+            database=self.root/'host'/'experience.sqlite3'
+            db_bytes=0
+            for suffix in ('','-wal','-shm'):
+                try:db_bytes+=Path(str(database)+suffix).stat().st_size
+                except FileNotFoundError:pass
+            self._usage_bytes+=db_bytes-self._tracked_db_bytes
+            self._tracked_db_bytes=db_bytes
             if force or time.monotonic() - self._usage_at > 5:
                 total = 0
                 for path in self.account_root.rglob("*"):

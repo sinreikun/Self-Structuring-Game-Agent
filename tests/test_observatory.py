@@ -209,3 +209,13 @@ def test_ten_gib_budget_under_pressure_starts_research_and_gc(tmp_path):
     assert len(store.rows())>=48
     assert store.usage(True)<store.quota*.95
     store.close()
+
+
+def test_capacity_cache_accounts_for_wal_growth_between_directory_scans(tmp_path):
+    store=Store(tmp_path,64*1024**2)
+    before=store.usage(True)
+    with store.lock,store.db:
+        store.db.execute('CREATE TABLE diagnostic_fixture(data BLOB)')
+        store.db.execute('INSERT INTO diagnostic_fixture VALUES (?)',(b'x'*256*1024,))
+    assert store.usage()>before+128*1024
+    store.close()

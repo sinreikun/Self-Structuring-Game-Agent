@@ -181,6 +181,11 @@ class Controller:
         if self.scientist.thread.ident is not None:
             self.scientist.close()
         if self.monitor_thread:self.monitor_thread.join(timeout=15)
+        from dataclasses import asdict
+        try:
+            self.store.reserve(8192)
+            write_json(self.store.root/'host'/'activity.json',asdict(self.activity.snapshot()))
+        except OSError:log.exception('Final activity snapshot could not be saved')
         self.store.close()
         logging.getLogger("selfstruct").removeHandler(self.log_handler)
         self.log_handler.close()
