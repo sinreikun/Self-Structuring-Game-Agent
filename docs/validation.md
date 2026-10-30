@@ -50,3 +50,5 @@ Windowsでは標準テストに加え、ビルド済みSelfStructLauncher.exeの
 Windows CIのデスクトップ上での自動操作は、人が実PCで操作した確認とは区別する。実ゲームの何時間もの放置、モニタの物理着脱、ChatGPT等の実アプリへの貼り付けは、今回の自動試験で完了扱いにしない。画像内の個人情報を自動除去できるとは主張しない。
 
 追加の容量確認では、SQLite WALの増加をディレクトリ再走査前にも計上すること、GCを小分けにしても根拠保護と整理が両立すること、入力時間・版・画像が異なる経験を同じ統計へ混ぜないこと、容量警告中は通常の研究間隔前にLLM研究を開始することも確認する。
+
+今回の配布対象はcommit e7f8e7250a123fe31e940c41dd2ec143d71f2716のWindows CI成果物（run 41099741380）。Windowsテストは70 passed / 1 skipped。梱包済みの本体自己診断、GUI起動、背面I/O、固定Launcherの二世代起動・不正PEからの復帰・オフライン起動、実モデル取得・実推論が成功した。window-validation / launcher-validation / inference-validationの各レポートはpassed。人の実PC操作による確認とは区別する。
