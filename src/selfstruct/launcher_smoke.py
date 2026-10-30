@@ -13,6 +13,8 @@ def smoke(binary, report):
     from cryptography.hazmat.primitives.serialization import Encoding,PublicFormat
     from .launch_runtime import Launcher,stop_owned_process
     from .resources import Gateway
+    def progress(stage):report.write_text(json.dumps({'status':'running','stage':stage}),encoding='utf-8')
+    progress('loading verification runtime')
     children=[]
     key=Ed25519PrivateKey.generate();public=key.public_key().public_bytes(Encoding.Raw,PublicFormat.Raw).hex()
     with tempfile.TemporaryDirectory() as temp:
@@ -28,14 +30,18 @@ def smoke(binary, report):
         Gateway.download=lambda *args:source
         launcher=Launcher(root,public,'fixture',fetch=lambda u:first,spawn=spawn,timeout=30)
         try:
+            progress("native launch")
             assert launcher.run()
             stop_owned_process(children[-1])
+            progress('second body')
             shutil.copyfile(binary,source);second=envelope('2.0.0',2);launcher.fetch=lambda u:second
             assert launcher.run()
             stop_owned_process(children[-1])
+            progress('invalid body rollback')
             source.write_bytes(b'invalid executable');bad=envelope('3.0.0',3);launcher.fetch=lambda u:bad
             assert launcher.run() and launcher.state['last-known-good'].startswith('2.0.0')
             stop_owned_process(children[-1])
+            progress('offline fallback')
             launcher.fetch=lambda u:(_ for _ in ()).throw(OSError('offline'))
             assert launcher.run()
         finally:

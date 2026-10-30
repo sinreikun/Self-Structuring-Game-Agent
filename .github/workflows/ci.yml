@@ -54,17 +54,6 @@ jobs:
       - if: runner.os == 'Windows'
         name: Build stable launcher
         run: python tools/build_launcher.py
-      - if: runner.os == 'Windows'
-        name: Verify packaged stable launcher with native bodies
-        shell: pwsh
-        run: |
-          $body = Join-Path $env:GITHUB_WORKSPACE 'dist/SelfStruct.exe'
-          $report = Join-Path $env:GITHUB_WORKSPACE 'dist/launcher-validation.json'
-          $arguments = '--launcher-self-test "{0}" "{1}"' -f $body, $report
-          $proc = Start-Process -FilePath .\dist\SelfStructLauncher.exe -ArgumentList $arguments -PassThru
-          if (!$proc.WaitForExit(180000)) { Stop-Process -Id $proc.Id -Force; throw 'Launcher self-test timed out' }
-          if (Test-Path $report) { Get-Content $report }
-          if ($proc.ExitCode -ne 0 -or !(Test-Path $report)) { throw 'Packaged stable launcher validation failed' }
       - if: runner.os == 'Windows' && steps.validation.outputs.scope == 'full'
         shell: pwsh
         run: |
@@ -86,6 +75,26 @@ jobs:
           } finally {
             if (!$proc.HasExited) { Stop-Process -Id $proc.Id -Force }
           }
+      - if: runner.os == 'Windows'
+        name: Verify packaged stable launcher with native bodies
+        shell: pwsh
+        run: |
+          $body = Join-Path $env:GITHUB_WORKSPACE 'dist/SelfStruct.exe'
+          $report = Join-Path $env:GITHUB_WORKSPACE 'dist/launcher-validation.json'
+          $arguments = '--launcher-self-test "{0}" "{1}"' -f $body, $report
+          $proc = Start-Process -FilePath .\dist\SelfStructLauncher.exe -ArgumentList $arguments -PassThru
+          if (!$proc.WaitForExit(90000)) {
+            if (Test-Path $report) { Get-Content $report }
+            taskkill /PID $proc.Id /T /F
+            python tools/build_launcher.py --diagnostic
+            $diagnostic = Start-Process -FilePath .\dist\SelfStructLauncherDiagnostic.exe -ArgumentList $arguments -PassThru -RedirectStandardError .\dist\launcher-stderr.log -RedirectStandardOutput .\dist\launcher-stdout.log
+            if (!$diagnostic.WaitForExit(60000)) { taskkill /PID $diagnostic.Id /T /F }
+            if (Test-Path $report) { Get-Content $report }
+            if (Test-Path .\dist\launcher-stderr.log) { Get-Content .\dist\launcher-stderr.log -Tail 40 }
+            throw 'Windowed launcher self-test timed out'
+          }
+          if (Test-Path $report) { Get-Content $report }
+          if ($proc.ExitCode -ne 0 -or !(Test-Path $report)) { throw 'Packaged stable launcher validation failed' }
       - if: runner.os == 'Windows' && steps.validation.outputs.scope == 'full'
         name: Verify packaged background I/O
         shell: pwsh
@@ -114,7 +123,7 @@ jobs:
       - if: runner.os == 'Windows' && steps.validation.outputs.scope == 'target-process'
         name: Reuse verified unchanged inference baseline
         run: python -m tools.select_validation --reuse-report dist/inference-validation.json
-      - if: runner.os == 'Windows'
+      - if: always() && runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: SelfStruct-Windows-x64

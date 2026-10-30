@@ -84,7 +84,7 @@ class Launcher:
         binary=self.verified(identity)
         if not binary:raise ValueError('Local application integrity failure')
         marker=self.root/('health-'+uuid.uuid4().hex)
-        env=dict(os.environ,SELFSTRUCT_LAUNCHER_VERSION=LAUNCHER_VERSION)
+        env=dict(os.environ,SELFSTRUCT_LAUNCHER_VERSION=LAUNCHER_VERSION,PYINSTALLER_RESET_ENVIRONMENT='1')
         child=self.spawn([str(binary),'--health-marker',str(marker)],env=env)
         deadline=time.monotonic()+self.timeout
         healthy=False

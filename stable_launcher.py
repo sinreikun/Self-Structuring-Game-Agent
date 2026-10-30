@@ -1,14 +1,17 @@
 import sys
 
 if __name__=='__main__':
-    if len(sys.argv)==4 and sys.argv[1]=='--launcher-self-test':
+    if sys.argv[1:2]==['--launcher-self-test']:
         from pathlib import Path
-        from selfstruct.launcher_smoke import smoke
+        import json
+        import traceback
+        report=Path(sys.argv[-1])
         try:
-            smoke(Path(sys.argv[2]),Path(sys.argv[3]))
+            report.write_text(json.dumps({'status':'running','stage':'launcher entrypoint','argument_count':len(sys.argv)}),encoding='utf-8')
+            from selfstruct.launcher_smoke import smoke
+            smoke(Path(sys.argv[2]),report)
         except BaseException:
-            import json,traceback
-            Path(sys.argv[3]).write_text(json.dumps({'status':'failed','error':traceback.format_exc()}),encoding='utf-8')
+            report.write_text(json.dumps({'status':'failed','error':traceback.format_exc()}),encoding='utf-8')
             sys.exit(1)
     else:
         from selfstruct.launch_runtime import main
