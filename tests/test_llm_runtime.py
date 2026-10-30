@@ -13,6 +13,8 @@ class Server(http.server.ThreadingHTTPServer):
 
 @pytest.fixture
 def endpoint():
+    import gc
+    gc.collect()  # Dispose of previous Tk fixtures on the main thread.
     state={'headers_first':False,'headers_sent':False,'delay':0,'finish':'stop','content':'こんにちは','reasoning':None,'requests':[]}
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self,*args):pass

@@ -46,53 +46,59 @@ class LocalLLM:
     def complete(self, prompt: str, max_tokens: int = 2048, json_mode: bool = False,
                  *, allow_partial=False, timeout=600, cancel=None) -> str:
         import http.client
+        import io
+        import select
         import socket
         from urllib.parse import urlparse
         cancel=cancel or getattr(self,'cancel_event',None)
-        self.last_completion={"status":"started","max_output_tokens":max_tokens,"deadline_seconds":timeout}
-        if cancel and cancel.is_set():raise InterruptedError('推論を中断しました。')
+        deadline=time.monotonic()+timeout
+        def check():
+            if cancel and cancel.is_set():raise InterruptedError('推論を中断しました。')
+            if time.monotonic()>=deadline:raise TimeoutError('推論の制限時間を超えました。')
+        check()
+        self.last_completion={'status':'started','max_output_tokens':max_tokens,'deadline_seconds':timeout}
         parsed=urlparse(self.url)
         connection=http.client.HTTPConnection(parsed.hostname,parsed.port or 80,timeout=3)
-        active_socket=[None]
-        finished=threading.Event();expired=threading.Event();deadline=time.monotonic()+timeout
-        def interrupt():
-            while not finished.wait(.05):
-                if (cancel and cancel.is_set()) or time.monotonic()>=deadline:
-                    expired.set()
-                    sock=active_socket[0] or connection.sock
-                    if sock:
-                        try:sock.shutdown(socket.SHUT_RDWR)
-                        except OSError:pass
-                    return
-        watcher=threading.Thread(target=interrupt,name='inference-cancel',daemon=True)
+        raw_socket=None;response=None
+        class Reader(io.RawIOBase):
+            def readable(self):return True
+            def readinto(self,buffer):
+                while True:
+                    check()
+                    if select.select([raw_socket],[],[],min(.1,max(.001,deadline-time.monotonic())))[0]:
+                        try:return raw_socket.recv_into(buffer)
+                        except BlockingIOError:continue
+        class ResponseSocket:
+            def makefile(self,*args,**kwargs):return io.BufferedReader(Reader())
+            # HTTP/1.0 hands ownership to the response after headers. The actual
+            # socket is kept alive until the finally block, without makefile refs.
+            def close(self):pass
         payload={'model':self.model,'messages':[{'role':'user','content':prompt}],
                  'temperature':.2,'max_tokens':max_tokens}
         if self.managed:payload['chat_template_kwargs']={'enable_thinking':False}
         if json_mode:payload['response_format']={'type':'json_object'}
-        watcher.start()
         try:
-            connection.connect()
-            active_socket[0]=connection.sock
-            if cancel and cancel.is_set():raise InterruptedError('推論を中断しました。')
-            connection.sock.settimeout(timeout)
+            connection.connect();raw_socket=connection.sock
+            check()
             connection.request('POST',parsed.path+'/chat/completions',json.dumps(payload).encode(),{'Content-Type':'application/json'})
+            raw_socket.setblocking(False)
+            connection.sock=ResponseSocket()
             response=connection.getresponse()
             if response.status!=200:raise OSError(f'Local inference HTTP {response.status}')
-            data=response.read(512*1024+1)
-            if cancel and cancel.is_set():raise InterruptedError('推論を中断しました。')
-            if expired.is_set():raise TimeoutError('推論の制限時間を超えました。')
+            data=response.read(512*1024+1);check()
             if len(data)>512*1024:raise ValueError('LLM response too large')
-            choice=json.loads(data)['choices'][0]
-            self.last_completion={'finish_reason':choice.get('finish_reason'),'usage':json.loads(data).get('usage',{}),'elapsed':timeout-(deadline-time.monotonic())}
+            result=json.loads(data);choice=result['choices'][0]
+            self.last_completion={'finish_reason':choice.get('finish_reason'),'usage':result.get('usage',{}),'elapsed':timeout-(deadline-time.monotonic())}
             if choice.get('finish_reason')=='length' and not allow_partial:
                 raise ValueError('推論の出力が途中で終了しました。未完成の提案は実行しません。')
             return choice['message'].get('content') or (choice['message'].get('reasoning_content','') if allow_partial else '')
-        except Exception:
-            if cancel and cancel.is_set():raise InterruptedError('推論を中断しました。') from None
-            if expired.is_set():raise TimeoutError('推論の制限時間を超えました。') from None
-            raise
         finally:
-            finished.set();connection.close();watcher.join(timeout=1)
+            if response:response.close()
+            connection.close()
+            if raw_socket:
+                try:raw_socket.shutdown(socket.SHUT_RDWR)
+                except OSError:pass
+                raw_socket.close()
 
 
 def evaluation_worker(source: str, baseline: str, rows: list[dict], folder: str, keys: list[str], output) -> None:
@@ -383,10 +389,10 @@ class Scientist:
             except CapacityError:
                 raise
             except Exception:
-                log.exception("Research failed")
                 if self.stop_event.is_set():
                     self.store.set_job(jid,"pending")
                     continue
+                log.exception("Research failed")
                 self.failed_calls += 1
                 self.store.set_job(jid, "pending")
                 if self.recover_llm and 2 <= self.failed_calls <= 4:
