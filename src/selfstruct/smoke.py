@@ -91,5 +91,28 @@ def smoke():
         print("PASS: synthetic capture/input, raw evidence, pause/release, export, isolated worker, persistent resume")
 
 
+def window_smoke(executable: Path, script: Path, report: Path):
+    """Exercise the packaged capture worker against a real native test window."""
+    from .windows import WindowsGame
+    from .sandbox import difference
+    from .config import write_json
+    game=WindowsGame(str(executable),[str(script)],'SelfStruct Message Test',['A'])
+    try:
+        game.start()
+        time.sleep(.3)
+        before=game.capture()
+        foreground=game.user.GetForegroundWindow()
+        game.act('A',.05,threading.Event())
+        time.sleep(.1)
+        after=game.capture()
+        assert difference(before,after)>.05,'Target did not render the submitted input'
+        assert game.user.GetForegroundWindow()==foreground,'Agent changed foreground focus'
+        assert not game.held
+        write_json(report,{'status':'passed','checks':['window-targeted input','background rendering',
+                                                    'packaged capture worker','foreground unchanged']})
+    finally:
+        game.stop()
+
+
 if __name__ == "__main__":
     smoke()

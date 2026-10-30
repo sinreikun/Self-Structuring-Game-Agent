@@ -54,6 +54,16 @@ jobs:
           } finally {
             if (!$proc.HasExited) { Stop-Process -Id $proc.Id -Force }
           }
+      - if: runner.os == 'Windows'
+        name: Verify packaged background I/O
+        shell: pwsh
+        run: |
+          $targetPython = (Get-Command python).Source
+          $targetScript = Join-Path $env:GITHUB_WORKSPACE 'tests/fixtures/message_window.py'
+          $report = Join-Path $env:GITHUB_WORKSPACE 'dist/window-validation.json'
+          $arguments = '--io-self-test --test-window-exe "{0}" --test-window-script "{1}" --self-test-report "{2}"' -f $targetPython, $targetScript, $report
+          $proc = Start-Process -FilePath .\dist\SelfStruct.exe -ArgumentList $arguments -Wait -PassThru
+          if ($proc.ExitCode -ne 0 -or !(Test-Path $report)) { throw 'Packaged background I/O failed' }
       - if: runner.os == 'Windows' && (github.ref_type == 'tag' || inputs.validate_model)
         name: Verify real managed inference
         shell: pwsh
@@ -68,6 +78,7 @@ jobs:
             dist/THIRD_PARTY_NOTICES.txt
             dist/build-info.json
             dist/inference-validation.json
+            dist/window-validation.json
       - if: always()
         uses: actions/upload-artifact@v4
         with:
