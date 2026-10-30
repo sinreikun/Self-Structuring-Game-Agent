@@ -12,7 +12,7 @@ from .presentation import error_message,system_info
 class ModelBrowser:
     def __init__(self,app,recommended=False):
         self.app=app;self.catalog=ModelCatalog();self.events=queue.Queue();self.rows=[];self.current=None;self.running=False;self.selection=0
-        self.window=tk.Toplevel(app.window);self.window.title('SelfStruct — GGUFモデルブラウザ');self.window.geometry('1120x860');self.window.minsize(900,700)
+        self.window=tk.Toplevel(app.window);self.window.configure(background='#1c252e');self.window.title('SelfStruct — GGUFモデルブラウザ');self.window.geometry('1120x860');self.window.minsize(900,700)
         app.layout.window('model-browser',self.window)
         self.pc=app.performance_monitor.hardware or system_info()
         top=ttk.Frame(self.window,padding=10);top.pack(fill='x')
@@ -26,12 +26,13 @@ class ModelBrowser:
             container=ttk.Frame(tags);container.grid(row=row,column=1,sticky='w')
             for index,label in enumerate(labels):
                 var=tk.BooleanVar();self.tags[label]=var
-                ttk.Checkbutton(container,text=label,variable=var,style='Toolbutton').grid(row=index//7,column=index%7,sticky='w',padx=1,pady=2)
+                ttk.Checkbutton(container,text=label,variable=var,style='Toolbutton',command=lambda g=group,l=label:self.tag_changed(g,l)).grid(row=index//7,column=index%7,sticky='w',padx=1,pady=2)
             row+=1
         if recommended:self.tags['このPCで推奨'].set(True)
         ttk.Label(self.window,text=f'CPU：{system_info()["cpu"]} / 空きRAM {self.pc.get("ram",0):.1f}GB / ディスク {self.pc.get("free",0):.1f}GB',wraplength=1050).pack(fill='x',padx=10)
         self.status=tk.StringVar(value='GGUF配布メタデータで検索します。適合度は目安で、速度や研究成功を保証しません。')
         ttk.Label(self.window,textvariable=self.status,wraplength=1050).pack(fill='x',padx=10,pady=6)
+        ttk.Label(self.window,text='ライセンス絞り込みは既知の寛容ライセンス識別子に基づく目安です。独自条件はモデルカードで確認してください。\n高性能＝14B以上の規模目安。VRAM条件は容量比較であり、現在の管理RuntimeはCPU版です。',wraplength=1050).pack(side='bottom',fill='x',padx=10,pady=6)
         panes=ttk.Panedwindow(self.window,orient='vertical');panes.pack(fill='both',expand=True,padx=10)
         upper=ttk.Frame(panes);lower=ttk.Frame(panes);panes.add(upper,weight=1);panes.add(lower,weight=1)
         columns=('author','scale','updated','downloads','license','quants','size','fit')
@@ -41,16 +42,24 @@ class ModelBrowser:
             self.tree.heading(key,text=label);self.tree.column(key,width=105,stretch=False)
         scroll=ttk.Scrollbar(upper,orient='horizontal',command=self.tree.xview);self.tree.configure(xscrollcommand=scroll.set)
         self.tree.pack(fill='both',expand=True);scroll.pack(fill='x');self.tree.bind('<<TreeviewSelect>>',self.select)
-        self.detail=tk.Text(lower,height=8,wrap='word',background='#10171d',foreground='#dce5ed',state='disabled');self.detail.pack(fill='both',expand=True)
-        self.file=tk.StringVar();self.file_choice=ttk.Combobox(lower,textvariable=self.file,state='readonly');self.file_choice.pack(fill='x',pady=6)
+        controls=ttk.Frame(lower);controls.pack(side='bottom',fill='x')
+        self.detail=tk.Text(lower,height=5,wrap='word',background='#10171d',foreground='#dce5ed',state='disabled');self.detail.pack(fill='both',expand=True)
+        self.file=tk.StringVar();self.file_choice=ttk.Combobox(controls,textvariable=self.file,state='readonly');self.file_choice.pack(fill='x',pady=6)
         self.file_choice.bind('<<ComboboxSelected>>',self.file_selected)
-        self.file_status=tk.StringVar();ttk.Label(lower,textvariable=self.file_status,wraplength=1000).pack(fill='x')
-        self.ack=tk.BooleanVar();ttk.Checkbutton(lower,text='配布元のモデルカード・ライセンス条件を確認しました',variable=self.ack).pack(anchor='w')
-        ttk.Button(lower,text='選択した量子化を導入・推論試験',command=self.install).pack(anchor='e',pady=8)
-        ttk.Label(self.window,text='ライセンス絞り込みは既知の寛容ライセンス識別子に基づく目安です。独自条件はモデルカードで確認してください。\n高性能＝14B以上の規模目安。VRAM条件は容量比較であり、現在の管理RuntimeはCPU版です。',wraplength=1050).pack(fill='x',padx=10,pady=6)
+        self.file_status=tk.StringVar();ttk.Label(controls,textvariable=self.file_status,wraplength=1000).pack(fill='x')
+        self.ack=tk.BooleanVar();ttk.Checkbutton(controls,text='配布元のモデルカード・ライセンス条件を確認しました',variable=self.ack).pack(anchor='w')
+        self.install_button=ttk.Button(controls,text='選択した量子化を導入・推論試験',command=self.install)
+        self.install_button.pack(anchor='e',pady=8)
         app.layout.pane('model-browser-panes',panes)
+        if 'model-browser-panes' not in app.layout.entries:
+            panes.after(180,lambda:panes.sashpos(0,max(60,int(panes.winfo_height()*.35))))
         self.window.after(100,self.poll)
         if recommended:self.search()
+
+    def tag_changed(self,group,label):
+        if group=='並び順' and self.tags[label].get():
+            for other in TAGS[group]:
+                if other!=label:self.tags[other].set(False)
 
     def worker(self,kind,operation):
         def run():

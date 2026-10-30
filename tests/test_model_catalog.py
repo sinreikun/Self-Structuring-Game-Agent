@@ -81,6 +81,8 @@ def test_browser_search_details_and_install_are_connected(tmp_path,monkeypatch):
     try:
         browser.query.set('coder');browser.search();until(lambda:len(browser.tree.get_children())==1)
         browser.tree.selection_set('0');browser.select();until(lambda:browser.current is not None)
+        window.update()
+        assert browser.install_button.winfo_rooty()+browser.install_button.winfo_height()<=browser.window.winfo_rooty()+browser.window.winfo_height()
         assert 'Q4_K_M' in browser.file.get()
         assert 'Model card' in browser.detail.get('1.0','end')
         assert all('00001-of' not in label for label in browser.file_labels)
