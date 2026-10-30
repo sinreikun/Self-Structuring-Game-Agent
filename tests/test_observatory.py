@@ -247,3 +247,23 @@ def test_gc_work_is_bounded_and_runs_before_byte_limit_for_many_small_frames(tmp
     assert count==512
     assert len(store.rows(128))==128
     store.close()
+
+
+def test_gc_unlink_failure_keeps_live_references_consistent_and_lifetime_count(tmp_path,monkeypatch):
+    store=Store(tmp_path,64*1024**2);sid=store.session('Newborn',False)
+    for i in range(200):add(store,sid,Image.new('RGB',(16,16),(i,0,0)))
+    for p in (tmp_path/'evidence').glob('*.png'):os.utime(p,(1,1))
+    original=Path.unlink;attempts=[]
+    def unlink(path,*args,**kwargs):
+        if path.suffix=='.png':
+            attempts.append(path)
+            if len(attempts)==2:raise PermissionError('simulated sharing violation')
+        return original(path,*args,**kwargs)
+    monkeypatch.setattr(Path,'unlink',unlink)
+    store.collect(True)
+    assert len(attempts)>2
+    for row in store.rows():
+        assert (tmp_path/'evidence'/(row['before_hash']+'.png')).exists()
+        assert (tmp_path/'evidence'/(row['after_hash']+'.png')).exists()
+    assert store.counts()['experience']==200
+    store.close()

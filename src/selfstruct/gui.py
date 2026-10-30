@@ -316,11 +316,13 @@ class App:
                 self.stop_pending = True
                 return
             controller = self.controller
-            self.controller = None
+            # Keep its live inference snapshot visible until shutdown completes.
             self.task(controller.close, self.closed_controller)
 
     def closed_controller(self, _):
         self.controller = None
+        self.llm_status.set('● LLM 待機')
+        self.llm_label.configure(foreground='#9aabb9')
         self.status.set("停止しました。経験と研究内容を保存しました。")
 
     def newborn(self):

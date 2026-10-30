@@ -65,7 +65,7 @@ def create_diagnostics(root: Path, store=None, config=None, activity=None, gui=N
                 with store.lock, tempfile.TemporaryDirectory() as temp:
                     db=sqlite3.connect(Path(temp)/'diagnostics.sqlite3')
                     try:
-                        for table,order,limit in [('events','id',512),('knowledge','id',256),('reports','id',100),('gc_history','id',200),('jobs','updated',40)]:
+                        for table,order,limit in [('events','id',512),('knowledge','id',256),('reports','id',100),('gc_history','id',200),('compacted','last',256),('jobs','updated',40)]:
                             columns=[r[1] for r in store.db.execute(f'PRAGMA table_info({table})')]
                             # All values are bound; never execute user content.
                             db.execute(f'CREATE TABLE {table}('+','.join('"'+c+'"' for c in columns)+')')

@@ -180,21 +180,22 @@ class Store:
                 # Fresh observation requests have a bounded hot window, linked events/pins remain below.
                 self.db.execute("DELETE FROM observations WHERE id<(SELECT coalesce(max(id),0)-128 FROM observations)")
                 refs={r[0] for r in self.db.execute("SELECT before_hash FROM events WHERE before_hash IS NOT NULL UNION SELECT after_hash FROM events WHERE after_hash IS NOT NULL UNION SELECT image_hash FROM observations")}
-                freed=0
-                # Expired partial downloads are reproducible; active writes refresh mtime.
-                for partial in (self.account_root/'assets').rglob('*.part'):
-                    try:
-                        if not partial.is_symlink() and time.time()-partial.stat().st_mtime>7*86400:
-                            size=partial.stat().st_size;partial.unlink();freed+=size
-                    except FileNotFoundError:pass
-                removed=0
-                for path in (self.root/'evidence').glob('*.png'):
-                    try:
-                        if path.stem not in refs and time.time()-path.stat().st_mtime>60:
-                            size=path.stat().st_size;path.unlink();freed+=size;removed+=1
-                            self.db.execute("DELETE FROM image_inventory WHERE hash=?",(path.stem,))
-                    except FileNotFoundError: pass
-                    if removed>=128:break
+            # Commit archival metadata before removing files. A failed unlink must
+            # never roll back rows into references to images already removed.
+            freed=0;deleted=[]
+            for partial in (self.account_root/'assets').rglob('*.part'):
+                try:
+                    if not partial.is_symlink() and time.time()-partial.stat().st_mtime>7*86400:
+                        size=partial.stat().st_size;partial.unlink();freed+=size
+                except OSError:pass
+            for path in (self.root/'evidence').glob('*.png'):
+                try:
+                    if path.stem not in refs and time.time()-path.stat().st_mtime>60:
+                        size=path.stat().st_size;path.unlink();freed+=size;deleted.append((path.stem,))
+                except OSError:pass
+                if len(deleted)>=128:break
+            with self.db:
+                self.db.executemany("DELETE FROM image_inventory WHERE hash=?",deleted)
                 self.db.execute("INSERT INTO gc_history(created,stage,freed,events) VALUES(?,?,?,?)",(time.time(),self.storage_state,freed,len(stale)))
             if not self.db.in_transaction:
                 self.db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
@@ -326,7 +327,7 @@ class Store:
 
     def counts(self) -> dict:
         with self.lock:
-            result={"experience":self.db.execute("SELECT count(*) FROM events").fetchone()[0],
+            result={"experience":self.db.execute("SELECT (SELECT count(*) FROM events WHERE state<>'compacted')+(SELECT coalesce(sum(count),0) FROM compacted)").fetchone()[0],
                     "improvements":self.db.execute("SELECT count(*) FROM reports WHERE adopted=1").fetchone()[0]}
             for name,condition in {"discoveries":"kind='observation'", "hypotheses":"kind='hypothesis'",
                 "supported":"validation IN ('supported','reproduced')", "refuted":"validation='refuted'", "skills":"kind='skill'"}.items():
