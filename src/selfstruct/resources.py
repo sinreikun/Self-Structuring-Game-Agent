@@ -280,7 +280,10 @@ class ManagedLLM:
         try:
             self.start(state, cancel=cancel)
             from .research import LocalLLM
-            LocalLLM("http://127.0.0.1:8766/v1", "local").complete("日本語で短く挨拶してください。", max_tokens=32)
+            if cancel.is_set():raise InterruptedError('導入を中断しました。')
+            response=LocalLLM("http://127.0.0.1:8766/v1", "local").complete("日本語で短く挨拶してください。", max_tokens=32)
+            if cancel.is_set():raise InterruptedError('導入を中断しました。')
+            if not response.strip():raise ValueError('最小推論試験で応答を確認できませんでした。')
             state['validation']={'startup':True,'minimal_inference':True,'checked_at':time.time(),'japanese_quality':'未評価','json':'未試験','code':'未試験'}
             state['model_info']=model_item
             write_json(self.state_path, state)
