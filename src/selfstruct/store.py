@@ -148,7 +148,8 @@ class Store:
                 "低価値画像を抑制" if ratio>=self.gc_thresholds[2] else
                 "積極的に自動整理" if ratio>=self.gc_thresholds[1] else
                 "自動整理中" if ratio>=self.gc_thresholds[0] else "通常")
-            if not force and (ratio < self.gc_thresholds[0] or time.monotonic()-self._gc_at < 2): return 0
+            count=self.db.execute("SELECT count(*) FROM events WHERE state='complete'").fetchone()[0]
+            if not force and ((ratio < self.gc_thresholds[0] and count<=4096) or time.monotonic()-self._gc_at < 2):return 0
             self._gc_at = time.monotonic()
             protected = {r[0] for r in self.db.execute("SELECT event FROM evidence_pins")}
             for row in self.db.execute("SELECT evidence FROM knowledge"):
@@ -160,9 +161,12 @@ class Store:
                 GROUP BY feature,action,duration,revision,process_generation,CAST(change*10 AS INTEGER),CASE WHEN prediction<0 THEN -1 ELSE CAST(prediction*4 AS INTEGER) END LIMIT 256"""))
             protected.update(r[0] for r in self.db.execute("""SELECT id FROM events WHERE state='complete' AND
                 prediction>=0 AND abs(prediction-CASE WHEN change>.01 THEN 1 ELSE 0 END)>.7 ORDER BY id DESC LIMIT 128"""))
-            stale = [r for r in self.db.execute("SELECT * FROM events WHERE state='complete'") if r['id'] not in protected]
+            stale=[]
+            for row in self.db.execute("SELECT * FROM events WHERE state='complete'"):
+                if row['id'] not in protected:stale.append(row)
+                if len(stale)>=512:break
             with self.db:
-                for r in self.db.execute("SELECT * FROM events WHERE state='summarized' AND id<(SELECT coalesce(max(id),0)-128 FROM events)").fetchall():
+                for r in self.db.execute("SELECT * FROM events WHERE state='summarized' AND id<(SELECT coalesce(max(id),0)-128 FROM events) LIMIT 512").fetchall():
                     signature=self.condition_signature(r)
                     self.db.execute("INSERT INTO compacted VALUES (?,1,?,?) ON CONFLICT(signature) DO UPDATE SET count=count+1,last=excluded.last",(signature,r['sent'],r['sent']))
                     self.db.execute("UPDATE events SET state='compacted',before_hash=NULL,after_hash=NULL WHERE id=?",(r['id'],))
@@ -183,12 +187,14 @@ class Store:
                         if not partial.is_symlink() and time.time()-partial.stat().st_mtime>7*86400:
                             size=partial.stat().st_size;partial.unlink();freed+=size
                     except FileNotFoundError:pass
+                removed=0
                 for path in (self.root/'evidence').glob('*.png'):
                     try:
                         if path.stem not in refs and time.time()-path.stat().st_mtime>60:
-                            size=path.stat().st_size;path.unlink();freed+=size
+                            size=path.stat().st_size;path.unlink();freed+=size;removed+=1
                             self.db.execute("DELETE FROM image_inventory WHERE hash=?",(path.stem,))
                     except FileNotFoundError: pass
+                    if removed>=128:break
                 self.db.execute("INSERT INTO gc_history(created,stage,freed,events) VALUES(?,?,?,?)",(time.time(),self.storage_state,freed,len(stale)))
             if not self.db.in_transaction:
                 self.db.execute('PRAGMA wal_checkpoint(TRUNCATE)')

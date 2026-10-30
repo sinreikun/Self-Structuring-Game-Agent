@@ -37,6 +37,8 @@ def test_gc_protects_knowledge_pins_and_replay_but_compacts_old_repetition(tmp_p
     for p in (tmp_path/'evidence').glob('*'):os.utime(p,(1,1))
     before=store.usage(True)
     freed=store.collect(True)
+    assert 400-len(list((tmp_path/'evidence').glob('*.png')))<=128
+    freed+=store.collect(True)+store.collect(True)
     assert freed>0 and store.usage(True)<before+1024**2
     assert (tmp_path/'evidence'/(rows[5][1]+'.png')).exists()
     assert (tmp_path/'evidence'/(rows[6][1]+'.png')).exists()
@@ -232,3 +234,16 @@ def test_compaction_preserves_input_timing_revision_and_exact_image_context():
     original=Store.condition_signature(row)
     for key,value in [('duration',.02),('revision','r2'),('before_hash','c'),('feature',1)]:
         assert Store.condition_signature(dict(row,**{key:value}))!=original
+
+
+def test_gc_work_is_bounded_and_runs_before_byte_limit_for_many_small_frames(tmp_path):
+    store=Store(tmp_path,64*1024**2);sid=store.session('Newborn',False)
+    digest=store.image(Image.new('RGB',(16,16)))
+    with store.db:
+        store.db.executemany("""INSERT INTO events(session,before_hash,after_hash,action,duration,
+            process_generation,revision,state,feature,change,prediction,sent) VALUES (?,?,?,'A',.01,1,'r','complete',1,0,-1,1)""",[(sid,digest,digest)]*5000)
+    store.collect()
+    count=store.db.execute("SELECT count(*) FROM events WHERE state='compacted'").fetchone()[0]
+    assert count==512
+    assert len(store.rows(128))==128
+    store.close()
