@@ -339,7 +339,7 @@ class Controller:
             self.activity.update(attention=tuple(box))
             pixels = image.crop(tuple(box)).convert("L").resize((32, 32))
             return {"width": width, "height": height, "gray": list(pixels.tobytes()), "observed": time.time()}
-        agent.requests(self.files, lambda n:self.store.reserve(n,critical=False), observe, self.dispatch)
+        agent.requests(self.files, lambda n:self.store.reserve(n,critical=False), observe, lambda request:self.dispatch(request,revision))
         if "research_due" in agent.exports:
             self.scientist.automatic = bool(agent.call("research_due", self.steps))
         index, duration, wait, pred = agent.action(feature, len(self.config.keys))
@@ -382,13 +382,13 @@ class Controller:
         self.scientist.tick()
         return change
 
-    def dispatch(self, request: dict) -> dict:
+    def dispatch(self, request: dict, revision: str | None = None) -> dict:
         op = request["op"]
         if op == "describe":
             from .capabilities import validate_description
-            description=validate_description(request,self.agent_id)
+            description=validate_description(request,revision or self.agent_id)
             self.store.reserve(len(json.dumps(description).encode())+4096)
-            write_json(self.store.root/'host'/'capabilities.json',description)
+            write_json(self.revisions.root/(revision or self.agent_id)/'capabilities.json',description)
             return {"recorded":True}
         if op == "job":
             job = self.store.get_job(request["id"])

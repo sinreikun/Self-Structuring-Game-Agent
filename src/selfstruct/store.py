@@ -415,6 +415,38 @@ class Store:
         from .diagnostics import create_diagnostics
         create_diagnostics(self.account_root, store=self, destination=destination)
 
+    def export_research(self, destination: Path) -> None:
+        """Consistent DB backup; logs/settings never include authentication secrets."""
+        with self.lock:
+            descriptor, temp_name = tempfile.mkstemp(prefix="selfstruct-backup-", suffix=".sqlite3", dir=destination.parent)
+            import os
+            os.close(descriptor)
+            temp = Path(temp_name)
+            target = sqlite3.connect(temp)
+            try:
+                self.db.backup(target)
+            finally:
+                target.close()
+            try:
+                with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as out:
+                    out.write(temp, "diagnostics.sqlite3")
+                    out.writestr("研究ノート.md", self.book())
+                    for folder in ("host", "agents"):
+                        for path in (self.root / folder).rglob("*"):
+                            if path.is_file() and path.suffix in {".json", ".log", ".wat"}:
+                                out.write(path, path.relative_to(self.root))
+                    if self.account_root != self.root:
+                        for path in (self.account_root / "host").glob("*"):
+                            if path.is_file() and path.suffix in {".json", ".log"}:
+                                out.write(path, "environment/host/" + path.name)
+                    for row in self.rows(32):
+                        for key in ("before_hash", "after_hash"):
+                            path = self.root / "evidence" / (row[key] + ".png")
+                            if path.exists() and path.relative_to(self.root).as_posix() not in out.namelist():
+                                out.write(path, path.relative_to(self.root))
+            finally:
+                temp.unlink(missing_ok=True)
+
     def close(self) -> None:
         with self.lock:
             self.db.close()

@@ -52,7 +52,7 @@ class Launcher:
         version=manifest['version']
         if not isinstance(version,str) or not re.fullmatch(r'\d+\.\d+\.\d+(?:-dev\.\d+)?',version):raise ValueError('Invalid version')
         item=manifest['application'];identity=version+'-'+item['sha256'][:16]
-        if self.verified(identity):return identity
+        if identity==self.state.get('failed') or self.verified(identity):return identity
         artifact=Gateway(self.root,2*1024**3).download(item,'update')
         folder=self.root/'versions'/identity;folder.mkdir(parents=True,exist_ok=True)
         binary=folder/'SelfStruct.exe'

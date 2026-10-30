@@ -75,6 +75,7 @@ class App:
         categories.pack(anchor='w',pady=(0,10));categories.bind('<<ComboboxSelected>>',self.refresh_text)
         self.book_text = tk.Text(self.book, wrap="word", font=("Yu Gothic UI", 11),background='#111920',foreground='#dce5ed',insertbackground='#dce5ed')
         self.book_text.pack(fill="both", expand=True)
+        ttk.Button(self.details,text='研究記録を保存（診断提出用とは別）',command=self.export_research).pack(anchor='w',pady=(0,8))
         self.raw_text = tk.Text(self.details, wrap="none", font=("Consolas", 10))
         self.raw_text.pack(fill="both", expand=True)
         self.capabilities=ttk.Frame(self.tabs,padding=16)
@@ -363,6 +364,13 @@ class App:
             self.raw_text.insert('end',f'診断ZIP: {path}\n')
         self.task(generate,copied)
 
+    def export_research(self):
+        if not self.controller or self.busy:return
+        path=filedialog.asksaveasfilename(defaultextension='.zip',initialfile='研究記録.zip')
+        if path:
+            store=self.controller.store
+            self.task(lambda:store.export_research(Path(path)),lambda _:self.activity.set('研究DBと世代情報を保存しました。提出用には診断ZIPをご利用ください。'))
+
     def refresh_text(self, _=None):
         if not self.controller:
             return
@@ -391,7 +399,7 @@ class App:
 
     def render_graph(self):
         self.graph.delete('all')
-        path=self.controller.store.root/'host'/'capabilities.json'
+        path=self.controller.revisions.root/self.controller.agent_id/'capabilities.json'
         if not path.exists():
             self.graph.create_text(30,30,anchor='nw',fill='#dce5ed',text='Agentからの能力自己記述を待っています。Hostから能力やゲームの意味は与えません。')
             return
@@ -453,8 +461,8 @@ class App:
                 text=f"保存領域 {storage['used']/1024**3:.2f} / {storage['quota']/1024**3:g}GB"
                 if storage['stage']!='通常':text+=' ／ 保存領域を自動整理しています'
                 self.storage_label.set(text)
-            if ctrl.latest and (id(ctrl.latest),self.view_mode.get(),self.preview.winfo_width(),self.preview.winfo_height(),a.attention)!=self.last_preview:
-                self.last_preview=(id(ctrl.latest),self.view_mode.get(),self.preview.winfo_width(),self.preview.winfo_height(),a.attention)
+            if ctrl.latest and (ctrl.steps,self.view_mode.get(),self.preview.winfo_width(),self.preview.winfo_height(),a.attention)!=self.last_preview:
+                self.last_preview=(ctrl.steps,self.view_mode.get(),self.preview.winfo_width(),self.preview.winfo_height(),a.attention)
                 image = ctrl.latest.copy()
                 if ctrl.latest_before and self.view_mode.get() == "差分画像":
                     image = ImageChops.difference(ctrl.latest_before.resize(image.size), image)
