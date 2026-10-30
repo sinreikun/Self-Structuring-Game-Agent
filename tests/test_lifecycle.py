@@ -30,7 +30,8 @@ def test_autonomous_research_candidate_live_promotion_and_rollback(tmp_path, mon
     try:
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
-            if ctrl.store.reports() and any(r['adopted'] for r in ctrl.store.reports()) and not ctrl.revisions.state['trial']:
+            validated=any(row['validation'] in {'supported','reproduced','refuted'} for row in ctrl.store.knowledge_rows())
+            if ctrl.store.reports() and any(r['adopted'] for r in ctrl.store.reports()) and not ctrl.revisions.state['trial'] and validated:
                 break
             time.sleep(.03)
         ctrl.pause()
