@@ -82,7 +82,7 @@ class App:
         for title, command in (("START", self.start), ("PAUSE", self.pause), ("STOP", self.stop),
                                ("NEWBORN", self.newborn), ("EXPORT", self.export)):
             ttk.Button(toolbar, text=title, command=command).pack(side="left", padx=(0, 8))
-        ttk.Label(toolbar, text="緊急停止：F12", foreground="#953535").pack(side="right")
+        ttk.Label(toolbar, text="入力の停止：PAUSE / STOP", foreground="#953535").pack(side="right")
         self.metrics = tk.StringVar(value="経験 0　仮説 0　支持 0　反証 0　技能 0　自己改善 0")
         ttk.Label(self.home, textvariable=self.metrics).pack(anchor="w", pady=8)
         self.view_mode = tk.StringVar(value="現在の画面")
@@ -92,7 +92,7 @@ class App:
         self.preview.pack(fill="both", expand=True, pady=12)
         self.activity = tk.StringVar(value="画面の意味やキーの意味を、最初から与えることはありません。")
         ttk.Label(self.home, textvariable=self.activity, wraplength=1050).pack(anchor="w")
-        ttk.Label(self.home, text="通常はゲームを前面にして観測します。他のウィンドウへ切り替えると入力を解放して待機します。", wraplength=1050).pack(anchor="w", pady=8)
+        ttk.Label(self.home, text="背面でも継続します。対象ゲームを操作しても停止しません。止めるときはPAUSE / STOPを押してください。最小化には対応していません。", wraplength=1050).pack(anchor="w", pady=8)
 
     def _setup(self):
         ttk.Label(self.setup, text="はじめの設定", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 12))

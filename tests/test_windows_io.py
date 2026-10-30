@@ -32,3 +32,72 @@ def test_real_capture_input_release_and_restart():
         assert not game.held
     finally:
         game.stop()
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Requires Windows desktop APIs')
+def test_background_input_and_capture_do_not_touch_foreground_app():
+    import tkinter as tk
+    from selfstruct.windows import WindowsGame
+    from selfstruct.sandbox import difference
+    game = WindowsGame(sys.executable,[str(Path('tests/fixtures/window_game.py').resolve())],
+                       'SelfStruct I/O Test',['A'])
+    other = None
+    try:
+        game.start()
+        time.sleep(.4)
+        before = game.capture()
+        other = tk.Tk()
+        other.title('User foreground application')
+        other.geometry('600x500+50+50')
+        other.configure(bg='#10ee10')
+        received=[]
+        other.bind('<KeyPress>',lambda event:received.append(event.keysym))
+        other.update()
+        other.focus_force()
+        other.update()
+        foreground=game.user.GetForegroundWindow()
+        assert foreground!=game.hwnd
+        # The other window covers the game. Capturing desktop pixels would fail this test.
+        game.act('A',.05,threading.Event())
+        time.sleep(.1)
+        other.update()
+        after=game.capture()
+        assert difference(before,after)>.05
+        assert game.user.GetForegroundWindow()==foreground
+        assert not received and not game.held
+        # A user may return to the game, then leave it again; the agent still works.
+        import ctypes
+        from ctypes import wintypes
+        activate = ctypes.WinDLL('user32').SetForegroundWindow
+        activate.argtypes=[wintypes.HWND]
+        activate(game.hwnd)
+        game.act('A',.05,threading.Event())
+        other.focus_force()
+        other.update()
+        game.act('A',.05,threading.Event())
+        other.update()
+        assert not received and not game.held
+    finally:
+        game.stop()
+        if other:
+            other.destroy()
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Requires Windows desktop APIs')
+def test_hung_background_renderer_has_bounded_capture_timeout():
+    from selfstruct.windows import WindowsGame,GameUnavailable
+    game = WindowsGame(sys.executable,[str(Path('tests/fixtures/window_game.py').resolve())],
+                       'SelfStruct I/O Test',['H'])
+    try:
+        game.start()
+        time.sleep(.4)
+        game.capture()  # Warm the dedicated worker before deliberately hanging the window.
+        game.capturer.timeout=.4
+        game.act('H',.05,threading.Event())
+        started=time.monotonic()
+        with pytest.raises(GameUnavailable,match='応答'):
+            game.capture()
+        assert time.monotonic()-started<3
+        assert game.capturer.process is None
+    finally:
+        game.stop()

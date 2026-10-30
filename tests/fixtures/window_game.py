@@ -1,5 +1,6 @@
 """A Windows CI test fixture, never used as the product's game policy."""
 import tkinter as tk
+import time
 
 root = tk.Tk()
 root.title('SelfStruct I/O Test')
@@ -9,6 +10,9 @@ canvas.pack(fill='both', expand=True)
 counter = 0
 def key(event):
     global counter
+    if event.keysym.lower()=='h':
+        time.sleep(5)
+        return
     counter += 1
     canvas.configure(bg='#c04020' if counter % 2 else '#203040')
 root.bind('<KeyPress>', key)

@@ -16,7 +16,7 @@ from .config import Config, InstanceLock, RootFiles, atomic_write, write_json
 from .research import LocalLLM, Scientist
 from .sandbox import Revisions, difference, features
 from .store import CapacityError, Store
-from .windows import FocusLost, GameUnavailable, WindowsGame
+from .windows import WindowMinimized, GameUnavailable, WindowsGame
 
 log = logging.getLogger(__name__)
 
@@ -180,12 +180,6 @@ class Controller:
                 if self.game:
                     if hasattr(self.game, "release_due"):
                         self.game.release_due()
-                    import os
-                    if os.name == "nt":
-                        import ctypes
-                        if ctypes.windll.user32.GetAsyncKeyState(0x7B) & 0x8000:  # F12: always reserved
-                            self.pause()
-                            self.notify("緊急停止キーで入力を解放しました。")
                     if time.monotonic() - self.last_progress > 5:
                         self.game.release()
                     if time.monotonic() - self.last_progress > 30 and not self.paused.is_set():
@@ -214,7 +208,7 @@ class Controller:
                     if unchanged >= self.config.restart_after:
                         self.recover_game("画面変化が長時間確認できないため、有限の復帰試行後にゲームを再起動しました。")
                         unchanged = 0
-                except FocusLost as exc:
+                except WindowMinimized as exc:
                     self.game.release()
                     self.status = str(exc)
                     self.stopped.wait(.25)
