@@ -134,7 +134,7 @@ class Gateway:
         inventory = artifact.parent / "expanded-files.json"
         expected_name = "llama-server.exe" if os.name == "nt" else "llama-server"
         if dest.exists() and inventory.exists():
-            files = json.loads(inventory.read_text())
+            files = json.loads(inventory.read_text(encoding="utf-8"))
             if all((dest / name).resolve().is_relative_to(dest.resolve()) and
                    self.digest(dest / name) == digest for name, digest in files.items()):
                 servers = list(dest.rglob(expected_name))
@@ -197,9 +197,9 @@ class Catalog:
     def __init__(self, path: Path):
         self.path = path
         if path.exists():
-            self.data = json.loads(path.read_text())
+            self.data = json.loads(path.read_text(encoding="utf-8"))
         else:
-            self.data = json.loads(Path(__file__).with_name("assets").joinpath("catalog.json").read_text())
+            self.data = json.loads(Path(__file__).with_name("assets").joinpath("catalog.json").read_text(encoding="utf-8"))
 
     def refresh(self, url: str, key: str) -> None:
         if not url or not key:
@@ -250,7 +250,7 @@ class ManagedLLM:
         engine = gateway.extract_engine(gateway.download(engine_item, "engine", progress, cancel))
         model_item = Catalog(self.root / "host" / "catalog.json").resolve_model(selected)
         model = gateway.download(model_item, "model", progress, cancel)
-        old = json.loads(self.state_path.read_text()) if self.state_path.exists() else None
+        old = json.loads(self.state_path.read_text(encoding="utf-8")) if self.state_path.exists() else None
         self.stop()
         state = {"engine": str(engine), "model": str(model), "engine_sha256": Gateway.digest(engine),
                  "model_sha256": model_item["sha256"], "previous": old}
@@ -273,7 +273,7 @@ class ManagedLLM:
         if state is None:
             if not self.state_path.exists():
                 return False
-            state = json.loads(self.state_path.read_text())
+            state = json.loads(self.state_path.read_text(encoding="utf-8"))
         engine, model = Path(state["engine"]), Path(state["model"])
         for path, digest in ((engine, state["engine_sha256"]), (model, state["model_sha256"])):
             if not path.resolve().is_relative_to((self.root / "assets").resolve()) or Gateway.digest(path) != digest:
@@ -283,7 +283,7 @@ class ManagedLLM:
             raise ValueError("推論エンジンの構成ファイルを確認できません。")
         manifest = manifests[0]
         expanded = (manifest.parent / "expanded").resolve()
-        for name, digest in json.loads(manifest.read_text()).items():
+        for name, digest in json.loads(manifest.read_text(encoding="utf-8")).items():
             path = (expanded / name).resolve()
             if not path.is_relative_to(expanded) or Gateway.digest(path) != digest:
                 raise ValueError("推論エンジンの共有ライブラリの完全性を確認できません。")

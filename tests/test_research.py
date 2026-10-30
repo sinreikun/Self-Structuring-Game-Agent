@@ -18,7 +18,7 @@ def test_remote_inference_rejected():
 
 
 def test_isolated_evaluation_real_process(tmp_path):
-    seed = Path("src/selfstruct/assets/seed.wat").read_text()
+    seed = Path("src/selfstruct/assets/seed.wat").read_text(encoding="utf-8")
     store = Store(tmp_path, 64 * 1024**2)
     sid = store.session("Newborn", False)
     before = store.image(Image.new("RGB", (32, 32), "black"))

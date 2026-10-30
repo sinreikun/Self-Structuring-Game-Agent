@@ -142,10 +142,10 @@ class Revisions:
         self.lock = threading.RLock()
         self.state_path = root / "state.json"
         if not self.state_path.exists():
-            seed = importlib.resources.files("selfstruct").joinpath("assets/seed.wat").read_text()
+            seed = importlib.resources.files("selfstruct").joinpath("assets/seed.wat").read_text(encoding="utf-8")
             rid = self.create(seed)
             write_json(self.state_path, {"active": rid, "stable": rid, "previous": rid, "trial": False})
-        self.state = json.loads(self.state_path.read_text())
+        self.state = json.loads(self.state_path.read_text(encoding="utf-8"))
         try:
             self.load()
         except Exception:
@@ -160,7 +160,7 @@ class Revisions:
         rid = rid or self.active
         if len(rid) != 64 or any(ch not in "0123456789abcdef" for ch in rid):
             raise ValueError("Invalid revision")
-        source = (self.root / rid / "agent.wat").read_text()
+        source = (self.root / rid / "agent.wat").read_text(encoding="utf-8")
         if hashlib.sha256(source.encode()).hexdigest() != rid:
             raise ValueError("Revision integrity failure")
         return source

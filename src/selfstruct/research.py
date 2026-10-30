@@ -110,7 +110,7 @@ def evaluate(source: str, baseline: str, rows: list[dict], folder: Path, keys: l
                     raise TimeoutError("Candidate evaluation exceeded its budget or terminated")
                 status = Path(f"/proc/{worker.pid}/status")
                 if status.exists():
-                    for line in status.read_text().splitlines():
+                    for line in status.read_text(encoding="utf-8").splitlines():
                         if line.startswith("VmRSS:") and int(line.split()[1]) > 512 * 1024:
                             raise MemoryError("Candidate evaluation exceeded resident memory budget")
         worker.join(timeout=2)

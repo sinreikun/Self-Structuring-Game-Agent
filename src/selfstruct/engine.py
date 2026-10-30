@@ -65,7 +65,7 @@ class Controller:
         checkpoint = self.store.root / "host" / "checkpoint.json"
         restored = 0
         if checkpoint.exists():
-            state = json.loads(checkpoint.read_text())
+            state = json.loads(checkpoint.read_text(encoding="utf-8"))
             if state["revision"] == self.agent_id:
                 raw = (checkpoint.parent / state["file"]).read_bytes()
                 if hashlib.sha256(raw).hexdigest() != state["hash"]:
@@ -103,7 +103,7 @@ class Controller:
         active_path = self.root / "host" / "experiment.json"
         if active_path.exists() and (self.config.resume or self.config.mode == "Experienced"):
             import json
-            state = json.loads(active_path.read_text())
+            state = json.loads(active_path.read_text(encoding="utf-8"))
             path = self.root / "experiments" / state["id"]
             if not path.resolve().is_relative_to((self.root / "experiments").resolve()):
                 raise ValueError("Invalid experiment")
@@ -346,7 +346,7 @@ class Controller:
             path = self.files.path(request["path"])
             if path.stat().st_size > 256 * 1024:
                 raise ValueError("Candidate too large")
-            jid = self.store.job("candidate", {"source": path.read_text(), "after": self.last_eid})
+            jid = self.store.job("candidate", {"source": path.read_text(encoding="utf-8"), "after": self.last_eid})
         else:
             raise ValueError("Capability not granted")
         self.scientist.tick()

@@ -268,7 +268,7 @@ class Store:
                     for row in self.rows(32):
                         for key in ("before_hash", "after_hash"):
                             path = self.root / "evidence" / (row[key] + ".png")
-                            if path.exists() and str(path.relative_to(self.root)) not in out.namelist():
+                            if path.exists() and path.relative_to(self.root).as_posix() not in out.namelist():
                                 out.write(path, path.relative_to(self.root))
             finally:
                 temp.unlink(missing_ok=True)

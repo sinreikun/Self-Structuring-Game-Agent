@@ -9,7 +9,7 @@ from selfstruct.smoke import SyntheticGame
 
 
 def test_autonomous_research_candidate_live_promotion_and_rollback(tmp_path, monkeypatch):
-    seed = Path("src/selfstruct/assets/seed.wat").read_text()
+    seed = Path("src/selfstruct/assets/seed.wat").read_text(encoding="utf-8")
     # Fast observation is part of the test fixture, not a real-game performance claim.
     fast = seed.replace('(i32.const 80)', '(i32.const 10)')
     proposal = fast.replace('(i32.const -1)', '(i32.const 950)')
@@ -50,7 +50,7 @@ def test_autonomous_research_candidate_live_promotion_and_rollback(tmp_path, mon
 
 
 def test_runtime_failure_releases_and_rolls_back(tmp_path):
-    seed = Path('src/selfstruct/assets/seed.wat').read_text()
+    seed = Path('src/selfstruct/assets/seed.wat').read_text(encoding="utf-8")
     ctrl = Controller(Config(root=str(tmp_path), keys=['A','B'], research_every=10000), SyntheticGame())
     stable = ctrl.revisions.active
     bad = seed.replace('(i32.const 60)', '(loop $forever (br $forever)) (i32.const 60)')

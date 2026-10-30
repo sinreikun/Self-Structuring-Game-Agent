@@ -16,7 +16,7 @@ from selfstruct.store import CapacityError, Store
 
 @pytest.fixture
 def seed():
-    return Path("src/selfstruct/assets/seed.wat").read_text()
+    return Path("src/selfstruct/assets/seed.wat").read_text(encoding="utf-8")
 
 
 def event(store, sid, before, after, action="A", change=.1):
@@ -65,6 +65,7 @@ def test_store_atomic_evidence_resume_export(tmp_path):
     with zipfile.ZipFile(tmp_path / "export.zip") as archive:
         assert "研究ノート.md" in archive.namelist()
         assert "diagnostics.sqlite3" in archive.namelist()
+        assert len(archive.namelist()) == len(set(archive.namelist()))
     store.close()
     store = Store(tmp_path, 64 * 1024**2)
     assert store.session("Newborn", True) == sid

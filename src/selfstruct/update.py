@@ -42,12 +42,12 @@ class Updater:
         shutil.copy2(original, helper)
         ticket = self.root / "updates" / "ticket.json"
         write_json(ticket, {**prepared, "original": str(original), "parent": os.getpid(),
-                            "public_key": self.public_key, "envelope": json.loads((self.root / "updates" / "manifest.json").read_text())})
+                            "public_key": self.public_key, "envelope": json.loads((self.root / "updates" / "manifest.json").read_text(encoding="utf-8"))})
         subprocess.Popen([str(helper), "--apply-update", str(ticket)], close_fds=True)
 
 
 def apply_update(ticket: Path) -> bool:
-    state = json.loads(ticket.read_text())
+    state = json.loads(ticket.read_text(encoding="utf-8"))
     # Trust root comes from the signed application, never the mutable ticket.
     from .release import UPDATE_KEY
     manifest = verify_catalog(state["envelope"], UPDATE_KEY)

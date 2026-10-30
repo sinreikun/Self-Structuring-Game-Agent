@@ -63,7 +63,7 @@ class App:
         window.after(200, self.poll)
         if health_marker:
             from .sandbox import Sandbox
-            seed = Path(__file__).with_name("assets").joinpath("seed.wat").read_text()
+            seed = Path(__file__).with_name("assets").joinpath("seed.wat").read_text(encoding="utf-8")
             Sandbox(seed).action(1, 2)
             # Verify the retained database before acknowledging an application update.
             import sqlite3
