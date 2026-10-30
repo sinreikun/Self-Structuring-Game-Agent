@@ -39,6 +39,13 @@ class Launcher:
             return binary
         except Exception:return None
 
+    def collect_versions(self):
+        keep={self.state.get(k) for k in ('current','last-known-good','previous-known-good','pending')}
+        for folder in (self.root/'versions').iterdir():
+            if folder.name in keep or folder.is_symlink() or not folder.is_dir():continue
+            try:shutil.rmtree(folder)
+            except OSError:pass  # A version still running on Windows is retained.
+
     def install(self, envelope):
         manifest=verify_catalog(envelope,self.key)
         if manifest.get('protocol')!=1 or manifest.get('channel')!=self.channel:raise ValueError('Unknown update protocol or channel')
@@ -83,6 +90,7 @@ class Launcher:
             if self.state.get('pending'):
                 self.state.update(failed=self.state['pending'],pending=None);self.save()
             stable=self.state.get('last-known-good')
+            if not self.verified(stable):stable=self.state.get('previous-known-good')
             candidate=None
             try:
                 envelope=self.fetch(self.url)
@@ -101,12 +109,14 @@ class Launcher:
                 try: healthy=self.launch(candidate)
                 except (OSError,TimeoutError): healthy=False
                 if healthy:
-                    self.state.update(current=candidate,**{'last-known-good':candidate},pending=None,sequence=sequence)
-                    self.save();return True
+                    self.state.update(current=candidate,**{'last-known-good':candidate,'previous-known-good':stable},pending=None,sequence=sequence)
+                    self.save();self.collect_versions();return True
                 self.state.update(failed=candidate,pending=None);self.save()
                 self.message='新しい版の起動に失敗したため、前の安定版へ戻しました。'
             if stable and self.verified(stable):
-                self.state.update(current=stable,pending=None);self.save()
+                self.state.update(current=stable,pending=None)
+                if candidate==stable:self.state['sequence']=sequence
+                self.save();self.collect_versions()
                 self.status()
                 return self.launch(stable)
             raise RuntimeError('利用できる本体がありません。初回起動には公式配布元への接続が必要です。')

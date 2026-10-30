@@ -39,12 +39,16 @@ def test_one_launcher_multiple_updates_offline_rollback_and_data_preserved(tmp_p
     body.write_bytes(b'body-v2');second=envelope('2.0.0',2)
     launcher.fetch=lambda u:second
     assert launcher.run() and launcher.state['last-known-good']!=stable
+    assert launcher.state['previous-known-good']==stable
     stable=launcher.state['last-known-good']
     body.write_bytes(b'bad-v3');third=envelope('3.0.0',3)
     launcher.fetch=lambda u:third;fail.add('3.0.0')
     assert launcher.run() and launcher.state['last-known-good']==stable
     launcher.fetch=lambda u:(_ for _ in ()).throw(OSError('offline'))
     assert launcher.run() and '現在の安定版' in launcher.message
+    corrupt=launcher.root/'versions'/stable/'SelfStruct.exe'
+    corrupt.write_bytes(b'corrupted stable')
+    assert launcher.run() and launcher.state['current']==launcher.state['previous-known-good']
     assert user.read_text()=='precious user agent'
     assert all('runtime' in c for c in calls)
 
