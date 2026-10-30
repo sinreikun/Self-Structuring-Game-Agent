@@ -1,0 +1,30 @@
+name: Publish verified development release
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/release-request.json'
+      - '.github/workflows/publish.yml'
+      - 'tools/publish_release.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: publish-verified-release
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify existing CI artifact and publish prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python tools/publish_release.py
