@@ -3,6 +3,11 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      validate_model:
+        description: Validate real managed model acquisition on Windows
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -49,6 +54,10 @@ jobs:
           } finally {
             if (!$proc.HasExited) { Stop-Process -Id $proc.Id -Force }
           }
+      - if: runner.os == 'Windows' && (github.ref_type == 'tag' || inputs.validate_model)
+        name: Verify real managed inference
+        shell: pwsh
+        run: python tools/check_managed_inference.py --root "$env:RUNNER_TEMP/selfstruct-model-check" --report dist/inference-validation.json
       - if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
@@ -58,6 +67,7 @@ jobs:
             dist/SHA256SUMS.txt
             dist/THIRD_PARTY_NOTICES.txt
             dist/build-info.json
+            dist/inference-validation.json
       - if: always()
         uses: actions/upload-artifact@v4
         with:
