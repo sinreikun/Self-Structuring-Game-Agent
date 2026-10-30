@@ -60,7 +60,9 @@ jobs:
           $body = Join-Path $env:GITHUB_WORKSPACE 'dist/SelfStruct.exe'
           $report = Join-Path $env:GITHUB_WORKSPACE 'dist/launcher-validation.json'
           $arguments = '--launcher-self-test "{0}" "{1}"' -f $body, $report
-          $proc = Start-Process -FilePath .\dist\SelfStructLauncher.exe -ArgumentList $arguments -Wait -PassThru
+          $proc = Start-Process -FilePath .\dist\SelfStructLauncher.exe -ArgumentList $arguments -PassThru
+          if (!$proc.WaitForExit(180000)) { Stop-Process -Id $proc.Id -Force; throw 'Launcher self-test timed out' }
+          if (Test-Path $report) { Get-Content $report }
           if ($proc.ExitCode -ne 0 -or !(Test-Path $report)) { throw 'Packaged stable launcher validation failed' }
       - if: runner.os == 'Windows' && steps.validation.outputs.scope == 'full'
         shell: pwsh

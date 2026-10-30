@@ -14,6 +14,22 @@ from .resources import Gateway, fetch_json, verify_catalog
 LAUNCHER_VERSION='1.0.0'
 
 
+def stop_owned_process(child):
+    """PyInstaller onefile has a bootloader parent and a GUI child on Windows."""
+    if child.poll() is not None:return
+    if os.name=='nt' and isinstance(child,subprocess.Popen):
+        command=Path(os.environ.get('SystemRoot','C:/Windows'))/'System32'/'taskkill.exe'
+        try:
+            result=subprocess.run([str(command),'/PID',str(child.pid),'/T','/F'],capture_output=True,
+                                  timeout=10,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+            if result.returncode and child.poll() is None:raise OSError('Process tree did not stop')
+            child.wait(timeout=10)
+        except Exception as error:
+            raise RuntimeError('新しい本体の終了を確認できませんでした。二重起動を避けて起動を中断しました。') from error
+    else:
+        child.terminate();child.wait(timeout=10)
+
+
 class Launcher:
     def __init__(self, root, key, url, channel='Development', fetch=fetch_json, spawn=subprocess.Popen, timeout=60):
         self.root=Path(root)/'runtime';self.root.mkdir(parents=True,exist_ok=True)
@@ -82,7 +98,7 @@ class Launcher:
         finally:
             marker.unlink(missing_ok=True)
             if not healthy and child.poll() is None:
-                child.terminate();child.wait(timeout=10)
+                stop_owned_process(child)
 
     def run(self):
         with_lock=InstanceLock(self.root/'launcher.lock')

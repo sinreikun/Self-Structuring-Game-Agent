@@ -200,10 +200,15 @@ def test_ten_gib_budget_under_pressure_starts_research_and_gc(tmp_path):
         def complete(self,*a,**k):
             calls.append(activity.snapshot().llm)
             return '{"findings":[],"wat":""}'
-    scientist=Scientist(store,Revisions(tmp_path/'agents'),LLM(),['A'],48,lambda t:None,activity)
-    rows=store.rows();job=store.job('research',{})
-    scientist.study(rows,job)
-    assert calls==['推論中'] and activity.snapshot().llm=='待機'
+    scientist=Scientist(store,Revisions(tmp_path/'agents'),LLM(),['A'],1000,lambda t:None,activity)
+    store.collect(True)
+    scientist.start();scientist.tick()
+    try:
+        deadline=time.monotonic()+5
+        while not calls and time.monotonic()<deadline:time.sleep(.01)
+        assert calls==['推論中']
+    finally:scientist.close()
+    assert activity.snapshot().llm=='待機'
     store.collect(True)
     assert store.storage_state=='積極的に自動整理'
     assert len(store.rows())>=48
@@ -219,3 +224,11 @@ def test_capacity_cache_accounts_for_wal_growth_between_directory_scans(tmp_path
         store.db.execute('INSERT INTO diagnostic_fixture VALUES (?)',(b'x'*256*1024,))
     assert store.usage()>before+128*1024
     store.close()
+
+
+def test_compaction_preserves_input_timing_revision_and_exact_image_context():
+    row=dict(before_hash='a',after_hash='b',feature=257,action='A',duration=.01,
+             revision='r1',process_generation=1,prediction=-1,change=.03)
+    original=Store.condition_signature(row)
+    for key,value in [('duration',.02),('revision','r2'),('before_hash','c'),('feature',1)]:
+        assert Store.condition_signature(dict(row,**{key:value}))!=original

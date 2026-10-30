@@ -128,6 +128,12 @@ class Store:
     def protect_recent(self, reason: str, limit: int = 16):
         self.pin([r["id"] for r in self.rows(limit)], reason)
 
+    @staticmethod
+    def condition_signature(row):
+        # Never merge different revisions, input timing or exact observed image pairs.
+        return json.dumps({k:row[k] for k in ('before_hash','after_hash','feature','action','duration',
+            'revision','process_generation','prediction','change')},separators=(',',':'))
+
     def collect(self, force: bool = False) -> int:
         """Only redundant, unreferenced primary images are collectible. No fuzzy deletion.
 
@@ -151,17 +157,17 @@ class Store:
             protected.update(r[0] for r in self.db.execute("SELECT id FROM events WHERE state='complete' ORDER BY id DESC LIMIT 128"))
             # First representatives preserve temporal and action/result relationships.
             protected.update(r[0] for r in self.db.execute("""SELECT min(id) FROM events WHERE state='complete'
-                GROUP BY (feature & 255),action,CAST(change*10 AS INTEGER),CASE WHEN prediction<0 THEN -1 ELSE CAST(prediction*4 AS INTEGER) END LIMIT 256"""))
+                GROUP BY feature,action,duration,revision,process_generation,CAST(change*10 AS INTEGER),CASE WHEN prediction<0 THEN -1 ELSE CAST(prediction*4 AS INTEGER) END LIMIT 256"""))
             protected.update(r[0] for r in self.db.execute("""SELECT id FROM events WHERE state='complete' AND
                 prediction>=0 AND abs(prediction-CASE WHEN change>.01 THEN 1 ELSE 0 END)>.7 ORDER BY id DESC LIMIT 128"""))
-            stale = [r for r in self.db.execute("SELECT id,feature,action,change,sent FROM events WHERE state='complete'") if r['id'] not in protected]
+            stale = [r for r in self.db.execute("SELECT * FROM events WHERE state='complete'") if r['id'] not in protected]
             with self.db:
-                for r in self.db.execute("SELECT id,feature,action,change,sent FROM events WHERE state='summarized' AND id<(SELECT coalesce(max(id),0)-128 FROM events)").fetchall():
-                    signature=json.dumps([r['feature'] & 255,r['action'],int((r['change'] or 0)*10)])
+                for r in self.db.execute("SELECT * FROM events WHERE state='summarized' AND id<(SELECT coalesce(max(id),0)-128 FROM events)").fetchall():
+                    signature=self.condition_signature(r)
                     self.db.execute("INSERT INTO compacted VALUES (?,1,?,?) ON CONFLICT(signature) DO UPDATE SET count=count+1,last=excluded.last",(signature,r['sent'],r['sent']))
                     self.db.execute("UPDATE events SET state='compacted',before_hash=NULL,after_hash=NULL WHERE id=?",(r['id'],))
                 for r in stale:
-                    signature=json.dumps([r['feature'] & 255,r['action'],int(r['change']*10)])
+                    signature=self.condition_signature(r)
                     self.db.execute("""INSERT INTO compacted VALUES (?,1,?,?) ON CONFLICT(signature) DO UPDATE
                         SET count=count+1,last=excluded.last""", (signature,r['sent'],r['sent']))
                     self.db.execute("UPDATE events SET state='compacted',before_hash=NULL,after_hash=NULL WHERE id=?",(r['id'],))

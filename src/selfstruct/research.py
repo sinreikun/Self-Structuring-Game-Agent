@@ -277,7 +277,8 @@ class Scientist:
                 self.store.pin([r['id'] for r in rows],'research-current')
             self.store.validate_claims()
             pending = self.store.jobs()
-            if not pending and (not self.automatic or len(rows) < max(48, self.every) or rows[-1]["id"] - self.last_event < self.every):
+            every=min(48,self.every) if self.store.storage_state!='通常' else self.every
+            if not pending and (not self.automatic or len(rows) < max(48, every) or rows[-1]["id"] - self.last_event < every):
                 self.store.unpin('research-current')
                 continue
             if rows:
