@@ -2,7 +2,7 @@
 
 未知のゲームの画面と、許可された入力だけから経験を集め、自分の観測・予測方法を改善するための自律研究アプリケーションです。ゲーム固有の攻略方法や「敵」「HP」などの意味を初期状態へ埋め込みません。
 
-現在は配布前の開発版です。Windows向け単体EXEのビルド構成を含みますが、Windows実機での検証と署名付き公式配布は完了していません。未知のゲームを理解・攻略できることや、長時間の無人稼働が保証された完成版ではありません。
+現在は開発版です。[GitHub Releases](https://github.com/sinreikun/Self-Structuring-Game-Agent/releases)からWindows向け単体EXEを配布します。Windows CIでGUI操作・テスト用ウィンドウの画面取得と入力・再起動・梱包後の自己診断を確認しています。未知のゲームを理解・攻略できることや、長時間の無人稼働が保証された完成版ではありません。署名付き本体更新は未設定です。
 
 ## 初回設定と使い方
 
@@ -42,7 +42,7 @@ Agentの変更は、有限の隔離実行、新しい独立経験での予測評
 
 検証結果と未達条件は [検証記録](docs/validation.md)、設計は [アーキテクチャ](docs/architecture.md) に記載しています。要件原文も [基本仕様](docs/requirements-core.md) と [配布仕様](docs/requirements-distribution.md) に保存しています。
 
-Windows EXEはWindows上で生成する必要があります。GitHub Actionsの「Test and Windows EXE」はテスト・梱包後に成果物を保存する構成で、自動公開は行いません。公式更新は署名鍵が設定されるまで利用できません。
+Windows EXEはWindows上で生成します。GitHub Actionsの「Test and Windows EXE」はテスト・梱包後に成果物を保存する構成で、リリースへの公開は別に行います。公式更新は署名鍵が設定されるまで利用できません。
 
 <details>
 <summary>開発者向け：テストとビルド</summary>

@@ -8,12 +8,23 @@ import wasmtime
 import hashlib
 import json
 import shutil
+import sysconfig
 
 root = Path(__file__).resolve().parents[1]
 os.chdir(root)
 folder = root / "build"
 folder.mkdir(exist_ok=True)
 notices = []
+runtime_licenses = [Path(sys.base_prefix)/'LICENSE.txt',Path(sysconfig.get_path('stdlib'))/'LICENSE.txt',
+                    Path('/usr/share/doc')/f'python{sys.version_info.major}.{sys.version_info.minor}'/'copyright']
+runtime_licenses.extend((Path(sys.base_prefix)/'tcl').rglob('license.terms'))
+seen = set()
+for license_path in runtime_licenses:
+    if license_path.is_file():
+        text = license_path.read_text(encoding='utf-8',errors='replace')
+        if text not in seen:
+            notices.append(f'\nRuntime license: {license_path.name}\n'+text)
+            seen.add(text)
 for name in ("Pillow", "wasmtime", "cryptography", "cffi", "importlib_resources", "pycparser", "pyinstaller"):
     distribution = metadata.distribution(name)
     notices.append(f"\n{'='*60}\n{name} {distribution.version}\n")

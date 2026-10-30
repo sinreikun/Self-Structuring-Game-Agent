@@ -34,6 +34,22 @@ jobs:
           $proc = Start-Process -FilePath .\dist\SelfStruct.exe -ArgumentList '--self-test' -Wait -PassThru
           if ($proc.ExitCode -ne 0) { throw "Packaged smoke test failed: $($proc.ExitCode)" }
       - if: runner.os == 'Windows'
+        name: Verify packaged GUI startup
+        shell: pwsh
+        run: |
+          $marker = Join-Path $env:RUNNER_TEMP 'SelfStruct-healthy.txt'
+          Remove-Item $marker -ErrorAction SilentlyContinue
+          $proc = Start-Process -FilePath .\dist\SelfStruct.exe -ArgumentList '--health-marker', $marker -PassThru
+          try {
+            $deadline = (Get-Date).AddSeconds(30)
+            while (!(Test-Path $marker) -and !$proc.HasExited -and (Get-Date) -lt $deadline) {
+              Start-Sleep -Milliseconds 200
+            }
+            if (!(Test-Path $marker) -or $proc.HasExited) { throw 'Packaged GUI startup failed' }
+          } finally {
+            if (!$proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
+      - if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: SelfStruct-Windows-x64
