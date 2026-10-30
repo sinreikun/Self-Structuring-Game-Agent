@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "generation": 1,
+  "models": [
+    {"id":"light", "name":"軽量・CPUでも利用可能", "description":"コード生成を試す軽量モデル。空きメモリ4GB以上を推奨。", "ram_gb":4, "repo":"Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF", "file":"qwen2.5-coder-1.5b-instruct-q4_k_m.gguf"},
+    {"id":"standard", "name":"標準・コード生成重視", "description":"研究と自己改善向け。空きメモリ10GB以上を推奨。", "ram_gb":10, "repo":"Qwen/Qwen2.5-Coder-7B-Instruct-GGUF", "file":"qwen2.5-coder-7b-instruct-q4_k_m.gguf"}
+  ]
+}

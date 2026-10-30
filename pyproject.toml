@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "selfstruct"
+version = "0.1.0"
+description = "画面と限定入力から学ぶ自律研究環境"
+requires-python = ">=3.12"
+dependencies = ["Pillow==11.3.0", "wasmtime==38.0.0", "cryptography==46.0.3"]
+
+[project.optional-dependencies]
+dev = ["pytest==8.4.2", "pyinstaller==6.16.0"]
+
+[project.scripts]
+selfstruct = "selfstruct.__main__:main"
+
+[tool.setuptools.package-data]
+selfstruct = ["assets/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
