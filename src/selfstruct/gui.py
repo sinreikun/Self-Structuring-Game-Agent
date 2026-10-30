@@ -123,14 +123,15 @@ class App:
         self.preview=tk.Canvas(screen,background='#10171d',highlightthickness=0,height=330)
         self.preview.pack(fill='both',expand=True)
         self.llm_status=tk.StringVar(value='● LLM 待機')
-        self.llm_label=ttk.Label(readout,textvariable=self.llm_status)
-        self.llm_label.pack(anchor='w')
+        header=ttk.Frame(readout);header.pack(fill='x')
+        self.llm_label=ttk.Label(header,textvariable=self.llm_status)
+        self.llm_label.pack(side='left')
         self.current_activity=tk.StringVar(value='現在：観測を待っています')
         ttk.Label(readout,textvariable=self.current_activity,wraplength=1050).pack(anchor='w')
         self.timeline=tk.StringVar(value='最近のイベントは開始後に表示されます。')
         ttk.Label(readout,textvariable=self.timeline,wraplength=1050,foreground='#a8bbc9').pack(anchor='w',pady=5)
         self.storage_label=tk.StringVar(value='保存領域 —')
-        ttk.Label(readout,textvariable=self.storage_label).pack(anchor='e')
+        ttk.Label(header,textvariable=self.storage_label).pack(side='right')
         self.adoption=tk.StringVar()
         ttk.Label(readout,textvariable=self.adoption,foreground='#7fd2af').pack(anchor='w')
         self.activity = tk.StringVar(value="画面の意味やキーの意味を、最初から与えることはありません。")
@@ -447,7 +448,7 @@ class App:
             self.timeline.set('\n'.join(e.text for e in a.events[-3:]))
             self.adoption.set(a.adoption if time.time()-a.adoption_at<20 else '')
             telemetry=ctrl.telemetry;c=telemetry.get('counts',{});storage=telemetry.get('storage',{})
-            self.metrics.set(f"経験 {c.get('experience',ctrl.steps)}　発見 {c.get('discoveries',0)}　仮説 {c.get('hypotheses',0)}　支持 {c.get('supported',0)}　反証 {c.get('refuted',0)}　技能 {c.get('skills',0)}　自己改善 {c.get('improvements',0)}　世代 {a.revision[:8]}")
+            self.metrics.set(f"経験 {c.get('experience',ctrl.steps)}　発見 {c.get('discoveries',0)}　仮説 {c.get('hypotheses',0)}　支持 {c.get('supported',0)}　反証 {c.get('refuted',0)}　技能 {c.get('skills',0)}　自己改善 {c.get('improvements',0)}　世代 {ctrl.generation_number}")
             if storage:
                 text=f"保存領域 {storage['used']/1024**3:.2f} / {storage['quota']/1024**3:g}GB"
                 if storage['stage']!='通常':text+=' ／ 保存領域を自動整理しています'

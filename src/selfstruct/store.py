@@ -64,6 +64,7 @@ class Store:
           CREATE TABLE IF NOT EXISTS image_inventory(hash TEXT PRIMARY KEY, bytes INTEGER, created REAL);
           CREATE TABLE IF NOT EXISTS compacted(signature TEXT PRIMARY KEY, count INTEGER, first REAL, last REAL);
           CREATE INDEX IF NOT EXISTS event_state ON events(state,id);
+          CREATE INDEX IF NOT EXISTS knowledge_kind ON knowledge(kind);
           CREATE INDEX IF NOT EXISTS knowledge_status ON knowledge(validation,kind);
           CREATE INDEX IF NOT EXISTS event_session ON events(session,id);
         """)
@@ -264,18 +265,22 @@ class Store:
             self.db.execute("UPDATE events SET after_hash=?,observed=?,change=?,cost=?,state=CASE WHEN before_hash<>'' AND ?<>'' THEN 'complete' ELSE 'summarized' END WHERE id=?",
                             (after, time.time(), change, cost, after, event))
 
-    def rows(self, limit: int = 512) -> list[dict]:
+    def rows(self, limit: int = 512, pin_reason: str | None = None) -> list[dict]:
         with self.lock:
-            return [dict(r) for r in reversed(self.db.execute(
+            rows=[dict(r) for r in reversed(self.db.execute(
                 "SELECT * FROM events WHERE state='complete' ORDER BY id DESC LIMIT ?", (limit,)).fetchall())]
+            if pin_reason:self.pin([r['id'] for r in rows],pin_reason)
+            return rows
 
-    def regression_rows(self, before: int) -> list[dict]:
+    def regression_rows(self, before: int, pin_reason: str | None = None) -> list[dict]:
         with self.lock:
             recent = self.db.execute("SELECT * FROM events WHERE state='complete' AND id<=? ORDER BY id DESC LIMIT 128", (before,)).fetchall()
             successful = self.db.execute("""SELECT * FROM events WHERE state='complete' AND id<=? AND prediction>=0
               AND (prediction-CASE WHEN change>.01 THEN 1 ELSE 0 END)*(prediction-CASE WHEN change>.01 THEN 1 ELSE 0 END)<.04
               ORDER BY id DESC LIMIT 128""", (before,)).fetchall()
-            return sorted({row['id']:dict(row) for row in [*recent,*successful]}.values(),key=lambda row:row['id'])
+            rows=sorted({row['id']:dict(row) for row in [*recent,*successful]}.values(),key=lambda row:row['id'])
+            if pin_reason:self.pin([r['id'] for r in rows],pin_reason)
+            return rows
 
     def knowledge(self, kind: str, text: str, provenance: str, validation: str, evidence: list[int]) -> int:
         if provenance not in PROVENANCE or validation not in VALIDATION:
@@ -289,6 +294,15 @@ class Store:
             self.reserve(8192)
             return self.db.execute("INSERT INTO knowledge(kind,text,provenance,validation,evidence,created) VALUES(?,?,?,?,?,?)",
                                    (kind, text, provenance, validation, json.dumps(evidence), time.time())).lastrowid
+
+    def revision_number(self, revision: str) -> int:
+        key='revision-number:'+revision
+        with self.lock,self.db:
+            old=self.db.execute('SELECT value FROM meta WHERE key=?',(key,)).fetchone()
+            if old:return int(old[0])
+            number=1+self.db.execute("SELECT coalesce(max(CAST(value AS INTEGER)),0) FROM meta WHERE key LIKE 'revision-number:%'").fetchone()[0]
+            self.db.execute('INSERT INTO meta VALUES (?,?)',(key,str(number)))
+            return number
 
     def counts(self) -> dict:
         with self.lock:

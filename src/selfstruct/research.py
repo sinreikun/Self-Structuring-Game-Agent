@@ -362,7 +362,7 @@ class Scientist:
         deadline = time.monotonic() + 300
         future = []
         while not self.stop_event.wait(.5) and time.monotonic() < deadline:
-            future = [r for r in self.store.rows(128) if r["id"] > after_id]
+            future = [r for r in self.store.rows(128,pin_reason='pending-'+jid) if r["id"] > after_id]
             if len(future) >= 48:
                 break
         if len(future) < 48:
@@ -372,8 +372,9 @@ class Scientist:
         self.activity.update(llm='評価中',comparison='過去経験で比較',experiment='予測方法の改善を検証')
         self.activity.emit('replay')
         self.store.pin([r['id'] for r in future],'evaluation-'+jid)
+        self.store.unpin('pending-'+jid)
         result = evaluate(source, self.revisions.source(), future, self.store.root / "evidence", self.keys)
-        historical = self.store.regression_rows(after_id)
+        historical = self.store.regression_rows(after_id,pin_reason='evaluation-'+jid)
         if historical:
             self.store.pin([r['id'] for r in historical],'evaluation-'+jid)
             regression = evaluate(source, self.revisions.source(), historical, self.store.root / "evidence", self.keys)

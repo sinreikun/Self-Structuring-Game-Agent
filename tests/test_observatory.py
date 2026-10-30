@@ -58,6 +58,11 @@ def test_emergency_reserve_and_pressure_continue_with_summarized_actions(tmp_pat
     assert len(store.rows())>=48
     assert store.db.execute('SELECT count(*) FROM gc_history').fetchone()[0]>0
     # Exact boundary: ordinary evidence cannot take the last 5%; research can.
+    store.close()
+    # Uncollectible assets isolate reservation from the GC exercised above.
+    store=Store(tmp_path/'boundary',64*1024**2)
+    asset=store.root/'protected-model'
+    with asset.open('wb') as f:f.truncate(8*1024**2)
     used=store.usage(True);store.quota=used+200000
     with pytest.raises(CapacityError):store.reserve(100000,critical=False)
     store.reserve(100000,critical=True)

@@ -53,6 +53,7 @@ class Controller:
         self.revisions = Revisions(self.experiment / "agents" / "revisions")
         self.agent = self.revisions.load()
         self.agent_id = self.revisions.active
+        self.generation_number=self.store.revision_number(self.agent_id)
         self.last_eid = 0
         self.files = RootFiles(self.experiment / "agents" / "workspace", min(config.quota_bytes // 10, 256 * 1024**2))
         self.confirm_steps = 0
@@ -262,6 +263,7 @@ class Controller:
                     self.revisions.rollback()
                     self.agent = self.revisions.load()
                     self.agent_id = self.revisions.active
+                    self.generation_number=self.store.revision_number(self.agent_id)
                     self.notify("内部処理の異常を記録し、前の安定世代に戻しました。")
                     self.restarts += 1
                     if self.restarts > self.config.max_restarts:
@@ -307,6 +309,7 @@ class Controller:
         if self.revisions.active != self.agent_id:
             self.agent = self.revisions.load()
             self.agent_id = self.revisions.active
+            self.generation_number=self.store.revision_number(self.agent_id)
             self.confirm_steps = 0
             self._restore_learning()
         before = self.game.capture()
@@ -338,7 +341,7 @@ class Controller:
         self.activity.update(phase="入力中", action=self.config.keys[index],duration=duration,prediction=pred,
                              next="入力後の画面を観測します")
         self.activity.emit("action",key=self.config.keys[index])
-        before_hash = self.store.image(before,critical=time.time()<self.protect_until)
+        before_hash = self.store.image(before,critical=time.time()<self.protect_until or bool(self.scientist.live) or self.revisions.state["trial"])
         eid = self.store.begin(self.session, before_hash, self.config.keys[index], duration,
                                self.game.generation, revision, feature, pred)
         try:
@@ -352,7 +355,7 @@ class Controller:
         self.cancel_input.wait(wait)
         after_image = self.game.capture()
         after, after_raw = features(after_image)
-        after_hash = self.store.image(after_image,critical=time.time()<self.protect_until)
+        after_hash = self.store.image(after_image,critical=time.time()<self.protect_until or bool(self.scientist.live) or self.revisions.state["trial"])
         change = difference(before, after_image)
         self.store.finish(eid, after_hash, change, time.perf_counter() - started)
         if time.time()<self.protect_until:self.store.pin([eid],"error-after")

@@ -66,6 +66,7 @@ class Layout:
             positions=entry.get('sashes',[])
             if not isinstance(positions,list):return
             extent=widget.winfo_height() if str(widget.cget('orient'))=='vertical' else widget.winfo_width()
+            if not positions and len(widget.panes())==2:positions=[max(80,extent-180)]
             for i,value in enumerate(positions[:max(0,len(widget.panes())-1)]):
                 if type(value)==int:
                     try:widget.sashpos(i,max(50,min(value,max(50,extent-50))))
