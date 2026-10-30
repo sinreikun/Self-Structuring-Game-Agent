@@ -53,6 +53,7 @@ def test_managed_inference_recovery_keeps_pending_work(tmp_path):
         if len(calls)<=2:
             raise URLError('inference process terminated')
         store.set_job(jid,'complete')
+    scientist.retry_base_delay = .01  # Exercise retry/recovery without production backoff delays.
     scientist.study = study
     scientist.recover_llm = lambda:recoveries.append(True)
     scientist.start()

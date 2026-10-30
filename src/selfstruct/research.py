@@ -174,6 +174,7 @@ class Scientist:
         self.live: dict | None = None
         self.last_event = 0
         self.failed_calls = 0
+        self.retry_base_delay = 5
         self.automatic = True
         self.recover_llm = None
         self.thread = threading.Thread(target=self.run, name="research", daemon=True)
@@ -321,7 +322,7 @@ class Scientist:
                         log.exception("Managed inference recovery failed")
                 self.notify("研究用の推論を再試行します。画面と入力の経験収集は継続しています。" if self.failed_calls < 5 else
                             "ローカル推論が繰り返し失敗しています。モデルの稼働状態を確認してください。経験収集は継続中です。")
-                self.stop_event.wait(min(60,5*2**min(self.failed_calls,4)))
+                self.stop_event.wait(min(60,self.retry_base_delay*2**min(self.failed_calls,4)))
 
             finally:
                 self.store.unpin('research-current')
