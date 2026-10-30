@@ -13,17 +13,20 @@ class Server(http.server.ThreadingHTTPServer):
 
 @pytest.fixture
 def endpoint():
-    state={'delay':0,'finish':'stop','content':'こんにちは','reasoning':None,'requests':[]}
+    state={'headers_first':False,'headers_sent':False,'delay':0,'finish':'stop','content':'こんにちは','reasoning':None,'requests':[]}
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self,*args):pass
         def do_POST(self):
             payload=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
             state['requests'].append(payload)
-            time.sleep(state['delay'])
             message={'content':state['content'],'reasoning_content':state['reasoning']}
             body=json.dumps({'choices':[{'finish_reason':state['finish'],'message':message}]}).encode()
             try:
-                self.send_response(200);self.end_headers();self.wfile.write(body)
+                if not state['headers_first']:time.sleep(state['delay'])
+                self.send_response(200);self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.flush()
+                state['headers_sent']=True
+                if state['headers_first']:time.sleep(state['delay'])
+                self.wfile.write(body)
             except (OSError,BrokenPipeError):pass
     server=Server(('127.0.0.1',0),Handler)
     worker=threading.Thread(target=server.serve_forever,daemon=True);worker.start()
@@ -114,3 +117,16 @@ def test_gpu_status_comes_from_runtime_evidence_and_failure_uses_verified_cpu(tm
             assert manager.active_state['engine']==str(cpu)
             assert commands[-1][commands[-1].index('-ngl')+1]=='0'
     finally:manager.stop()
+
+
+def test_cancel_interrupts_body_after_connection_close_headers(endpoint):
+    client,state=endpoint;state['headers_first']=True;state['delay']=10
+    cancel=threading.Event();errors=[]
+    def run():
+        try:client.complete('slow body',cancel=cancel)
+        except Exception as error:errors.append(error)
+    worker=threading.Thread(target=run);worker.start()
+    deadline=time.monotonic()+2
+    while not state['headers_sent'] and time.monotonic()<deadline:time.sleep(.01)
+    cancel.set();worker.join(timeout=2)
+    assert not worker.is_alive() and isinstance(errors[0],InterruptedError)

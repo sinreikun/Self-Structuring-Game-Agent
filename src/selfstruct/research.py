@@ -53,12 +53,13 @@ class LocalLLM:
         if cancel and cancel.is_set():raise InterruptedError('推論を中断しました。')
         parsed=urlparse(self.url)
         connection=http.client.HTTPConnection(parsed.hostname,parsed.port or 80,timeout=3)
+        active_socket=[None]
         finished=threading.Event();expired=threading.Event();deadline=time.monotonic()+timeout
         def interrupt():
             while not finished.wait(.05):
                 if (cancel and cancel.is_set()) or time.monotonic()>=deadline:
                     expired.set()
-                    sock=connection.sock
+                    sock=active_socket[0] or connection.sock
                     if sock:
                         try:sock.shutdown(socket.SHUT_RDWR)
                         except OSError:pass
@@ -71,6 +72,7 @@ class LocalLLM:
         watcher.start()
         try:
             connection.connect()
+            active_socket[0]=connection.sock
             if cancel and cancel.is_set():raise InterruptedError('推論を中断しました。')
             connection.sock.settimeout(timeout)
             connection.request('POST',parsed.path+'/chat/completions',json.dumps(payload).encode(),{'Content-Type':'application/json'})
