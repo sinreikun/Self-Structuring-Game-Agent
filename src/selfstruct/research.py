@@ -251,7 +251,7 @@ class Scientist:
     def abort_trial(self, reason: str) -> None:
         with self.lock:
             if self.live:
-                self.store.report(self.live["revision"], False, "候補の動作異常を検出し、安定版の探索へ戻りました。", {"error": reason})
+                self.store.report(self.live["revision"], False, "候補の動作異常を検出し、安定版の探索へ戻りました。", {"error": reason,"live":self.live["metrics"],"replay":self.live["replay"]})
                 self.store.set_job(self.live["job"], "failed", {"error": reason})
                 self.live = None
                 self.store.unpin('live-trial')
