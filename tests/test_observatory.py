@@ -173,6 +173,11 @@ def test_observatory_gui_diagnostics_layout_activity_and_no_full_knowledge_poll(
         assert app.live_trace.get('1.0','end').strip()
         assert app.input_log.get('1.0','end').strip()
         assert app.preview.winfo_width()>app.mini_graph.winfo_width()
+        moved=app.console.sashpos(0)-40
+        app.console.sashpos(0,moved)
+        app.tabs.select(app.setup);window.update()
+        app.tabs.select(app.home);window.update()
+        assert app.console.sashpos(0)==moved
         assert not errors
     finally:
         if app.controller:app.controller.close()

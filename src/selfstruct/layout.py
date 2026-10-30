@@ -60,13 +60,17 @@ class Layout:
 
     def pane(self,id,widget,default_fraction=None,default_tail=180):
         self.widgets[id]=('pane',widget)
+        restored=False
         def restore():
+            nonlocal restored
+            if restored:return
             entry=self.entries.get(id,{})
             if not isinstance(entry,dict):return
             positions=entry.get('sashes',[])
             if not isinstance(positions,list):return
             extent=widget.winfo_height() if str(widget.cget('orient'))=='vertical' else widget.winfo_width()
             if not widget.winfo_ismapped() or extent<100:return
+            restored=True
             if not positions and len(widget.panes())==2:
                 positions=[int(extent*default_fraction) if default_fraction is not None else max(80,extent-default_tail)]
             for i,value in enumerate(positions[:max(0,len(widget.panes())-1)]):
