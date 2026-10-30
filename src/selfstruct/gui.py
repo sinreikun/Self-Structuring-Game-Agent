@@ -92,7 +92,7 @@ class App:
         self.preview.pack(fill="both", expand=True, pady=12)
         self.activity = tk.StringVar(value="画面の意味やキーの意味を、最初から与えることはありません。")
         ttk.Label(self.home, textvariable=self.activity, wraplength=1050).pack(anchor="w")
-        ttk.Label(self.home, text="背面でも継続します。対象ゲームを操作しても停止しません。止めるときはPAUSE / STOPを押してください。最小化には対応していません。", wraplength=1050).pack(anchor="w", pady=8)
+        ttk.Label(self.home, text="背面で入力を受け付けるゲームが対象です。対象ゲームを操作しても停止しません。止めるときはPAUSE / STOPを押してください。最小化には対応していません。", wraplength=1050).pack(anchor="w", pady=8)
 
     def _setup(self):
         ttk.Label(self.setup, text="はじめの設定", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 12))

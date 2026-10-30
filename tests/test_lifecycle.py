@@ -61,6 +61,9 @@ def test_runtime_failure_releases_and_rolls_back(tmp_path):
         deadline = time.monotonic()+5
         while ctrl.steps < 3 and time.monotonic() < deadline:
             time.sleep(.02)
+        # The recovered player continues issuing actions; only a paused player
+        # is required to have no key held at the instant we inspect it.
+        ctrl.pause()
         assert ctrl.steps >= 3
         assert ctrl.revisions.active == stable
         assert not ctrl.game.held
