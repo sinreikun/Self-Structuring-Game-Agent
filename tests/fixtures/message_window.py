@@ -29,6 +29,7 @@ for func,args,result in [
     (user.GetMessageW,[C.POINTER(W.MSG),W.HWND,W.UINT,W.UINT],W.BOOL),
     (user.TranslateMessage,[C.POINTER(W.MSG)],W.BOOL),
     (user.DispatchMessageW,[C.POINTER(W.MSG)],C.c_ssize_t),
+    (user.SetPropW,[W.HWND,W.LPCWSTR,W.HANDLE],W.BOOL),
     (kernel.GetModuleHandleW,[W.LPCWSTR],W.HINSTANCE),
 ]:func.argtypes,func.restype=args,result
 counter=0
@@ -42,6 +43,7 @@ def draw(hwnd,dc):
 def procedure(hwnd,message,wparam,lparam):
     global counter
     if message==0x100:  # WM_KEYDOWN, regardless of OS foreground focus.
+        user.SetPropW(hwnd,'SelfStructLastKey',wparam)
         counter+=1
         user.InvalidateRect(hwnd,None,True)
         return 0

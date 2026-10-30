@@ -13,6 +13,7 @@ import time
 from PIL import Image
 
 KEY_CODES = {**{chr(k): k for k in range(65, 91)}, **{str(k): 48 + k for k in range(10)},
+             **{f"NUM{k}": 0x60 + k for k in range(10)},
              "UP": 0x26, "DOWN": 0x28, "LEFT": 0x25, "RIGHT": 0x27, "ENTER": 0x0D,
              "SPACE": 0x20, "ESC": 0x1B, "TAB": 0x09,
              **{f"F{k}": 0x6F + k for k in range(1, 12)}}

@@ -99,7 +99,7 @@ class App:
         self.fields: dict[str, tk.StringVar] = {}
         entries = [("game_exe", "対象ゲーム", self.config.game_exe), ("window_title", "ウィンドウ名の一部（空欄可）", self.config.window_title),
                    ("game_args", "起動オプション（空欄可）", __import__('subprocess').list2cmdline(self.config.game_args)),
-                   ("root", "作業・保存フォルダ", self.config.root), ("keys", "許可キー（カンマ区切り）", ",".join(self.config.keys)),
+                   ("root", "作業・保存フォルダ", self.config.root), ("keys", "許可キー（カンマ区切り・Num0〜Num9対応）", ",".join(self.config.keys)),
                    ("quota", "保存容量の上限（GB）", str(self.config.quota_bytes / 1024**3)),
                    ("llm_url", "ローカル推論接続先（詳細設定）", self.config.llm_url)]
         for row, (name, label, value) in enumerate(entries, 1):

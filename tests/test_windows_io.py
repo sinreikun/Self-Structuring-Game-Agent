@@ -103,3 +103,26 @@ def test_hung_background_renderer_has_bounded_capture_timeout():
         assert game.capturer.process is None
     finally:
         game.stop()
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Requires Windows desktop APIs')
+def test_target_receives_numpad_virtual_keys_not_number_row():
+    import ctypes
+    from ctypes import wintypes
+    from selfstruct.windows import WindowsGame
+    game=WindowsGame(sys.executable,[str(Path('tests/fixtures/message_window.py').resolve())],
+                     'SelfStruct Message Test',[f'NUM{k}' for k in range(10)])
+    get_key=ctypes.WinDLL('user32').GetPropW
+    get_key.argtypes=[wintypes.HWND,wintypes.LPCWSTR]
+    get_key.restype=wintypes.HANDLE
+    try:
+        game.start()
+        for number in range(10):
+            game.act(f'NUM{number}',.02,threading.Event())
+            deadline=time.monotonic()+1
+            while get_key(game.hwnd,'SelfStructLastKey')!=0x60+number and time.monotonic()<deadline:
+                time.sleep(.01)
+            assert get_key(game.hwnd,'SelfStructLastKey')==0x60+number
+            assert not game.held
+    finally:
+        game.stop()

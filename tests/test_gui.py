@@ -25,6 +25,11 @@ def test_gui_start_pause_stop_newborn(tmp_path, monkeypatch):
     errors = []
     window.report_callback_exception = lambda *args: errors.append(args)
     app = gui.App(window)
+    original_keys=app.fields['keys'].get()
+    app.fields['keys'].set('UP,DOWN,LEFT,RIGHT,Num0,Num1,Num2,Num3,Num4,Num5,Num6,Num7,Num8,Tab')
+    accepted=app.read_settings().keys
+    assert accepted[4:13]==[f'NUM{k}' for k in range(9)] and accepted[-1]=='TAB'
+    app.fields['keys'].set(original_keys)
     def until(predicate, timeout=10):
         deadline = time.monotonic()+timeout
         while time.monotonic()<deadline:

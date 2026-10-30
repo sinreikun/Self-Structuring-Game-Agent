@@ -206,6 +206,16 @@ def test_single_writer_lock(tmp_path):
     InstanceLock(tmp_path/'lock').close()
 
 
+def test_requested_numpad_configuration_is_valid_and_distinct_from_number_row():
+    from selfstruct.windows import KEY_CODES
+    requested='UP,DOWN,LEFT,RIGHT,Num0,Num1,Num2,Num3,Num4,Num5,Num6,Num7,Num8,Tab'
+    config=Config(keys=[key.strip().upper() for key in requested.split(',')])
+    config.validate(require_game=False)
+    assert config.keys[-1]=='TAB'
+    assert [KEY_CODES[f'NUM{k}'] for k in range(10)]==list(range(0x60,0x6a))
+    assert all(KEY_CODES[f'NUM{k}']!=KEY_CODES[str(k)] for k in range(10))
+
+
 def test_predictor_cannot_read_future_image(tmp_path, seed):
     import random
     store = Store(tmp_path, 64*1024**2)
