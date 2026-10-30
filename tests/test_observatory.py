@@ -267,3 +267,14 @@ def test_gc_unlink_failure_keeps_live_references_consistent_and_lifetime_count(t
         assert (tmp_path/'evidence'/(row['after_hash']+'.png')).exists()
     assert store.counts()['experience']==200
     store.close()
+
+
+def test_storage_breakdown_separates_models_evidence_runtime_and_archives(tmp_path):
+    store=Store(tmp_path,64*1024**2)
+    for path,size in [('assets/model/hash/artifact',2000),('assets/engine/hash/artifact',1000),('assets/engine/hash/expanded/server.exe',3000)]:
+        dest=tmp_path/path;dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(b'x'*size)
+    store.image(Image.new('RGB',(16,16)))
+    result=store.storage_breakdown()
+    assert result['models']==2000 and result['engine_archives']==1000 and result['engine_runtime']==3000
+    assert result['evidence_images']>0 and result['database_and_wal']>0
+    store.close()

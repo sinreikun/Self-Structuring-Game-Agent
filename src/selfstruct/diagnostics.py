@@ -101,6 +101,16 @@ def create_diagnostics(root: Path, store=None, config=None, activity=None, gui=N
                 if path.is_file() and path.stat().st_size<65536:
                     try:put('experiment/revisions.json',json.dumps(redact(json.loads(path.read_text(encoding='utf-8'))),ensure_ascii=False))
                     except (OSError,ValueError):pass
+            # Metadata only: never include the downloaded artifacts themselves.
+            for kind in ('model','engine'):
+                receipts=sorted((root/'assets'/kind).glob('*/receipt.json'),key=lambda p:p.stat().st_mtime,reverse=True)[:2]
+                for index,path in enumerate(receipts):
+                    if path.is_symlink() or path.stat().st_size>16384:continue
+                    try:
+                        receipt=json.loads(path.read_text(encoding='utf-8'))
+                        safe={k:receipt.get(k) for k in ('name','version','license','trust','size','sha256')}
+                        put(f'assets-metadata/{kind}-{index}.json',json.dumps(redact(safe),ensure_ascii=False))
+                    except (OSError,ValueError):pass
             # Explicit allowlist: no model/runtime, environment dump, arbitrary Agent files.
             for name in ('host.log','host.log.1','llm.log','llm.json'):
                 path=root/'host'/name

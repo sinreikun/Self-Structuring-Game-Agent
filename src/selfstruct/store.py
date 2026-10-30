@@ -110,11 +110,24 @@ class Store:
                     "reserved": int(self.quota*self.emergency_fraction)}
 
     def storage_breakdown(self) -> dict:
-        result = {}
-        for folder in self.account_root.iterdir():
+        result={}
+        for path in self.account_root.rglob('*'):
             try:
-                result[folder.name] = sum(p.stat().st_size for p in folder.rglob("*") if p.is_file() and not p.is_symlink()) if folder.is_dir() else folder.stat().st_size
-            except FileNotFoundError: pass
+                if not path.is_file() or path.is_symlink():continue
+                parts=path.relative_to(self.account_root).parts
+                if path.name.endswith('.part'):category='partial_downloads'
+                elif len(parts)>1 and parts[:2]==('assets','model'):category='models'
+                elif len(parts)>1 and parts[:2]==('assets','engine'):
+                    category='engine_runtime' if 'expanded' in parts else 'engine_archives'
+                elif 'evidence' in parts:category='evidence_images'
+                elif '.sqlite3' in path.name:category='database_and_wal'
+                elif path.name.startswith('checkpoint-'):category='checkpoint_cache'
+                elif 'agents' in parts:category='agent_files'
+                elif parts[0]=='exports':category='exports'
+                elif parts[0]=='runtime':category='application_runtime'
+                else:category='settings_logs_other'
+                result[category]=result.get(category,0)+path.stat().st_size
+            except OSError:continue
         return result
 
     def pin(self, events, reason: str):
