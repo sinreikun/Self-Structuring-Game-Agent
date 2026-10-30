@@ -24,7 +24,7 @@ def main():
     for channel in ('Stable','Development'):
         manifest={'schema':1,'protocol':1,'sequence':int(time.time()),'expires':time.time()+365*86400,
             'version':args.version,'channel':channel,'application':{'url':f'https://github.com/sinreikun/Self-Structuring-Game-Agent/releases/download/{args.tag}/SelfStruct.exe',
-            'sha256':Gateway.digest(args.binary),'size':args.binary.stat().st_size,'trust':'Trusted','license':'MIT'}}
+            'sha256':Gateway.digest(args.binary),'size':args.binary.stat().st_size,'trust':'Trusted','license':'Repository-owner-authorized distribution; no OSS license specified'}}
         payload=json.dumps(manifest,separators=(',',':')).encode()
         envelope={'payload':base64.b64encode(payload).decode(),'signature':base64.b64encode(key.sign(payload)).decode()}
         args.output.mkdir(parents=True,exist_ok=True)
