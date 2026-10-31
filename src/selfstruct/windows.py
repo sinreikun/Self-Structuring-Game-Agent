@@ -178,7 +178,7 @@ class WindowsGame:
         processes=snapshot_processes()
         # A matching live process may still be creating its window. Never spawn
         # duplicates while that process or an earlier launch is still pending.
-        if self.target_exe and any(p.exe.casefold()==self.target_exe.casefold()
+        if (self.mode=='attach' or self.pending_launch or self.launched_after) and self.target_exe and any(p.exe.casefold()==self.target_exe.casefold()
                 and p.created>=self.target_created and (p.pid,p.created) not in self.ignored_processes
                 for p in processes.values()):return
         if self.pending_launch and self.last_launch and time.monotonic()-self.last_launch<self.startup_timeout:return
@@ -199,10 +199,11 @@ class WindowsGame:
         self.known_processes={self.root_process.pid:root.created if root else self.launched_after}
 
     def start(self) -> None:
-        try:
-            self.connect()
-            return
-        except GameUnavailable:pass
+        if self.mode=='attach' or self.process is not None or self.root_process is not None:
+            try:
+                self.connect()
+                return
+            except GameUnavailable:pass
         self._launch_if_needed()
         deadline=time.monotonic()+self.startup_timeout
         while time.monotonic()<deadline:
@@ -239,7 +240,7 @@ class WindowsGame:
             track_descendants(processes,self.known_processes,self.launched_after)
             allowed={pid for pid,created in self.known_processes.items() if pid in processes and processes[pid].created==created}
             if self.mode=='launcher' and self.root_process:allowed.discard(self.root_process.pid)
-            if self.target_filter:
+            if self.target_filter and self.launched_after:
                 replacements={w.process.pid for w in windows if w.process.exe.casefold()==self.target_filter.casefold()
                               and w.process.created>=self.launched_after and (w.process.pid,w.process.created) not in ignored}
                 if not any(w.process.pid in allowed for w in windows) and len(replacements)==1:allowed=replacements
