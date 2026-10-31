@@ -75,3 +75,6 @@ v0.5.0-dev.2は[公開ワークフロー41216951913](https://github.com/sinreiku
 ## 0.5.1 研究修正ループの復旧
 
 2026-11-01の追加診断2件で、同じWAT構文エラーと同一Jobの再開を確認しました。ローカルLinuxで144 passed / 19 skipped、アプリ自己診断も成功しました。tests/test_research_stall.pyの8件で、早期構文拒否、反復エラーの打切り、再起動後の回数保持、旧62回失敗Jobの自動終了、新経験の視覚研究への移行、初回推論へのRGB入力、応答形式エラーと推論サービス復旧の分離、診断情報の秘匿を確認しました。Windows CI・配布EXE・実モデルでの完了と初期視覚Evidenceも検証します。
+
+
+0.5.1の最終CIは[41244982240](https://github.com/sinreikun/Self-Structuring-Game-Agent/actions/runs/41244982240)、ソースは`0e44ec367df6bd6f827b355ab422b1f33e6ce043`。Windowsは162 passed / 1 skipped、Linuxは150 passed / 13 skippedで成功しました。実モデルの初期視覚Evidence 2件とJob完了を確認し、終了はobservations_only、修正失敗は0件でした。梱包済みGUI・自己診断・入出力・固定Launcherの検証も成功し、Launcher 1.1.0の公開済みハッシュが不変であることを照合しました。
