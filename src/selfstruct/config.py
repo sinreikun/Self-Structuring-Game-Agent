@@ -53,6 +53,12 @@ class Config:
     catalog_url: str = ""
     catalog_key: str = ""
     model_id: str = ""
+    model_name: str = ""
+    model_quant: str = ""
+    agent_id: str = ""
+    llm_context: int = 8192
+    llm_backend: str = "auto"
+    llm_threads: int = 0
 
     def validate(self, require_game: bool = True) -> None:
         if self.connection_mode not in {'launch','launcher','attach'}:
@@ -63,6 +69,8 @@ class Config:
             raise ValueError("個体の種類が不正です。")
         if self.channel not in {"Stable", "Development"}:
             raise ValueError("更新チャンネルが不正です。")
+        if self.research_every < 1:
+            raise ValueError("研究間隔は1以上で指定してください。")
         if self.quota_bytes < 32 * 1024**2:
             raise ValueError("保存容量は32MB以上必要です。")
         if not self.keys or len(set(self.keys)) != len(self.keys):
@@ -77,6 +85,8 @@ class Config:
             for executable in (self.game_exe,self.target_exe):
                 if executable and (root == Path(executable).resolve().parent or root in Path(executable).resolve().parents):
                     raise ValueError("ゲーム本体を含まない専用の保存先を選択してください。")
+        if not 2048 <= self.llm_context <= 131072 or self.llm_backend not in {"auto", "cpu", "vulkan"} or not 0 <= self.llm_threads <= 256:
+            raise ValueError("Contextは2048〜131072、CPUスレッド数は0（自動）〜256で指定してください。")
         from urllib.parse import urlparse
         endpoint = urlparse(self.llm_url)
         if endpoint.scheme != "http" or endpoint.hostname not in {"127.0.0.1", "localhost", "::1"}:

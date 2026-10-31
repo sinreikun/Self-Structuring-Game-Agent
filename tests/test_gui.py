@@ -58,8 +58,11 @@ def test_gui_start_pause_stop_newborn(tmp_path, monkeypatch):
         assert not app.controller.paused.is_set()
         app.stop()
         until(lambda: app.controller is None and not app.busy)
+        previous_id=app.config.agent_id
         app.newborn()
-        assert not app.config.resume
+        assert app.config.agent_id != previous_id and app.config.resume
+        assert app.individuals.path(previous_id).is_dir()
+        assert len(app.individuals.list())==2
         assert not errors
     finally:
         if app.controller:

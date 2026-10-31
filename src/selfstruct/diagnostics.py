@@ -119,6 +119,15 @@ def create_diagnostics(root: Path, store=None, config=None, activity=None, gui=N
                     if path.is_file() and path.stat().st_size<65536:
                         try:put('experiment/'+filename,json.dumps(redact(json.loads(path.read_text(encoding='utf-8'))),ensure_ascii=False))
                         except (OSError,ValueError):pass
+                for filename in ('profile.json','settings.json'):
+                    p=store.root/filename
+                    if p.is_file() and p.stat().st_size<65536:
+                        put('experiment/'+filename,json.dumps(redact(json.loads(p.read_text(encoding='utf-8'))),ensure_ascii=False))
+                log=store.root/'host'/'host.log'
+                if log.is_file():
+                    with log.open('rb') as stream:
+                        stream.seek(max(0,log.stat().st_size-262144))
+                        put('experiment/host.log',redact(stream.read().decode(errors='replace')))
                 path=store.root/'agents'/'revisions'/'state.json'
                 if path.is_file() and path.stat().st_size<65536:
                     try:put('experiment/revisions.json',json.dumps(redact(json.loads(path.read_text(encoding='utf-8'))),ensure_ascii=False))

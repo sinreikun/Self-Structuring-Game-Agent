@@ -119,5 +119,5 @@ class ModelCatalog:
         if license=='要確認' and not selected.get('license_ack'):raise ValueError('モデルの配布条件を確認してください。')
         sha=data.get('sha','')
         if not re.fullmatch('[0-9a-f]{40,64}',sha):raise ValueError('固定Revisionを確認できません。')
-        return {'name':data['id'],'version':sha,'license':license,'trust':'Verified Candidate','size':entry['size'],'sha256':entry['sha256'],
+        return {'name':data['id'],'author':data['id'].split('/')[0],'file':entry['file'],'quant':entry['quant'],'parameters':parameters(data),'updated':data.get('lastModified','未記録'),'version':sha,'license':license,'trust':'Verified Candidate','size':entry['size'],'sha256':entry['sha256'],
                 'url':f'https://huggingface.co/{repo_path(data["id"])}/resolve/{sha}/{quote(entry["file"],safe="/")}'}

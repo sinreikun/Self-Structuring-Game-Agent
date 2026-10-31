@@ -528,7 +528,7 @@ class Scientist:
         if draft:prompt+='\n前回の途中経過は保存されています。内容を引き継いで完全な応答を返してください。\n'+draft[:6000]
         budget=4096
         if isinstance(self.client,LocalLLM) and self.client.managed:
-            budget=min(4096,8192-self.client.count_tokens(prompt)-256)
+            budget=min(4096,getattr(self.client,'context',8192)-self.client.count_tokens(prompt)-256)
             if budget<512:raise InferenceUnavailable('入力が大きいため作業を保存して待機します。')
         saved=[0.]
         def journal(text):
@@ -572,7 +572,7 @@ class Scientist:
         budget=4096
         if isinstance(self.client,LocalLLM) and self.client.managed:
             count=self.client.count_tokens(prompt)
-            budget=min(4096,8192-count-256)
+            budget=min(4096,getattr(self.client,'context',8192)-count-256)
             if budget<512:raise InferenceUnavailable('研究の入力枠が不足しています。下書きを保存して待機します。')
         saved_at=[0.]
         def journal(text):

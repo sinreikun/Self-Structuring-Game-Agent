@@ -21,7 +21,10 @@ UI_FONT = "Yu Gothic UI" if os.name == "nt" else "Noto Sans CJK JP"
 MONO_FONT = "Consolas" if os.name == "nt" else "Noto Sans Mono CJK JP"
 
 
-class App:
+from .management_gui import ManagementUI
+
+
+class App(ManagementUI):
     def __init__(self, window: tk.Tk, health_marker: Path | None = None):
         self.window = window
         self.config_path = default_root() / "host" / "settings.json"
@@ -52,6 +55,7 @@ class App:
         style.configure('TNotebook.Tab',padding=(16,8),background='#22313c')
         style.map('TNotebook.Tab',background=[('selected','#3b5362')])
         style.map('TCombobox',fieldbackground=[('readonly','#111920')],foreground=[('readonly','#dce5ed')],selectbackground=[('readonly','#273d4c')])
+        style.map('Toolbutton',background=[('selected','#45675b'),('active','#3e5969')])
         style.configure('TEntry',fieldbackground='#111920',insertcolor='#dce5ed')
         style.configure('Treeview',fieldbackground='#111920',background='#111920',foreground='#dce5ed')
         from .layout import Layout
@@ -62,13 +66,18 @@ class App:
         self.tabs = ttk.Notebook(window)
         self.tabs.pack(fill="both", expand=True, padx=6, pady=6)
         self.home = ttk.Frame(self.tabs, padding=4)
+        self.individual_tab = ttk.Frame(self.tabs, padding=12)
         self.setup = ttk.Frame(self.tabs, padding=16)
+        self.llm_tab = ttk.Frame(self.tabs, padding=10)
         self.book = ttk.Frame(self.tabs, padding=16)
+        self.capabilities = ttk.Frame(self.tabs, padding=16)
         self.details = ttk.Frame(self.tabs, padding=16)
-        for frame, title in ((self.home, "研究室"), (self.setup, "初回設定"), (self.book, "研究ノート"), (self.details, "開発者詳細")):
-            self.tabs.add(frame, text=title)
+        for frame, title in ((self.home,'研究室'),(self.individual_tab,'個体管理'),(self.setup,'設定'),(self.llm_tab,'LLM管理'),(self.book,'研究ノート'),(self.capabilities,'能力接続図'),(self.details,'開発者詳細')):
+            self.tabs.add(frame,text=title)
         self._home()
         self._setup()
+        self._individuals_ui()
+        self._llm_ui()
         from .gui_lifecycle import bind_cleanup
         bind_cleanup(self,window)
         launcher_status=default_root()/'runtime'/'launcher-status.json'
@@ -86,8 +95,6 @@ class App:
         ttk.Button(self.details,text='研究記録を保存（診断提出用とは別）',command=self.export_research).pack(anchor='w',pady=(0,8))
         self.raw_text = tk.Text(self.details, wrap="none", font=(MONO_FONT, 10))
         self.raw_text.pack(fill="both", expand=True)
-        self.capabilities=ttk.Frame(self.tabs,padding=16)
-        self.tabs.add(self.capabilities,text='能力接続図')
         self.graph=tk.Canvas(self.capabilities,background='#111920',highlightthickness=0)
         self.graph.pack(fill='both',expand=True)
         self.tabs.bind("<<NotebookTabChanged>>", self.refresh_text)
@@ -110,7 +117,7 @@ class App:
             window.after(1000, lambda: health_marker.write_text("healthy"))
 
     def _home(self):
-        self.status = tk.StringVar(value="初回設定を確認してSTARTを押してください。")
+        self.status = tk.StringVar(value="設定を確認してSTARTを押してください。")
         self.console = ttk.Panedwindow(self.home, orient='horizontal')
         self.console.pack(fill='both', expand=True)
         screen=ttk.Frame(self.console)
@@ -173,53 +180,42 @@ class App:
         self.performance_monitor.start()
 
     def _setup(self):
-        ttk.Label(self.setup, text="はじめの設定", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 12))
-        self.fields: dict[str, tk.StringVar] = {}
+        ttk.Label(self.setup,text='個体設定 — 現在ロード中の個体へ保存されます',style='Title.TLabel').grid(row=0,column=0,columnspan=3,sticky='w',pady=8)
+        self.fields={}
         self.connection_methods={'実行ファイルから起動':'launch','ランチャーから起動':'launcher','起動中のプロセスに接続':'attach'}
-        self.connection_method=tk.StringVar(value=next(label for label,value in self.connection_methods.items() if value==self.config.connection_mode))
+        self.connection_method=tk.StringVar(value=next(k for k,v in self.connection_methods.items() if v==self.config.connection_mode))
         ttk.Label(self.setup,text='接続方法').grid(row=1,column=0,sticky='w')
         ttk.Combobox(self.setup,textvariable=self.connection_method,values=list(self.connection_methods),state='readonly',width=34).grid(row=1,column=1,sticky='w',padx=8)
         ttk.Button(self.setup,text='起動中から選択',command=self.choose_process).grid(row=1,column=2)
-        self.selected_process=tk.StringVar(value=f'接続先プロセス: {Path(self.config.target_exe).name}' if self.config.target_exe else 'ランチャーを使う場合は「ランチャーから起動」を選び、ゲーム本体の起動を待ちます。')
-        ttk.Label(self.setup,textvariable=self.selected_process,wraplength=950).grid(row=2,column=0,columnspan=3,sticky='w',pady=5)
-        entries = [("game_exe", "起動・自動再起動用のゲーム／ランチャー", self.config.game_exe), ("window_title", "ウィンドウ名の一部（空欄可）", self.config.window_title),
-                   ("game_args", "起動オプション（空欄可）", __import__('subprocess').list2cmdline(self.config.game_args)),
-                   ("root", "作業・保存フォルダ", self.config.root), ("keys", "許可キー（カンマ区切り・Num0〜Num9対応）", ",".join(self.config.keys)),
-                   ("quota", "保存容量の上限（GB）", str(self.config.quota_bytes / 1024**3)),
-                   ("llm_url", "ローカル推論接続先（詳細設定）", self.config.llm_url)]
-        for row, (name, label, value) in enumerate(entries, 3):
-            ttk.Label(self.setup, text=label).grid(row=row, column=0, sticky="w", pady=5)
-            var = self.fields[name] = tk.StringVar(value=value)
-            entry=ttk.Entry(self.setup, textvariable=var, width=65)
-            entry.grid(row=row, column=1, sticky="ew", padx=8)
-            if name=="llm_url":self.llm_url_entry=entry
-            if name in {"game_exe", "root"}:
-                ttk.Button(self.setup, text="選択", command=lambda n=name: self.browse(n)).grid(row=row, column=2)
-        self.setup.columnconfigure(1, weight=1)
-        row = len(entries) + 3
-        self.mode = tk.StringVar(value=self.config.mode)
-        ttk.Label(self.setup, text="開始方法").grid(row=row, column=0, sticky="w")
-        ttk.Combobox(self.setup, textvariable=self.mode, state="readonly", values=["Newborn", "Experienced", "Guided"]).grid(row=row, column=1, sticky="w", padx=8)
-        ttk.Label(self.setup, text="Newborn：新しい個体 ／ Experienced：前回の続き ／ Guided：人間知識を区別する比較用個体", wraplength=1000).grid(row=row+1, column=0, columnspan=3, sticky="w", pady=8)
-        ttk.Button(self.setup, text="設定を保存", command=self.save_settings).grid(row=row+2, column=1, sticky="w", padx=8)
-        ttk.Separator(self.setup).grid(row=row+3, column=0, columnspan=3, sticky="ew", pady=14)
-        info = system_info()
-        ttk.Label(self.setup, text=f"PCの目安：空きメモリ {info['ram']:.1f}GB ／ 空き容量 {info['free']:.1f}GB ／ CPU推論に対応").grid(row=row+4, column=0, columnspan=3, sticky="w")
-        ttk.Label(self.setup,text='ローカルLLM — 用途やPCに合うGGUFを探して導入できます。').grid(row=row+5,column=0,columnspan=3,sticky='w',pady=8)
-        choices=ttk.Frame(self.setup);choices.grid(row=row+6,column=0,columnspan=3,sticky='w')
-        for label,command in [('おすすめモデルを使う',lambda:self.open_models(True)),('モデルを検索する',self.open_models),('手元のGGUFを使う',self.import_model),('外部ローカルLLMへ接続',self.use_external_llm)]:
-            ttk.Button(choices,text=label,command=command).pack(side='left',padx=3)
-        self.progress=tk.StringVar(value='モデルのライセンス・容量を確認してから導入してください。')
-        ttk.Label(self.setup,textvariable=self.progress,wraplength=950).grid(row=row+7,column=0,columnspan=3,sticky='w',pady=8)
-        ttk.Button(self.setup,text='取得を中断',command=self.download_cancel.set).grid(row=row+8,column=2)
-        ttk.Button(self.setup,text='公式更新を確認',command=self.check_update).grid(row=row+8,column=1,sticky='w')
-
-    def open_models(self,recommended=False):
-        from .model_browser import ModelBrowser
-        ModelBrowser(self,recommended)
+        self.selected_process=tk.StringVar(value=f'対象ゲーム：{self.config.target_exe or self.config.game_exe}')
+        ttk.Label(self.setup,textvariable=self.selected_process,wraplength=950).grid(row=2,column=0,columnspan=3,sticky='w')
+        entries=[('game_exe','起動・自動再起動用のゲーム／ランチャー',self.config.game_exe),('game_args','起動オプション',__import__('subprocess').list2cmdline(self.config.game_args)),('window_title','対象ウィンドウ（空欄可）',self.config.window_title),('keys','許可キー（末尾追加なら個体を継続可能）',','.join(self.config.keys)),('quota','保存容量上限（GB / 共通資産を含む総使用量）',str(self.config.quota_bytes/1024**3)),('research_every','研究間隔（経験件数）',str(self.config.research_every))]
+        for row,(key,label,value) in enumerate(entries,3):
+            ttk.Label(self.setup,text=label).grid(row=row,column=0,sticky='w',pady=5)
+            self.fields[key]=tk.StringVar(value=value);ttk.Entry(self.setup,textvariable=self.fields[key],width=65).grid(row=row,column=1,sticky='ew',padx=8)
+            if key=='game_exe':ttk.Button(self.setup,text='選択',command=lambda:self.browse('game_exe')).grid(row=row,column=2)
+        row=len(entries)+3
+        self.mode=tk.StringVar(value=self.config.mode)
+        ttk.Label(self.setup,text='知識モード').grid(row=row,column=0,sticky='w')
+        ttk.Combobox(self.setup,textvariable=self.mode,values=['Newborn','Experienced','Guided'],state='readonly').grid(row=row,column=1,sticky='w',padx=8)
+        ttk.Label(self.setup,text='個体の切替・新規作成は個体管理へ。LLM・Context・Runtimeの変更はLLM管理へ。').grid(row=row+1,column=0,columnspan=3,sticky='w',pady=8)
+        ttk.Separator(self.setup).grid(row=row+2,column=0,columnspan=3,sticky='ew',pady=10)
+        ttk.Label(self.setup,text='アプリ共通設定 — 個体を切り替えても維持します').grid(row=row+3,column=0,columnspan=3,sticky='w')
+        self.fields['root']=tk.StringVar(value=self.config.root)
+        ttk.Label(self.setup,text='共通モデル・個体の保存先').grid(row=row+4,column=0,sticky='w')
+        ttk.Entry(self.setup,textvariable=self.fields['root'],width=65).grid(row=row+4,column=1,sticky='ew',padx=8)
+        ttk.Button(self.setup,text='選択',command=lambda:self.browse('root')).grid(row=row+4,column=2)
+        self.update_channel=tk.StringVar(value=self.config.channel)
+        ttk.Label(self.setup,text='更新チャンネル').grid(row=row+5,column=0,sticky='w')
+        ttk.Combobox(self.setup,textvariable=self.update_channel,values=['Stable','Development'],state='readonly').grid(row=row+5,column=1,sticky='w',padx=8)
+        ttk.Label(self.setup,text='テーマ・ウィンドウ位置・レイアウトはアプリ共通で保持します。').grid(row=row+6,column=0,columnspan=3,sticky='w',pady=8)
+        ttk.Button(self.setup,text='設定を保存',command=self.save_settings).grid(row=row+7,column=1,sticky='w',padx=8)
+        ttk.Button(self.setup,text='公式更新を確認',command=self.check_update).grid(row=row+7,column=2)
+        self.setup.columnconfigure(1,weight=1)
 
     def use_external_llm(self):
         if self.fields['llm_url'].get()=='http://127.0.0.1:8766/v1':self.fields['llm_url'].set('http://127.0.0.1:1234/v1')
+        self.tabs.select(self.llm_tab)
         self.llm_url_entry.focus_set();self.llm_url_entry.selection_range(0,'end')
         self.progress.set('ローカル推論接続先を入力して設定を保存してください。STARTで接続を確認します。')
 
@@ -258,7 +254,9 @@ class App:
                          game_args=args, window_title=self.fields["window_title"].get(),
                          keys=[x.strip().upper() for x in self.fields["keys"].get().split(",") if x.strip()],
                          quota_bytes=int(float(self.fields["quota"].get()) * 1024**3), llm_url=self.fields["llm_url"].get(),
-                         mode=self.mode.get())
+                         mode=self.mode.get(),channel=self.update_channel.get(),
+                         llm_context=int(self.fields["llm_context"].get()),llm_threads=int(self.fields["llm_threads"].get()),
+                         llm_backend=self.llm_backend.get(),research_every=int(self.fields["research_every"].get()))
         result.validate(require_game=False)
         return result
 
@@ -266,9 +264,22 @@ class App:
         try:
             if self.controller:
                 raise ValueError("設定を変える前にSTOPしてください。")
-            self.config = self.read_settings()
+            config=self.read_settings()
+            if Path(config.root).resolve()!=Path(self.config.root).resolve():
+                self.llm.stop()
+                from .individuals import Individuals
+                from .model_library import ModelLibrary
+                self.individuals=Individuals(config.root);self.individuals.migrate(config)
+                config=replace(config,agent_id='',model_id='',resume=False,auto_run=False)
+                self.library=ModelLibrary(config.root);self.llm=ManagedLLM(Path(config.root),config.quota_bytes)
+                self.performance_monitor.stop.set()
+                from .performance import PerformanceMonitor
+                self.performance_monitor=PerformanceMonitor(Path(config.root));self.performance_monitor.start()
+            if config.agent_id:self.individuals.save_settings(config.agent_id,config)
+            self.config=config
             self.config.save(self.config_path)
-            self.status.set("設定を保存しました。")
+            self.refresh_individual_list();self.refresh_saved_models()
+            self.status.set("設定を保存しました。現在の個体設定とアプリ共通設定を更新しました。")
         except Exception as exc:
             messagebox.showerror("設定を確認してください", error_message(exc))
 
@@ -291,7 +302,9 @@ class App:
         if self.controller or self.busy:
             return
         try:
-            self.config = self.read_settings()
+            config=self.read_settings()
+            if config.agent_id:self.individuals.save_settings(config.agent_id,config)
+            self.config=config
             self.config.save(self.config_path)
         except Exception as exc:
             messagebox.showerror("設定を確認してください", error_message(exc))
@@ -303,7 +316,10 @@ class App:
             def progress(done, total):
                 self.events.put(("progress", f"必要ファイルを取得中 {done / max(total, 1):.0%}"))
             self.llm.install(selected, progress, self.download_cancel)
-            self.events.put(("managed_ready", None))
+            from .model_library import ModelLibrary
+            library=ModelLibrary(self.config.root);library.discover()
+            state=json.loads(self.llm.state_path.read_text(encoding='utf-8'))
+            self.events.put(("managed_ready", state['model_sha256']))
         self.progress.set("配布情報を確認しています。")
         self.task(install, lambda _: self.progress.set("導入と推論試験が完了しました。STARTで始められます。"))
 
@@ -324,7 +340,10 @@ class App:
                 self.llm.stop()
                 self.llm = ManagedLLM(Path(config.root), config.quota_bytes)
             if config.llm_url == "http://127.0.0.1:8766/v1":
-                self.llm.start(cancel=self.download_cancel)
+                if config.model_id:
+                    self.library.prepare(self.llm,config,self.download_cancel)
+                else:
+                    self.llm.start(cancel=self.download_cancel)
             from .research import LocalLLM
             client=LocalLLM(config.llm_url,config.llm_model)
             client.health()
@@ -334,9 +353,9 @@ class App:
             if config.llm_url == "http://127.0.0.1:8766/v1" and self.llm.state_path.exists():
                 def recover_llm():
                     self.llm.stop()
-                    self.llm.start(cancel=controller.scientist.stop_event)
+                    self.library.prepare(self.llm,controller.config,controller.scientist.stop_event)
                 controller.scientist.recover_llm = recover_llm
-            self.config = replace(config, resume=True, auto_run=True)
+            self.config = replace(controller.config, resume=True, auto_run=True)
             self.config.save(self.config_path)
             controller.start()
             return controller
@@ -345,6 +364,10 @@ class App:
         except Exception as exc:
             messagebox.showerror("設定を確認してください", error_message(exc))
             return
+        if self.read_snapshot.model_id and self.read_snapshot.llm_url=='http://127.0.0.1:8766/v1':
+            from .model_library import MissingModel
+            try:self.library.get(self.read_snapshot.model_id)
+            except MissingModel:self.missing_model();return
         self.download_cancel.clear()
         self.status.set("ローカル推論とゲームの接続を確認しています。")
         self.task(operation, self.started)
@@ -355,6 +378,7 @@ class App:
             self.stop();return
         self.graph_stamp=None
         self.trace_sequence=0
+        self.refresh_individual_list();self.refresh_saved_models()
         self.tabs.select(self.home)
 
     def pause(self):
@@ -378,6 +402,7 @@ class App:
         self.controller = None
         self.llm_status.set('○ LLM 待機')
         self.llm_label.configure(foreground='#9aabb9')
+        self.refresh_individual_list();self.refresh_saved_models()
         self.status.set("停止しました。経験と研究内容を保存しました。")
 
     def newborn(self):
@@ -386,10 +411,13 @@ class App:
         if self.controller:
             messagebox.showinfo("新しい個体", "先にSTOPしてください。前の個体のデータは保持されます。")
             return
-        self.config = replace(self.config, mode="Newborn", resume=False, auto_run=False)
-        self.mode.set("Newborn")
-        self.config.save(self.config_path)
-        self.status.set("次のSTARTで、ゲーム固有の経験を持たない新しい個体を作成します。")
+        try:
+            config=replace(self.read_settings(),mode='Newborn',resume=False,auto_run=False)
+            identifier=self.individuals.create(config,parent=self.individuals.active() or None)
+            config=replace(config,agent_id=identifier,resume=True)
+            self.apply_individual(config)
+        except Exception as exc:
+            messagebox.showerror('NEWBORN',error_message(exc),parent=self.window)
 
     def export(self):
         if self.busy:return
@@ -429,6 +457,10 @@ class App:
             self.task(lambda:store.export_research(Path(path)),lambda _:self.activity.set('研究DBと世代情報を保存しました。提出用には診断ZIPをご利用ください。'))
 
     def refresh_text(self, _=None):
+        if self.tabs.select()==str(self.individual_tab) and not self.busy:
+            self.refresh_individual_sizes()
+        if self.tabs.select()==str(self.llm_tab):
+            self.refresh_saved_models()
         if not self.controller:
             return
         if self.tabs.select() == str(self.book):
@@ -448,7 +480,7 @@ class App:
         if self.tabs.select() == str(self.details):
             self.raw_text.delete("1.0", "end")
             self.raw_text.insert("1.0", self.controller.revisions.source() + "\n\n" + json.dumps(self.controller.store.reports(), ensure_ascii=False, indent=2))
-            path = Path(self.config.root) / "host" / "host.log"
+            path = self.controller.experiment / "host" / "host.log"
             if path.exists():
                 with path.open("rb") as file:
                     file.seek(max(0, path.stat().st_size - 65536))
@@ -525,8 +557,11 @@ class App:
                     self.status.set(data[0])
                     self.raw_text.insert("end", data[1] + "\n")
                 elif kind == "managed_ready":
+                    self.refresh_saved_models()
                     self.fields["llm_url"].set("http://127.0.0.1:8766/v1")
-                    self.config=replace(self.config,llm_url="http://127.0.0.1:8766/v1",llm_model="local")
+                    self.config=replace(self.config,llm_url="http://127.0.0.1:8766/v1",llm_model="local",model_id=data,model_name=self.model_name(data),model_quant=self.model_records.get(data,{}).get('model_info',{}).get('quant','未記録'))
+                    if self.config.agent_id:self.individuals.save_settings(self.config.agent_id,self.config)
+                    self.refresh_saved_models()
                     self.config.save(self.config_path)
                 elif kind == "progress":
                     self.progress.set(data)
@@ -547,8 +582,15 @@ class App:
             layers=info.get('gpu_layers',0)
             mode=f"GPU / VRAM使用 / {layers}/{info.get('total_layers','?')}層" if layers else ('GPUオフロード未確認' if info.get('backend')=='vulkan' else 'CPU推論')
             if info.get('status')!='利用可能':mode='未稼働'
-            self.active_model.set('使用モデル：'+info['name']+'\n推論：'+mode+' / '+info.get('status','')+('（GPU起動失敗のためCPUへ復帰）' if info.get('gpu_error') else ''))
+            live_id=(self.llm.active_state or {}).get('model_sha256','')
+            prefix='使用モデル：' if self.controller and not self.controller.stopped.is_set() else 'ロード済み：'
+            mismatch=bool(self.config.model_id and live_id and live_id!=self.config.model_id)
+            extra=('\n個体の指定：'+(self.config.model_name or self.config.model_id[:12])+'（未準備）') if mismatch else ''
+            self.active_model.set(prefix+info['name']+'\n推論：'+mode+' / '+info.get('status','')+extra+('（GPU起動失敗のためCPUへ復帰）' if info.get('gpu_error') else ''))
         else:self.active_model.set('使用モデル：未接続')
+        if hasattr(self,'saved_models'):
+            for identifier,state in self.model_records.items():
+                if self.saved_models.exists(identifier):self.saved_models.set(identifier,'state',self.library.status(state,self.llm,bool(self.controller and not self.controller.stopped.is_set() and self.config.model_id==identifier and self.config.llm_url=='http://127.0.0.1:8766/v1')))
         ctrl = self.controller
         if ctrl:
             game=ctrl.game

@@ -54,7 +54,11 @@ class Controller:
         self.recovery_delay=2.
         self.error = ""
         self.protect_until = 0.
-        self.experiment = self._experiment()
+        try:
+            self.experiment = self._experiment()
+        except Exception:
+            self.instance_lock.close()
+            raise
         self.store = Store(self.experiment, config.quota_bytes)
         self.store.account_root = self.root
         self.revisions = Revisions(self.experiment / "agents" / "revisions")
@@ -68,7 +72,8 @@ class Controller:
         self._restore_learning()
         self.scientist = Scientist(self.store, self.revisions, LocalLLM(config.llm_url, config.llm_model),
                                    config.keys, config.research_every, self.notify, self.activity)
-        handler = RotatingFileHandler(self.root / "host" / "host.log", maxBytes=2 * 1024**2, backupCount=2, encoding="utf-8")
+        self.scientist.client.context = config.llm_context
+        handler = RotatingFileHandler(self.experiment / "host" / "host.log", maxBytes=2 * 1024**2, backupCount=2, encoding="utf-8")
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
         self.log_handler = handler
         logging.getLogger("selfstruct").addHandler(handler)
@@ -113,30 +118,18 @@ class Controller:
                 old.unlink()
 
     def _experiment(self) -> Path:
-        active_path = self.root / "host" / "experiment.json"
-        if active_path.exists() and (self.config.resume or self.config.mode == "Experienced"):
-            import json
-            state = json.loads(active_path.read_text(encoding="utf-8"))
-            path = self.root / "experiments" / state["id"]
-            if not path.resolve().is_relative_to((self.root / "experiments").resolve()):
-                raise ValueError("Invalid experiment")
-            same_target=bool(state.get('target_exe') and self.config.target_exe and state['target_exe'].casefold()==self.config.target_exe.casefold())
-            if state["keys"] != self.config.keys or (state["game_exe"] != self.config.game_exe and not same_target):
-                raise ValueError("引き継ぐ個体とゲーム・入力一覧が異なります。NEWBORNで新規個体を作成してください。")
-            if state.get('target_exe') and self.config.target_exe and not same_target:
-                raise ValueError('前回と異なるゲーム本体が選択されています。NEWBORNで開始してください。')
-            if state["mode"] != self.config.mode and self.config.mode != "Experienced":
-                raise ValueError("異なる知識モードの個体は引き継げません。")
-            if self.config.mode == "Experienced" and state["mode"] == "Guided":
-                raise ValueError("人間知識を含む個体はGuidedとして継続してください。")
-            return path
-        if self.config.mode == "Experienced":
-            raise ValueError("引き継ぐ個体がありません。Newbornで開始してください。")
-        identifier = uuid.uuid4().hex
-        path = self.root / "experiments" / identifier
-        path.mkdir(parents=True)
-        write_json(active_path, {"id": identifier, "mode": self.config.mode, "keys": self.config.keys, "game_exe": self.config.game_exe,'target_exe':self.config.target_exe})
-        return path
+        from .individuals import Individuals
+        repository=Individuals(self.root)
+        repository.migrate(self.config,locked=True)
+        identifier=self.config.agent_id or (repository.active() if self.config.resume or self.config.mode=='Experienced' else '')
+        if identifier:
+            repository.save_settings(identifier,self.config,locked=True)
+        else:
+            if self.config.mode=='Experienced': raise ValueError('引き継ぐ個体がありません。NEWBORNで作成してください。')
+            identifier=repository.create(self.config,parent=repository.active() or None,locked=True)
+        from dataclasses import replace
+        self.config=replace(self.config,agent_id=identifier)
+        return repository.path(identifier)
 
     def notify(self, text: str):
         try:
@@ -193,6 +186,9 @@ class Controller:
             self.store.reserve(8192)
             write_json(self.store.root/'host'/'activity.json',asdict(self.activity.snapshot()))
         except OSError:log.exception('Final activity snapshot could not be saved')
+        self.checkpoint()
+        from .individuals import Individuals
+        Individuals(self.root).finish(self.config.agent_id,self.config,time.monotonic()-self.started,locked=True)
         self.store.close()
         logging.getLogger("selfstruct").removeHandler(self.log_handler)
         self.log_handler.close()

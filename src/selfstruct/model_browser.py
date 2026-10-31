@@ -10,10 +10,13 @@ from .presentation import error_message,system_info
 
 
 class ModelBrowser:
-    def __init__(self,app,recommended=False):
+    def __init__(self,app,recommended=False,parent=None):
         self.app=app;self.catalog=ModelCatalog();self.events=queue.Queue();self.rows=[];self.current=None;self.running=False;self.selection=0
-        self.window=tk.Toplevel(app.window);self.window.configure(background='#1c252e');self.window.title('SelfStruct — GGUFモデルブラウザ');self.window.geometry('1120x860');self.window.minsize(900,700)
-        app.layout.window('model-browser',self.window)
+        if parent is None:
+            self.window=tk.Toplevel(app.window);self.window.configure(background='#1c252e');self.window.title('SelfStruct — GGUFモデルブラウザ');self.window.geometry('1120x860');self.window.minsize(900,700)
+            app.layout.window('model-browser',self.window)
+        else:
+            self.window=ttk.Frame(parent);self.window.pack(fill='both',expand=True)
         self.pc=app.performance_monitor.hardware or system_info()
         top=ttk.Frame(self.window,padding=10);top.pack(fill='x')
         self.query=tk.StringVar(value='qwen coder' if recommended else '')
@@ -26,8 +29,14 @@ class ModelBrowser:
             container=ttk.Frame(tags);container.grid(row=row,column=1,sticky='w')
             for index,label in enumerate(labels):
                 var=tk.BooleanVar();self.tags[label]=var
-                ttk.Checkbutton(container,text=label,variable=var,style='Toolbutton',command=lambda g=group,l=label:self.tag_changed(g,l)).grid(row=index//7,column=index%7,sticky='w',padx=1,pady=2)
+                ttk.Checkbutton(container,text=label,variable=var,style='Toolbutton',command=lambda g=group,l=label:self.tag_changed(g,l)).grid(row=index//5,column=index%5,sticky='w',padx=1,pady=2)
             row+=1
+        if parent is not None:
+            tags.pack_forget()
+            def toggle_tags():
+                if tags.winfo_manager():tags.pack_forget()
+                else:tags.pack(fill='x',after=top)
+            ttk.Button(top,text='条件フィルタ',command=toggle_tags).pack(side='left')
         if recommended:self.tags['このPCで推奨'].set(True)
         ttk.Label(self.window,text=f'CPU：{system_info()["cpu"]} / 空きRAM {self.pc.get("ram",0):.1f}GB / ディスク {self.pc.get("free",0):.1f}GB',wraplength=1050).pack(fill='x',padx=10)
         self.status=tk.StringVar(value='GGUF配布メタデータで検索します。適合度は目安で、速度や研究成功を保証しません。')
@@ -153,5 +162,5 @@ class ModelBrowser:
         if not self.ack.get():messagebox.showinfo('配布条件','モデルカードとライセンスを確認し、確認欄を選んでください。',parent=self.window);return
         if not entry['sha256']:messagebox.showerror('完全性情報なし','SHA-256がないファイルは導入できません。',parent=self.window);return
         self.app.install_model({'repo':self.current['id'],'file':entry['file'],'name':self.current['id'],'license_ack':True})
-        self.app.tabs.select(self.app.setup)
-        self.status.set('初回設定画面で導入進捗を確認できます。')
+        self.app.tabs.select(getattr(self.app,'llm_tab',self.app.setup))
+        self.status.set('LLM管理画面で導入進捗を確認できます。')

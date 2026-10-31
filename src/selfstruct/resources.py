@@ -307,6 +307,8 @@ class ManagedLLM:
             state['validation']={'completion':getattr(probe,'last_completion',{}),'startup':True,'minimal_inference':True,'checked_at':time.time(),'japanese_quality':'未評価','json':'未試験','code':'未試験'}
             state['model_info']=model_item
             write_json(self.state_path, state)
+            from .model_library import ModelLibrary
+            ModelLibrary(self.root).register(state)
             write_json(self.root/'host'/'llm-install-result.json',{'status':'passed','model':model_item.get('name',''),'at':time.time()})
         except Exception as error:
             write_json(self.root/'host'/'llm-install-result.json',{'status':'failed','model':model_item.get('name',''),'error_type':type(error).__name__,'error':str(error)[:1000],'rolled_back':bool(old),'at':time.time()})
@@ -384,7 +386,8 @@ class ManagedLLM:
         log_path.parent.mkdir(parents=True,exist_ok=True)
         self.log = RotatingFileHandler(log_path, maxBytes=1024**2, backupCount=2, encoding="utf-8")
         command=[str(engine), '-m', str(model), '--host', '127.0.0.1', '--port', '8766',
-                 '--alias','local','-c','8192','--parallel','1','-lv','4']
+                 '--alias','local','-c',str(state.get('context',8192)),'--parallel','1','-lv','4']
+        if state.get('threads',0):command+=['-t',str(state['threads'])]
         if state.get('backend')=='vulkan':command+=['-ngl','auto','--fit','on','--fit-target','1024']
         else:command+=['-ngl','0']
         self.process = subprocess.Popen(command,
