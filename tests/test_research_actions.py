@@ -283,3 +283,15 @@ def test_live_comparison_time_limit_saves_unconfirmed_candidate(tmp_path):
         assert c.scientist.live is None and p['outcome']=='research_limit' and not p['implementation_verified']
         assert p['source']==c.revisions.source() and p['retained_live']['base']['samples']==[]
     finally:c.close()
+
+
+def test_recorded_input_count_is_authoritative_even_if_plan_still_running(tmp_path):
+    c=Controller(Config(root=str(tmp_path),keys=['A','B']),UnlabelledDynamics())
+    job=c.store.job('research',{});plan=c.experiments.submit(job,'s1',{'action':1,'repeat':1,'duration':10,'wait':10})
+    try:
+        c.step()
+        with c.store.lock,c.store.db:c.store.db.execute("UPDATE research_experiments SET state='running' WHERE id=?",(plan,))
+        assert c.experiments.next(c.game.capture()) is None
+        row=c.experiments.get(plan)
+        assert row['state']=='complete' and len(json.loads(row['events']))==1
+    finally:c.close()

@@ -86,6 +86,10 @@ class Experiments:
             row=self.store.db.execute("SELECT * FROM research_experiments WHERE state IN ('queued','running') ORDER BY created LIMIT 1").fetchone()
             if not row:return None
             row=dict(row);plan=json.loads(row['request']);identifier=row['id']
+            ids=json.loads(row['events'])
+            if len(ids)>=plan['repeat']:
+                complete=self.store.db.execute("SELECT count(*) FROM events WHERE state='complete' AND id IN ("+','.join('?' for _ in ids)+')',ids).fetchone()[0]
+                self.finish(identifier,'complete' if complete==len(ids) else 'interrupted');return None
             if time.time()-row['created']>120:self.finish(identifier,'expired');return None
             condition=plan.get('condition')
             if condition:
