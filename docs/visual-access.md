@@ -78,7 +78,7 @@ library_requestにname/purpose/reasonを指定するとHostへ要求を記録し
 
 ## GUI・因果的な評価
 
-実際の要求に基づきAI注目領域の座標と元Evidenceを表示します。現在画面の要求は枠を重ね、過去Evidenceの領域を無関係な現在画面へ重ねません。LIVE TRACEには実際に処理したOBS/VISION/ANALYZER/LIBRARYを流します。能力接続図はAgent自身の自己記述と、実在する解析器の定義・採用状態・使用回数を表示します。存在しない解析器や接続を推測して補完しません。
+実際の要求に基づきAI注目領域の座標と元Evidenceを表示します。現在画面の要求は枠を重ね、過去Evidenceの領域を無関係な現在画面へ重ねません。「AIが調べている画面」を選ぶと、実際の元Evidenceと要求領域の枠を表示します。LIVE TRACEには実際に処理したOBS/VISION/ANALYZER/LIBRARYを流します。能力接続図はAgent自身の自己記述と、実在する解析器の定義・採用状態・使用回数を表示します。存在しない解析器や接続を推測して補完しません。
 
 Replayと再起動時の学習復元でも可変解像度の要求を処理します。現在ExperienceはBeforeだけを公開し、After・Diff・未来のExperienceや撮影・書き込みは拒否します。結果は予測採点後にのみlearnへ公開します。
 

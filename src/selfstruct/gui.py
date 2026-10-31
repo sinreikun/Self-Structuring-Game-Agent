@@ -128,7 +128,7 @@ class App(ManagementUI):
         self.layout.panel('lab-game-screen',screen)
         self.layout.panel('lab-activity',readout)
         self.view_mode=tk.StringVar(value='現在の画面')
-        ttk.Combobox(screen,textvariable=self.view_mode,state='readonly',values=['現在の画面','入力前後の比較','差分画像'],width=22).pack(anchor='w')
+        ttk.Combobox(screen,textvariable=self.view_mode,state='readonly',values=['現在の画面','入力前後の比較','差分画像','AIが調べている画面'],width=22).pack(anchor='w')
         self.visual_attention=tk.StringVar(value='AI注目領域：要求待ち')
         ttk.Label(screen,textvariable=self.visual_attention,wraplength=700,foreground='#a8c9dd').pack(anchor='w')
         self.preview=tk.Canvas(screen,background='#06090c',highlightthickness=1,highlightbackground='#63717e')
@@ -647,10 +647,19 @@ class App(ManagementUI):
                 ttk.Style().configure("Storage.Horizontal.TProgressbar",background="#df9870" if self.storage_bar["value"]>=80 else "#64ab8b")
             if a.attention:
                 self.visual_attention.set(f'AI注目領域：{a.attention_source or "現在画面"} ／ {list(a.attention)}')
-            if ctrl.latest and (ctrl.steps,self.view_mode.get(),self.preview.winfo_width(),self.preview.winfo_height(),a.attention,a.attention_source,a.attention_size)!=self.last_preview:
-                self.last_preview=(ctrl.steps,self.view_mode.get(),self.preview.winfo_width(),self.preview.winfo_height(),a.attention,a.attention_source,a.attention_size)
+            preview_key=(ctrl.steps,self.view_mode.get(),self.preview.winfo_width(),self.preview.winfo_height(),a.attention,a.attention_source,a.attention_size,a.attention_reference)
+            if ctrl.latest and preview_key!=self.last_preview:
+                self.last_preview=preview_key
                 image = ctrl.latest.copy()
-                if ctrl.latest_before and self.view_mode.get() == "差分画像":
+                viewing_attention=self.view_mode.get()=='AIが調べている画面'
+                if viewing_attention:
+                    try:
+                        event,phase,observation=a.attention_reference
+                        source={'event':event,'phase':phase} if event else {'observation':observation}
+                        image=ctrl.visual.eyes.source(source)[0]
+                    except (ValueError,OSError,TypeError):
+                        image=None
+                elif ctrl.latest_before and self.view_mode.get() == "差分画像":
                     image = ImageChops.difference(ctrl.latest_before.resize(image.size), image)
                 elif ctrl.latest_before and self.view_mode.get() == "入力前後の比較":
                     before = ctrl.latest_before.resize(image.size)
@@ -658,15 +667,20 @@ class App(ManagementUI):
                     combined.paste(before)
                     combined.paste(image, (image.width, 0))
                     image = combined
-                image.thumbnail((max(100, self.preview.winfo_width()), max(100, self.preview.winfo_height())))
-                self.photo = ImageTk.PhotoImage(image)
                 self.preview.delete('all')
-                x=(self.preview.winfo_width()-image.width)//2;y=(self.preview.winfo_height()-image.height)//2
-                self.preview.create_image(x,y,anchor='nw',image=self.photo)
-                if a.attention and a.attention_source in ('', '現在画面') and self.view_mode.get()=='現在の画面' and (not a.attention_size or a.attention_size==ctrl.latest.size):
-                    left,top,right,bottom=a.attention
-                    sx=image.width/ctrl.latest.width;sy=image.height/ctrl.latest.height
-                    self.preview.create_rectangle(x+left*sx,y+top*sy,x+right*sx,y+bottom*sy,outline='#80d9be',width=2)
+                if image is None:
+                    self.preview.create_text(24,30,anchor='nw',fill='#91a5b3',text='対象の視覚Evidenceは未取得または整理済みです。')
+                else:
+                    source_width,source_height=image.size
+                    image.thumbnail((max(100, self.preview.winfo_width()), max(100, self.preview.winfo_height())))
+                    self.photo = ImageTk.PhotoImage(image)
+                    x=(self.preview.winfo_width()-image.width)//2;y=(self.preview.winfo_height()-image.height)//2
+                    self.preview.create_image(x,y,anchor='nw',image=self.photo)
+                    can_overlay=viewing_attention or (a.attention_source in ('','現在画面') and self.view_mode.get()=='現在の画面' and (not a.attention_size or a.attention_size==ctrl.latest.size))
+                    if a.attention and can_overlay:
+                        left,top,right,bottom=a.attention
+                        sx=image.width/source_width;sy=image.height/source_height
+                        self.preview.create_rectangle(x+left*sx,y+top*sy,x+right*sx,y+bottom*sy,outline='#80d9be',width=2)
         if not self.closing:
             self.window.after(500, self.poll)
 

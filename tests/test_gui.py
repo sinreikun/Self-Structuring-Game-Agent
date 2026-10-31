@@ -47,6 +47,15 @@ def test_gui_start_pause_stop_newborn(tmp_path, monkeypatch):
         app.pause()
         assert app.controller.paused.is_set()
         assert not app.controller.game.held
+        event=app.controller.store.rows(1)[0]['id']
+        app.controller.visual.handle({'event':event,'box':[0,0,32,32],'size':[64,64],'output':'statistics'})
+        app.view_mode.set('AIが調べている画面')
+        app.poll()
+        assert f'経験 {event}' in app.visual_attention.get()
+        assert any(app.preview.type(item)=='rectangle' for item in app.preview.find_all())
+        # The same historic box must not be painted onto an unrelated live frame.
+        app.view_mode.set('現在の画面');app.poll()
+        assert not any(app.preview.type(item)=='rectangle' for item in app.preview.find_all())
         app.tabs.select(app.book)
         app.refresh_text()
         assert '研究ノート' in app.book_text.get('1.0','end')

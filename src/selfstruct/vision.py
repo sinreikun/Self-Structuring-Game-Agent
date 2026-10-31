@@ -270,7 +270,9 @@ class Eyes:
             # an unrelated live frame. The GUI labels all attention requests.
             source_label = f"経験 {request['event']} {request.get('phase','before')}" if "event" in request else (
                 f"観測 {reference.get('observation', '?')}" if "observation" in request else "現在画面")
-            self.activity.update(attention=tuple(box), attention_source=source_label, attention_size=tuple(original_size))
+            leaf = reference.get("left", reference)
+            self.activity.update(attention=tuple(box), attention_source=source_label, attention_size=tuple(original_size),
+                                 attention_reference=(leaf.get("event", 0), leaf.get("phase", "before"), leaf.get("observation", 0)))
             self.activity.record("VISION" if compare else "OBS", f"evidence={reference} crop={box} {image.width}x{image.height} {image.mode}")
         return result, attachment
 

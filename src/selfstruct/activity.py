@@ -41,6 +41,7 @@ class RealtimeActivity:
     attention: tuple = ()
     attention_source: str = ""
     attention_size: tuple = ()
+    attention_reference: tuple = ()
     events: tuple[SemanticEvent, ...] = ()
     trace: tuple[TraceEvent, ...] = ()
     adoption: str = ''
