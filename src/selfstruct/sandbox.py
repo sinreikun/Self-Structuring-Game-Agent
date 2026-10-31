@@ -114,8 +114,8 @@ class Sandbox:
                     response = {"ok": True, **dispatch(request)}
                 else:
                     raise ValueError("Capability not granted")
-            except (ValueError, OSError, KeyError) as exc:
-                response = {"ok": False, "error": type(exc).__name__}
+            except (ValueError, OSError, KeyError, TypeError) as exc:
+                response = {"ok": False, "error": type(exc).__name__, "detail": str(exc)[:240]}
             raw = json.dumps(response, ensure_ascii=False).encode()
             if len(raw) > 16384:
                 raw = b'{"ok":false,"error":"ResponseTooLarge"}'
@@ -200,15 +200,21 @@ def replay(source: str, rows: list[dict], evidence: Path, keys: list[str]) -> di
     agent = Sandbox(source)
     errors, known, times = [], 0, []
     samples = []
+    from .vision import ReplayEyes, ReplayFiles
+    eyes = ReplayEyes(evidence, rows)
+    files = ReplayFiles()
     for row in rows:
         if row["action"] not in keys:
             raise ValueError("Replay keys differ from experiment configuration")
         with Image.open(evidence / (row["before_hash"] + ".png")) as image:
             feature, raw = features(image)
+            eyes.frame = image.copy()
+            eyes.current_id = row["id"]
         with Image.open(evidence / (row["after_hash"] + ".png")) as image:
             after, after_raw = features(image)
         agent.pixels(raw)
         started = time.perf_counter()
+        agent.requests(files, files.deny, lambda request: eyes.query(request)[0], eyes.dispatch)
         agent.action(feature, len(keys))
         prediction = agent.call("predict", feature, keys.index(row["action"]))
         elapsed = time.perf_counter() - started
@@ -224,6 +230,7 @@ def replay(source: str, rows: list[dict], evidence: Path, keys: list[str]) -> di
         # Reveal the outcome only after scoring the prediction.
         agent.pixels(after_raw, 1024)
         agent.call("learn", feature, keys.index(row["action"]), after, outcome)
+        eyes.revealed.add(row["id"])
     from .evaluation import summarize
     return summarize(samples,sum(times)/max(len(times),1))
 

@@ -39,6 +39,8 @@ class RealtimeActivity:
     recovery: str = ''
     last_observed: float = 0
     attention: tuple = ()
+    attention_source: str = ""
+    attention_size: tuple = ()
     events: tuple[SemanticEvent, ...] = ()
     trace: tuple[TraceEvent, ...] = ()
     adoption: str = ''

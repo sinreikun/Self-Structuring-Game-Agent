@@ -18,6 +18,10 @@ def endpoint():
     state={'headers_first':False,'headers_sent':False,'delay':0,'finish':'stop','content':'こんにちは','reasoning':None,'requests':[]}
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self,*args):pass
+        def do_GET(self):
+            value = {'data': state.get('models', [{'id': 'fixture'}])} if self.path.endswith('/models') else state.get('props', {})
+            body = json.dumps(value).encode()
+            self.send_response(200);self.send_header('Content-Length', str(len(body)));self.end_headers();self.wfile.write(body)
         def do_POST(self):
             payload=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
             state['requests'].append(payload)
@@ -166,3 +170,31 @@ def test_streamed_generation_checkpoints_before_completion():
         assert json.loads(results[0])=={'findings':[],'wat':''}
     finally:
         state['continue'].set();worker.join(timeout=3);server.shutdown();server.server_close();thread.join()
+
+
+def test_native_images_use_multimodal_transport_only_after_runtime_confirmation(endpoint):
+    client, state = endpoint
+    image = 'data:image/png;base64,iVBORw0KGgo='
+    with pytest.raises(ValueError, match='not been confirmed'):
+        client.complete('selected evidence', images=[image])
+    assert not state['requests']
+    state['models'] = [{'id': 'fixture', 'modalities': {'vision': True}}]
+    client.health()
+    assert client.vision and client.capabilities['input'] == 'vision'
+    client.complete('selected evidence', images=[image])
+    content = state['requests'][-1]['messages'][0]['content']
+    assert content == [{'type': 'text', 'text': 'selected evidence'}, {'type': 'image_url', 'image_url': {'url': image}}]
+    # The same endpoint switching to a text model must revoke image transport.
+    state['models'] = [{'id': 'fixture', 'modalities': {'vision': False}}]
+    client.health()
+    assert not client.vision and client.capabilities['input'] == 'text'
+
+
+def test_llama_runtime_props_detect_vision_without_guessing_model_names(endpoint):
+    client, state = endpoint
+    state['models'] = [{'id': 'fixture', 'meta': {'name': 'Some-Vision-Model'}}]
+    client.health()
+    assert not client.vision
+    state['props'] = {'modalities': {'vision': True, 'audio': False}}
+    client.health()
+    assert client.vision

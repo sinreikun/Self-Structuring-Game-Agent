@@ -46,6 +46,8 @@ class Store:
           PRAGMA synchronous=FULL;
           PRAGMA foreign_keys=ON;
           CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, mode TEXT, started REAL, ended REAL);
+          CREATE TABLE IF NOT EXISTS visual_observation_pins(observation INTEGER, reason TEXT, PRIMARY KEY(observation,reason));
+          CREATE TABLE IF NOT EXISTS visual_library_requests(id INTEGER PRIMARY KEY, request TEXT, state TEXT, created REAL);
           CREATE TABLE IF NOT EXISTS observations(id INTEGER PRIMARY KEY, image_hash TEXT, captured REAL, revision TEXT);
           CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, session TEXT REFERENCES sessions(id),
             before_hash TEXT, after_hash TEXT, action TEXT, duration REAL, sent REAL, observed REAL,
@@ -141,6 +143,7 @@ class Store:
     def unpin(self, reason: str):
         with self.lock, self.db:
             self.db.execute("DELETE FROM evidence_pins WHERE reason=?", (reason,))
+            self.db.execute("DELETE FROM visual_observation_pins WHERE reason=?", (reason,))
 
     def protect_recent(self, reason: str, limit: int = 16):
         self.pin([r["id"] for r in self.rows(limit)], reason)
@@ -195,7 +198,7 @@ class Store:
                 # Old unreferenced compacted rows have been represented by statistics.
                 self.db.execute("DELETE FROM events WHERE state='compacted' AND id<(SELECT coalesce(max(id),0)-10000 FROM events)")
                 # Fresh observation requests have a bounded hot window, linked events/pins remain below.
-                self.db.execute("DELETE FROM observations WHERE id<(SELECT coalesce(max(id),0)-128 FROM observations)")
+                self.db.execute("DELETE FROM observations WHERE id<(SELECT coalesce(max(id),0)-128 FROM observations) AND id NOT IN (SELECT observation FROM visual_observation_pins)")
                 refs={r[0] for r in self.db.execute("SELECT before_hash FROM events WHERE before_hash IS NOT NULL UNION SELECT after_hash FROM events WHERE after_hash IS NOT NULL UNION SELECT image_hash FROM observations")}
             # Commit archival metadata before removing files. A failed unlink must
             # never roll back rows into references to images already removed.

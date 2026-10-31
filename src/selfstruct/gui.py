@@ -129,6 +129,8 @@ class App(ManagementUI):
         self.layout.panel('lab-activity',readout)
         self.view_mode=tk.StringVar(value='現在の画面')
         ttk.Combobox(screen,textvariable=self.view_mode,state='readonly',values=['現在の画面','入力前後の比較','差分画像'],width=22).pack(anchor='w')
+        self.visual_attention=tk.StringVar(value='AI注目領域：要求待ち')
+        ttk.Label(screen,textvariable=self.visual_attention,wraplength=700,foreground='#a8c9dd').pack(anchor='w')
         self.preview=tk.Canvas(screen,background='#06090c',highlightthickness=1,highlightbackground='#63717e')
         self.preview.pack(fill='both',expand=True)
         self.preview.create_text(24,30,anchor='nw',fill='#91a5b3',text='ゲーム画面は接続後に表示されます。')
@@ -493,13 +495,21 @@ class App(ManagementUI):
                     file.seek(max(0, path.stat().st_size - 65536))
                     self.raw_text.insert("end", "\n" + file.read().decode(errors="replace"))
 
+    def capability_graph(self):
+        path=self.controller.revisions.root/self.controller.agent_id/'capabilities.json'
+        data=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {'nodes': [], 'edges': []}
+        visual=getattr(self.controller,'visual',None)
+        if visual:
+            existing={n['id'] for n in data['nodes']}
+            data['nodes'] += [n for n in visual.analyzers.graph() if n['id'] not in existing]
+        return data
+
     def render_graph(self):
         self.graph.delete('all')
-        path=self.controller.revisions.root/self.controller.agent_id/'capabilities.json'
-        if not path.exists():
+        data=self.capability_graph()
+        if not data['nodes']:
             self.graph.create_text(30,30,anchor='nw',fill='#dce5ed',text='Agentからの能力自己記述を待っています。Hostから能力やゲームの意味は与えません。')
             return
-        data=json.loads(path.read_text(encoding='utf-8'))
         positions={n['id']:(150+(i%3)*290,70+(i//3)*130) for i,n in enumerate(data['nodes'])}
         for a,b in data['edges']:
             self.graph.create_line(*positions[a],*positions[b],fill='#698ea5',arrow='last')
@@ -526,12 +536,15 @@ class App(ManagementUI):
         canvas=self.mini_graph
         path=self.controller.revisions.root/self.controller.agent_id/'capabilities.json'
         try:
-            stamp=(str(path),path.stat().st_mtime_ns,canvas.winfo_width(),any(time.time()-at<20 for at in self.graph_new.values()))
+            data=self.capability_graph()
+            stamp=(str(path),json.dumps(data,sort_keys=True),canvas.winfo_width(),any(time.time()-at<20 for at in self.graph_new.values()))
             if stamp==getattr(self,'graph_stamp',None):return
-            self.graph_stamp=stamp;data=json.loads(path.read_text(encoding='utf-8'))
+            self.graph_stamp=stamp
         except (OSError,ValueError):
             canvas.delete('all');canvas.create_text(10,20,anchor='nw',fill='#91a5b3',text='Agentからの自己記述を待っています');return
         canvas.delete('all')
+        if not data.get('nodes'):
+            canvas.create_text(10,20,anchor='nw',fill='#91a5b3',text='Agentからの自己記述を待っています');return
         nodes=data.get('nodes',[]);width=max(120,canvas.winfo_width())
         identities={n['id'] for n in nodes}
         for identity in identities-self.graph_nodes:self.graph_new[identity]=time.time()
@@ -632,8 +645,10 @@ class App(ManagementUI):
                 self.storage_label.set(text)
                 self.storage_bar["value"]=100*storage["used"]/max(1,storage["quota"])
                 ttk.Style().configure("Storage.Horizontal.TProgressbar",background="#df9870" if self.storage_bar["value"]>=80 else "#64ab8b")
-            if ctrl.latest and (ctrl.steps,self.view_mode.get(),self.preview.winfo_width(),self.preview.winfo_height(),a.attention)!=self.last_preview:
-                self.last_preview=(ctrl.steps,self.view_mode.get(),self.preview.winfo_width(),self.preview.winfo_height(),a.attention)
+            if a.attention:
+                self.visual_attention.set(f'AI注目領域：{a.attention_source or "現在画面"} ／ {list(a.attention)}')
+            if ctrl.latest and (ctrl.steps,self.view_mode.get(),self.preview.winfo_width(),self.preview.winfo_height(),a.attention,a.attention_source,a.attention_size)!=self.last_preview:
+                self.last_preview=(ctrl.steps,self.view_mode.get(),self.preview.winfo_width(),self.preview.winfo_height(),a.attention,a.attention_source,a.attention_size)
                 image = ctrl.latest.copy()
                 if ctrl.latest_before and self.view_mode.get() == "差分画像":
                     image = ImageChops.difference(ctrl.latest_before.resize(image.size), image)
@@ -648,7 +663,7 @@ class App(ManagementUI):
                 self.preview.delete('all')
                 x=(self.preview.winfo_width()-image.width)//2;y=(self.preview.winfo_height()-image.height)//2
                 self.preview.create_image(x,y,anchor='nw',image=self.photo)
-                if a.attention and self.view_mode.get()=='現在の画面':
+                if a.attention and a.attention_source in ('', '現在画面') and self.view_mode.get()=='現在の画面' and (not a.attention_size or a.attention_size==ctrl.latest.size):
                     left,top,right,bottom=a.attention
                     sx=image.width/ctrl.latest.width;sy=image.height/ctrl.latest.height
                     self.preview.create_rectangle(x+left*sx,y+top*sy,x+right*sx,y+bottom*sy,outline='#80d9be',width=2)

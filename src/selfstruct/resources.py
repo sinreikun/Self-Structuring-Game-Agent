@@ -418,7 +418,7 @@ class ManagedLLM:
                 raise OSError("推論エンジンの起動に失敗しました。")
             try:
                 client.health()
-                self.active_state=dict(state)
+                self.active_state={**state, "capabilities": getattr(client, "capabilities", {"input": "text", "status": "unverified"})}
                 self.current_info={**self.current_info,'status':'利用可能','gpu_layers':self.offloaded_layers,'total_layers':self.total_layers}
                 write_json(self.root/'host'/'llm-runtime.json',self.current_info)
                 return True

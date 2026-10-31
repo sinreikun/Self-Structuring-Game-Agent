@@ -72,6 +72,14 @@ class Controller:
         self._restore_learning()
         self.scientist = Scientist(self.store, self.revisions, LocalLLM(config.llm_url, config.llm_model),
                                    config.keys, config.research_every, self.notify, self.activity)
+        from .vision import Eyes, VisualAccess
+        self.visual_lock = threading.Lock()
+        self.visual_frame = None
+        self.visual_version = 0
+        self.visual_condition = threading.Condition(self.visual_lock)
+        self.visual = VisualAccess(Eyes(self.store, self.activity, self.current_visual_frame, self.fresh_visual_frame))
+        self.scientist.visual = self.visual
+        self.visual.eyes.cancel = self.scientist.stop_event
         self.scientist.client.context = config.llm_context
         handler = RotatingFileHandler(self.experiment / "host" / "host.log", maxBytes=2 * 1024**2, backupCount=2, encoding="utf-8")
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
@@ -90,19 +98,28 @@ class Controller:
                     raise ValueError("Runtime checkpoint integrity failure")
                 self.agent.restore(raw)
                 restored = state["event"]
-        for row in self.store.rows(512):
+        from .vision import ReplayEyes, ReplayFiles
+        rows = self.store.rows(512)
+        eyes = ReplayEyes(self.store.root/"evidence", rows)
+        files = ReplayFiles()
+        for row in rows:
             self.last_eid = row["id"]
             if row["id"] <= restored:
+                eyes.revealed.add(row["id"])
                 continue
             if row["action"] not in self.config.keys:
                 continue
             with Image.open(self.store.root / "evidence" / (row["before_hash"] + ".png")) as image:
                 before, raw = features(image)
+                eyes.frame = image.copy()
+                eyes.current_id = row["id"]
             with Image.open(self.store.root / "evidence" / (row["after_hash"] + ".png")) as image:
                 after, after_raw = features(image)
             self.agent.pixels(raw)
+            self.agent.requests(files, files.deny, lambda request: eyes.query(request)[0], eyes.dispatch)
             self.agent.pixels(after_raw, 1024)
             self.agent.call("learn", before, self.config.keys.index(row["action"]), after, int(row["change"] > .01))
+            eyes.revealed.add(row["id"])
 
     def checkpoint(self):
         raw = self.agent.checkpoint()
@@ -357,23 +374,18 @@ class Controller:
         trial = self.scientist.trial_agent(self.steps)
         revision, agent = trial if trial else (self.agent_id, self.agent)
         agent.pixels(raw)
-        self.activity.update(phase="観測中",revision=revision,attention=())
+        self.activity.update(phase="観測中",revision=revision)
+        with self.visual_condition:
+            self.visual_frame = before.copy()
+            self.visual_version += 1
+            self.visual_condition.notify_all()
         def observe(request):
-            image = before
-            if "event" in request:
-                image = self.store.observed_image(int(request["event"]), request.get("phase", "before"))
-            elif request.get("fresh"):
-                image = self.game.capture()
-                self.store.observation(image, revision)
-            width, height = image.size
-            box = request.get("box", [0, 0, width, height])
-            if (not isinstance(box, list) or len(box) != 4 or any(not isinstance(v, int) for v in box) or
-                    not (0 <= box[0] < box[2] <= width and 0 <= box[1] < box[3] <= height)):
-                raise ValueError("Invalid observation region")
-            self.activity.update(attention=tuple(box))
-            self.activity.record("OBS",f"crop={box}")
-            pixels = image.crop(tuple(box)).convert("L").resize((32, 32))
-            return {"width": width, "height": height, "gray": list(pixels.tobytes()), "observed": time.time()}
+            # A fresh call here is already on the sole game-I/O thread.
+            frame = before
+            if request.get("fresh"):
+                frame = self.game.capture()
+                request = {**request, "fresh": False}
+            return self.visual.eyes.query(request, current=frame)[0]
         agent.requests(self.files, lambda n:self.store.reserve(n,critical=False), observe, lambda request:self.dispatch(request,revision))
         if "research_due" in agent.exports:
             self.scientist.automatic = bool(agent.call("research_due", self.steps))
@@ -420,8 +432,32 @@ class Controller:
         self.scientist.tick()
         return change
 
+    def current_visual_frame(self):
+        with self.visual_lock:
+            return self.visual_frame.copy() if self.visual_frame is not None else None
+
+    def fresh_visual_frame(self):
+        # Research waits for Player's next capture, never competes for the game
+        # handle or injects input. Pause/minimization produce a bounded timeout.
+        with self.visual_condition:
+            version = self.visual_version
+            available = self.visual_condition.wait_for(
+                lambda: self.visual_version > version or self.stopped.is_set(), timeout=5)
+            if not available or self.stopped.is_set() or self.visual_frame is None:
+                raise ValueError("Fresh frame unavailable while paused/stopped/minimized")
+            return self.visual_frame.copy()
+
     def dispatch(self, request: dict, revision: str | None = None) -> dict:
         op = request["op"]
+        from .vision import VISUAL_OPS
+        if op in VISUAL_OPS:
+            if op in {"analyzer_evaluate", "library_request"}:
+                if len(self.store.jobs()) >= 8:
+                    raise ValueError("Pending job budget exceeded")
+                jid = self.store.job("visual", {"request": request})
+                self.scientist.tick()
+                return {"job": jid}
+            return self.visual.handle(request)[0]
         if op == "describe":
             from .capabilities import validate_description
             description=validate_description(request,revision or self.agent_id)

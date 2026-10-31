@@ -13,6 +13,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 from .sandbox import Revisions, Sandbox, improves, replay
 from .store import CapacityError, Store
 from .evaluation import sample, summarize, assessment, regression_safe
+from .vision import Eyes, VisualAccess, VISUAL_INSTRUCTIONS, resolved_request, evidence_ids
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ PROPOSAL_SCHEMA={
                 'evidence':{'type':'array','maxItems':64,'items':{'type':'integer'}},
                 'action':{'type':'integer','minimum':0},
                 'change_probability':{'type':'number','minimum':0,'maximum':1}}}},
+        'visual_requests':{'type':'array','maxItems':4,'items':{'type':'object'}},
         'problem':{'type':'string'},'reason':{'type':'string'},'wat':{'type':'string'}}}
 
 
@@ -71,15 +73,35 @@ class LocalLLM:
             raise ValueError("LLM must be local")
         self.url, self.model = url.rstrip("/"), model
         self.managed = parsed.port==8766
+        self.vision = False
+        self.capabilities = {"input": "text", "status": "unverified"}
         # A loopback inference engine must not send prompts through an external proxy.
         self.opener = build_opener(ProxyHandler({}))
 
     def health(self) -> None:
         with self.opener.open(self.url + "/models", timeout=3) as response:
             models=json.loads(response.read(65536)).get("data")
-            if models:self.loaded_model=models[0].get("id",self.model)
-            if not models:
-                raise OSError("LLM has no loaded model")
+        if not models:
+            raise OSError("LLM has no loaded model")
+        selected = next((m for m in models if m.get("id") == self.model), models[0])
+        self.loaded_model = selected.get("id", self.model)
+        # Use explicit runtime metadata, never a model-name heuristic. llama.cpp
+        # reports modalities in /props; other local OpenAI servers may use /models.
+        metadata = selected
+        modalities = metadata.get("modalities", (metadata.get("meta") or {}).get("modalities", {}))
+        if not modalities:
+            try:
+                with self.opener.open(self.url.removesuffix("/v1") + "/props", timeout=3) as response:
+                    metadata = json.loads(response.read(65536))
+                    modalities = metadata.get("modalities", {})
+            except (OSError, ValueError):
+                modalities = {}
+        advertised = (isinstance(modalities, dict) and
+                      (modalities.get("vision") is True or "image" in (modalities.get("input") or []))) or (
+                      isinstance(modalities, list) and "image" in modalities)
+        self.vision = bool(advertised)
+        self.capabilities = {"input": "vision" if self.vision else "text", "status": "runtime_reported" if modalities else "unverified",
+                             "model": self.loaded_model, "checked_at": time.time()}
 
     def count_tokens(self,prompt):
         req=Request(self.url.removesuffix('/v1')+'/tokenize',data=json.dumps({'content':prompt,'add_special':True}).encode(),headers={'Content-Type':'application/json'})
@@ -87,7 +109,7 @@ class LocalLLM:
             return len(json.loads(response.read(1024**2))['tokens'])
 
     def complete(self, prompt: str, max_tokens: int = 2048, json_mode: bool = False,
-                 *, allow_partial=False, timeout=600, cancel=None, schema=None, on_progress=None) -> str:
+                 *, allow_partial=False, timeout=600, cancel=None, schema=None, on_progress=None, images=None) -> str:
         import http.client
         import io
         import select
@@ -117,7 +139,15 @@ class LocalLLM:
             # HTTP/1.0 hands ownership to the response after headers. The actual
             # socket is kept alive until the finally block, without makefile refs.
             def close(self):pass
-        payload={'model':self.model,'messages':[{'role':'user','content':prompt}],
+        content = prompt
+        if images:
+            if not self.vision:
+                raise ValueError("Native image input has not been confirmed by the runtime")
+            if len(images) > 4 or any(not isinstance(value, str) or not value.startswith("data:image/png;base64,") or len(value) > 2*1024**2 for value in images):
+                raise ValueError("Image input budget exceeded")
+            content = [{"type": "text", "text": prompt}] + [
+                {"type": "image_url", "image_url": {"url": value}} for value in images]
+        payload={'model':self.model,'messages':[{'role':'user','content':content}],
                  'temperature':.2,'max_tokens':max_tokens}
         if self.managed:payload['chat_template_kwargs']={'enable_thinking':False}
         if on_progress:payload['stream']=True
@@ -275,7 +305,7 @@ actionとchange_probabilityは指定入力の後に画像が変化する確率�
 任意のrequest()->i32をexportすると、memoryの4096からJSON要求を返せます。0は要求なし、最大8192バイト。
 許可操作はop=write/read/delete/mkdir/list、相対path、writeにはtext。応答は16384に長さ4バイトlittle endian、その後JSON。
 これはAgent専用作業領域だけを扱います。自分のagent.watを書いても本番世代には直接反映されず、候補評価が必要です。
-op=observeでは任意のbox=[左,上,右,下]領域の32x32輝度配列grayと原画面サイズを得られます。fresh=trueで再観測、event=根拠IDとphase=before/afterで過去原画像を再解析できます。ゲームの意味ラベルは与えられません。
+op=observeはbox=[左,上,右,下]、size=[幅,高さ]またはnative、mode=L/RGBで原画像を調べます。eventとphase=before/after/diffで過去画像、未指定は現在、fresh=trueで再観測。pixelsはoffset/limitで分割取得し、grayは互換用です。ゲーム意味は与えません。
 op=describe,nodes=[{{id,description,role,input,output,uses,active,effectiveness,created_generation,status}}],edges=[[id,id]]で自分が構成した能力と接続を日本語で報告できます。権限やゲーム意味は追加しません。未報告の能力をHostが推測して表示することはありません。
 op=research,prompt=研究指示で非同期LLM作業を依頼し、返されたjobをop=job,id=jobで確認できます。op=candidate,path=作業領域のWATファイルで自分の改善候補を提出できます。任意のresearch_due(経験数:i32)->i32をexportし0を返すと初期の自動研究役を停止し、独自の役割分割・研究指示で内部構造を置き換えられます。
 評価器は時間順Replayでlearnを実行し、未確認予測はBrier損失0.25。
@@ -334,6 +364,8 @@ class Scientist:
         self.retry_base_delay = 5
         self.automatic = True
         self.recover_llm = None
+        self.visual = VisualAccess(Eyes(store, self.activity))
+        self.visual.eyes.cancel = self.stop_event
         self.thread = threading.Thread(target=self.run, name="research", daemon=True)
 
     def complete(self, *args, **kwargs):
@@ -492,7 +524,15 @@ class Scientist:
             self.store.set_job(jid, "running")
             try:
                 payload = json.loads(pending[0]["payload"]) if pending else {}
-                if pending and pending[0]["kind"] == "agent_llm":
+                if pending and pending[0]["kind"] == "visual":
+                    try:
+                        result, _ = self.visual.handle(payload["request"], pin="research-job-"+jid)
+                    except CapacityError:
+                        raise
+                    except (ValueError, OSError, TypeError, KeyError) as error:
+                        result = {"ok": False, "error": str(error)[:500]}
+                    self.store.set_job(jid, "complete", {**payload, "response": json.dumps(result, ensure_ascii=False)})
+                elif pending and pending[0]["kind"] == "agent_llm":
                     self.agent_request(jid,payload)
                 elif payload.get("source"):
                     self.evaluate_proposal(payload["source"], payload["after"], jid)
@@ -554,7 +594,7 @@ class Scientist:
         def journal(text):
             if time.monotonic()-saved[0]>=.5:
                 payload['stream_draft']=text;self.store.set_job(jid,'running',payload);saved[0]=time.monotonic()
-        try:response=self.complete(prompt,max_tokens=budget,on_progress=journal)
+        try:response=self.visual_dialogue(prompt,jid,payload,budget,journal)
         except (IncompleteInference,InferenceUnavailable,InterruptedError) as error:
             draft=getattr(self.client,'last_response','') or payload.get('stream_draft','')
             if draft:
@@ -564,6 +604,126 @@ class Scientist:
             raise
         self.store.proposal(jid,response)
         self.store.set_job(jid,'complete',{**payload,'response':response})
+
+    def visual_dialogue(self, prompt, jid, payload, budget, journal):
+        """Research stays on its worker; every extra observation is explicit/bounded.
+
+        Store requests and bounded results, not transient crops or image base64.
+        Resume native attachments from the exact pinned observation IDs.
+        """
+        history = payload.setdefault("visual_history", [])
+        pin = "research-job-"+jid
+        if isinstance(self.client, LocalLLM):
+            # Refresh on each research job so changing a server's model cannot leave
+            # stale vision privileges on the client or erase individual analyzers.
+            try:
+                self.client.health()
+            except OSError:
+                # Some text endpoints implement completions without model/props
+                # metadata. Capability discovery cannot make text inference fail.
+                self.client.vision = False
+                self.client.capabilities = {"input": "text", "status": "unverified", "checked_at": time.time()}
+            from .config import write_json
+            write_json(self.store.root/"host"/"model-capabilities.json", self.client.capabilities)
+        for _ in range(7):
+            if self.stop_event.is_set():
+                raise InterruptedError("研究を中断しました。")
+            images = []
+            # Earlier numeric payloads stay durably journaled and can be requested
+            # again by exact ID. Keep current context focused on the latest turn.
+            visible = []
+            for i, entry in enumerate(history):
+                item = json.loads(json.dumps(entry))
+                if i < len(history)-4 and "result" in item:
+                    for key in ("pixels", "gray", "histogram", "components"):
+                        if key in item["result"]:
+                            item["result"].pop(key)
+                            item["payload_omitted"] = "Older array retained in job journal; request the same observation/offset to inspect again"
+                item.pop("native", None)
+                if entry.get("native") and i >= len(history)-4 and getattr(self.client,"vision",False):
+                    try:
+                        _, attachment = self.visual.handle(entry["request"], pin=pin, native=True)
+                        if attachment:
+                            item["attachment_index"] = len(images)
+                            images.append(attachment)
+                    except (ValueError, OSError):
+                        item["attachment_error"] = "Source image unavailable"
+                visible.append(item)
+            rounds = payload.get("visual_rounds", 0)
+            prefix = prompt+"\n"+VISUAL_INSTRUCTIONS+"\nモデル画像入力: "+str(bool(getattr(self.client,"vision",False)))
+            def render():
+                return prefix+"\n追加観測結果（attachment_indexは画像添付の0始まり番号）:"+json.dumps(visible, ensure_ascii=False, separators=(",", ":"))
+            text = render()
+            # Context pressure must be recoverable, never cause an endless retry
+            # with the same oversized pixels. Expose exact replayable references.
+            if isinstance(self.client, LocalLLM) and self.client.managed:
+                available = getattr(self.client, "context", 8192)-1024-256-len(images)*1024
+                for item in visible:
+                    if self.client.count_tokens(text) <= available:
+                        break
+                    if "result" in item:
+                        removed = False
+                        for key in ("pixels", "gray", "histogram", "components"):
+                            if key in item["result"]:
+                                item["result"].pop(key); removed = True
+                        if removed:
+                            item["payload_omitted"] = "Array exceeds current context; request same source with pixels limit<=64, or statistics/crop"
+                            text = render()
+            if rounds >= 6:
+                text += "\n追加観測の予算終了。visual_requestsを空配列にし、現時点の根拠と未確認事項だけを返してください。"
+            output_budget = budget
+            if isinstance(self.client, LocalLLM) and self.client.managed:
+                output_budget = min(budget, getattr(self.client, "context", 8192)-self.client.count_tokens(text)-256-len(images)*1024)
+                if output_budget < 512:
+                    raise InferenceUnavailable("追加視覚観測がモデルの入力枠を超えました。保存済み結果を保持します。")
+            if len(text.encode()) > 100000:
+                raise InferenceUnavailable("視覚研究の入力予算を超えました。")
+            options = {"max_tokens": output_budget, "json_mode": True, "schema": PROPOSAL_SCHEMA, "on_progress": journal}
+            if images:
+                options["images"] = images
+            response = self.complete(text, **options)
+            try:
+                value = json.loads(response.strip().removeprefix("```json").removesuffix("```").strip())
+            except (ValueError, TypeError):
+                return response  # Existing proposal repair retains invalid output.
+            requests = value.get("visual_requests", []) if isinstance(value, dict) else []
+            if not requests:
+                return response
+            if rounds >= 6:
+                payload["visual_budget_exhausted"] = True
+                return json.dumps({"findings": [], "problem": "追加観測の予算終了", "reason": "研究結果を保存し、次の経験を待ちます", "wat": ""}, ensure_ascii=False)
+            if not isinstance(requests, list) or len(requests) > 4:
+                raise ResearchRepairNeeded("visual_requestsは最大4件の配列にしてください。")
+            self.store.proposal(jid, response)
+            for request in requests:
+                try:
+                    if isinstance(request, dict) and request.get("op", "observe") == "observe" and request.get("output", "pixels") in {"pixels", "image"}:
+                        request = {"limit": 128, **request}
+                    # Large individual arrays remain accessible by paging. An
+                    # oversized result never silently becomes a fabricated summary.
+                    result, attachment = self.visual.handle(request, pin=pin, native=bool(getattr(self.client,"vision",False)))
+                    if len(json.dumps(result).encode()) > 12000:
+                        result = {"error": "VisualResultTooLarge", "detail": "Use a smaller region/size or pixels with limit <= 512"}
+                        attachment = None
+                    ids = sorted(evidence_ids(result.get("evidence", {})))
+                    if ids:
+                        observed = {k: result[k] for k in ("evidence", "box", "size", "mode", "mean", "component_count", "coordinates") if k in result}
+                        note = "視覚APIで取得した観測（ゲーム意味は未確認）："+json.dumps(observed, ensure_ascii=False, separators=(",", ":"))
+                        with self.store.lock:
+                            exists = self.store.db.execute("SELECT 1 FROM knowledge WHERE kind='observation' AND text=?", (note,)).fetchone()
+                        if not exists:
+                            self.store.knowledge("observation", note, "observed", "unknown", ids)
+                    resolved = resolved_request(request, result["evidence"]) if "evidence" in result else dict(request)
+                    history.append({"request": resolved, "result": result, "native": bool(attachment)})
+                except CapacityError:
+                    raise
+                except (ValueError, OSError, KeyError, TypeError) as error:
+                    history.append({"request": request, "error": str(error)[:240]})
+            payload["visual_rounds"] = rounds+1
+            payload["visual_history"] = history
+            payload.pop("stream_draft", None)
+            self.store.set_job(jid, "running", payload)
+        raise ResearchRepairNeeded("追加観測の応答を確認できませんでした。")
 
     def study(self, rows: list[dict], jid: str):
         self.activity.update(experiment="未確認の変化条件と観測方法を研究",next="仮説を形成して独立の経験で検証")
@@ -601,7 +761,7 @@ class Scientist:
                 self.store.set_job(jid,'running',payload)
                 saved_at[0]=time.monotonic()
         try:
-            response=self.complete(prompt,max_tokens=budget,json_mode=True,schema=PROPOSAL_SCHEMA,on_progress=journal)
+            response=self.visual_dialogue(prompt,jid,payload,budget,journal)
         except IncompleteInference:
             response=getattr(self.client,'last_response','')
             self.store.proposal(jid,response)
@@ -617,6 +777,8 @@ class Scientist:
             raise
         self.store.proposal(jid,response)
         allowed={r['id'] for r in rows}
+        for entry in payload.get('visual_history', []):
+            allowed.update(evidence_ids(entry.get('result', {}).get('evidence', {})))
         try:proposal=parse_proposal(response,allowed,self.keys)
         except (ValueError,TypeError,KeyError,ResearchRepairNeeded) as error:
             payload['repair_response']=response;payload['repair_error']=str(error)[:500]
