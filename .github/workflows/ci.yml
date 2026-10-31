@@ -1,7 +1,7 @@
 name: Test and Windows EXE
 on:
   push:
-    branches: [main]
+    branches: [main, fix/resilient-recovery]
     paths-ignore:
       - 'updates/**'
       - '.github/release-request.json'
