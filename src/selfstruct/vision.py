@@ -273,7 +273,10 @@ class Eyes:
             leaf = reference.get("left", reference)
             self.activity.update(attention=tuple(box), attention_source=source_label, attention_size=tuple(original_size),
                                  attention_reference=(leaf.get("event", 0), leaf.get("phase", "before"), leaf.get("observation", 0)))
-            self.activity.record("VISION" if compare else "OBS", f"evidence={reference} crop={box} {image.width}x{image.height} {image.mode}")
+            def label(ref):
+                return f"experience={ref['event']}:{ref.get('phase','before')}" if "event" in ref else f"observation={ref.get('observation','?')}"
+            identity = label(reference["left"])+","+label(reference["right"]) if compare else label(reference)
+            self.activity.record("VISION" if compare else "OBS", f"{identity} crop={box} {image.width}x{image.height} {image.mode}")
         return result, attachment
 
 
@@ -407,8 +410,11 @@ class Analyzers:
             candidate.append(sample(event, round(probability*1000) if n else -1, outcome, rows[event]["action"]))
             # Do not train on held-out outcomes; the analyzer cannot learn the test set.
         cost = (time.perf_counter()-started)/len(test_ids)
-        baseline, measured = summarize(base, cost), summarize(candidate, cost)
-        passed, explanation = assessment(baseline, measured)
+        baseline, measured = summarize(base, 0), summarize(candidate, cost)
+        # The Agent evaluator's relative timing rule compares two complete WAT
+        # programs. Here usefulness is a feature probe, so assess its predictions
+        # separately and enforce the actual measured analyzer budget below.
+        passed, explanation = assessment(baseline, {**measured, "seconds": 0})
         passed = passed and reproducible and cost <= 1 and unknown < len(test_ids)
         metrics = {"baseline": baseline, "candidate": measured, "reproducible": reproducible,
                    "unknown": unknown, "cost_seconds": cost, "reason": explanation,

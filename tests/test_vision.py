@@ -323,3 +323,38 @@ def test_scientist_can_cite_requested_older_evidence_outside_initial_summary(wor
     assert store.get_job(job)['state'] == 'complete'
     hypothesis = next(r for r in store.knowledge_rows() if r['kind'] == 'hypothesis')
     assert json.loads(hypothesis['evidence']) == [ids[0]]
+
+
+def test_managed_vision_context_pressure_preserves_references_and_does_not_retry_forever(world, monkeypatch):
+    from selfstruct.research import LocalLLM
+    store, add, access = world
+    event = add(Image.new('RGB', (32, 32), 'red'))
+    client = LocalLLM('http://127.0.0.1:8766/v1', 'local')
+    client.vision = True; client.context = 8192
+    monkeypatch.setattr(client, 'health', lambda: None)
+    monkeypatch.setattr(client, 'count_tokens', lambda prompt: 6144)
+    calls = []
+    def complete(prompt, **kwargs):
+        calls.append((prompt, kwargs))
+        if len(calls) == 1:
+            return json.dumps({'visual_requests': [{'event': event, 'output': 'image', 'size': [64, 64]} for _ in range(4)]})
+        assert len(kwargs['images']) == 1
+        assert 'attachment_omitted' in prompt and '"attachment_index":0' in prompt
+        assert kwargs['max_tokens'] >= 512
+        return '{"findings":[],"wat":""}'
+    monkeypatch.setattr(client, 'complete', complete)
+    scientist = Scientist(store, Revisions(store.root/'revisions'), client, ['A'], 48, lambda _: None)
+    scientist.visual = access
+    job = store.job('research', {})
+    scientist.study(store.rows(), job)
+    assert len(calls) == 2 and store.get_job(job)['state'] == 'complete'
+    assert len(json.loads(store.get_job(job)['payload'])['visual_history']) == 4
+
+
+def test_actual_trace_identifies_evidence_region_and_resolution_within_display_budget(world):
+    _, add, access = world
+    event = add(Image.new('RGB', (128, 96)))
+    access.handle({'event': event, 'box': [16, 0, 96, 64], 'size': [128, 64], 'mode': 'RGB', 'output': 'statistics'})
+    trace = access.eyes.activity.snapshot().trace[-1]
+    assert f'experience={event}:before' in trace.text
+    assert 'crop=[16, 0, 96, 64]' in trace.text and '128x64 RGB' in trace.text

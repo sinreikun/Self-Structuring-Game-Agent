@@ -669,6 +669,17 @@ class Scientist:
                         if removed:
                             item["payload_omitted"] = "Array exceeds current context; request same source with pixels limit<=64, or statistics/crop"
                             text = render()
+                while images and self.client.count_tokens(text)+len(images)*1024+256+512 > getattr(self.client,"context",8192):
+                    images.pop(0)
+                    for item in visible:
+                        if "attachment_index" not in item:
+                            continue
+                        if item["attachment_index"] == 0:
+                            item.pop("attachment_index")
+                            item["attachment_omitted"] = "Image exceeds available context; request fewer images or a smaller crop"
+                        else:
+                            item["attachment_index"] -= 1
+                    text = render()
             if rounds >= 6:
                 text += "\n追加観測の予算終了。visual_requestsを空配列にし、現時点の根拠と未確認事項だけを返してください。"
             output_budget = budget
