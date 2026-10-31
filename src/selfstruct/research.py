@@ -511,6 +511,27 @@ class Scientist:
                 self.store.unpin('live-trial')
                 self.activity.update(comparison='保存して修正待ち',candidate='')
 
+    def expire_live_time(self):
+        with self.lock:
+            if not self.live:return
+            live=self.live;payload=json.loads(self.store.get_job(live['job'])['payload'])
+            if not self.research_time_expired(payload):return
+            payload.update(source=self.revisions.source(live['revision']),retained_live=live['metrics'])
+            self.live=None
+            self.store.unpin('live-trial')
+            self.finish_research_time(live['job'],payload)
+
+    def research_time_expired(self,payload):
+        from .research_actions import MAX_SECONDS
+        return 'research_started' in payload and time.time()-payload['research_started']>=MAX_SECONDS
+
+    def finish_research_time(self,jid,payload):
+        payload.update(research_limit='time',outcome='research_limit',implementation_verified=False)
+        self.store.set_job(jid,'complete',payload)
+        for prefix in ('research-job-','pending-','suspended-'):self.store.unpin(prefix+jid)
+        self.activity.record('RESEARCH',f'limit job={jid} reason=time phase={payload.get("research_phase","evaluation")}')
+        self.activity.update(llm='待機',experiment='研究時間上限・根拠と候補を保存',comparison='未確認のまま終了')
+
     def finish_failed_research(self, jid, payload, error, outcome="repair_exhausted"):
         payload.update(outcome=outcome, implementation_verified=False, repair_error=str(error)[:1000],
                        response="候補を採用せず保存しました。修正上限または入力制約のため、新しい経験で研究を進めます。")
@@ -597,6 +618,7 @@ class Scientist:
         while not self.stop_event.is_set():
             self.wake.wait(timeout=5)
             self.wake.clear()
+            self.expire_live_time()
             if self.stop_event.is_set() or self.live or self.revisions.state["trial"]:
                 continue
             with self.store.lock:
@@ -615,6 +637,8 @@ class Scientist:
             self.store.set_job(jid, "running")
             try:
                 payload = json.loads(pending[0]["payload"]) if pending else {}
+                if self.research_time_expired(payload):
+                    self.finish_research_time(jid,payload);continue
                 if self.restore_repair_budget(jid,payload):
                     continue
                 if pending and pending[0]["kind"] == "visual":
@@ -975,6 +999,7 @@ class Scientist:
         # Persist the proposal before execution; resume it rather than regenerating it.
         payload=json.loads(self.store.get_job(jid)["payload"])
         payload={**payload,"source":source,"after":after_id}
+        if self.research_time_expired(payload):self.finish_research_time(jid,payload);return
         self.store.set_job(jid,"running",payload)
         digest=hashlib.sha256(source.encode()).hexdigest()
         if payload.get("validated_source_digest")!=digest:
@@ -983,12 +1008,15 @@ class Scientist:
             payload["validated_source_digest"]=digest
             self.store.set_job(jid,"running",payload)
         self.notify("改善候補を作成しました。新しい経験を集めてから独立した比較評価を行います。")
-        deadline = time.monotonic() + 300
+        from .research_actions import MAX_SECONDS
+        remaining=MAX_SECONDS-(time.time()-payload.get('research_started',time.time()))
+        deadline = time.monotonic() + min(300,max(0,remaining))
         future = []
         while not self.stop_event.wait(.5) and time.monotonic() < deadline:
             future = [r for r in self.store.rows(128,pin_reason='pending-'+jid) if r["id"] > after_id]
             if len(future)>=48 and (all(sum((r['change']>.01)==y for r in future)>=4 for y in (False,True)) or len(future)>=128):
                 break
+        if self.research_time_expired(payload):self.finish_research_time(jid,payload);return
         if len(future) < 48:
             self.store.set_job(jid, "pending")
             return

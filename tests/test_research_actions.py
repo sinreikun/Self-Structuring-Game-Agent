@@ -257,3 +257,28 @@ def test_hypothesis_refutation_requires_preregistered_probability_and_samples(tm
         result=c.experiments.evaluate(kid,0)
         assert result['status']=='refuted' and result['n']==16 and result['pre_registered']
     finally:c.close()
+
+
+def test_research_time_budget_includes_candidate_wait_and_survives_restart(tmp_path,monkeypatch):
+    c=Controller(Config(root=str(tmp_path),keys=['A','B']),UnlabelledDynamics());seed=c.revisions.source()
+    job=c.store.job('research',{'research_started':time.time()-601,'research_calls':1,'progress':{'new_hypotheses':1}})
+    try:
+        monkeypatch.setattr('selfstruct.research.evaluate',lambda *a:pytest.fail('Expired candidate must not execute'))
+        c.scientist.evaluate_proposal(seed,0,job)
+        row=c.store.get_job(job);p=json.loads(row['payload'])
+        assert row['state']=='complete' and p['outcome']=='research_limit' and p['research_limit']=='time'
+        assert p['source']==seed and p['progress']['new_hypotheses']==1
+        assert c.scientist.research_time_expired(p)
+    finally:c.close()
+
+
+def test_live_comparison_time_limit_saves_unconfirmed_candidate(tmp_path):
+    c=Controller(Config(root=str(tmp_path),keys=['A','B']),UnlabelledDynamics())
+    job=c.store.job('research',{'research_started':time.time()-601})
+    try:
+        c.scientist.live={'job':job,'revision':c.revisions.active,'metrics':{'base':{'samples':[]},'agent':{'samples':[]}}}
+        c.scientist.expire_live_time()
+        p=json.loads(c.store.get_job(job)['payload'])
+        assert c.scientist.live is None and p['outcome']=='research_limit' and not p['implementation_verified']
+        assert p['source']==c.revisions.source() and p['retained_live']['base']['samples']==[]
+    finally:c.close()
