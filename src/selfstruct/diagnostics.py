@@ -16,6 +16,28 @@ from . import __version__
 MAX_ZIP_INPUT=24*1024**2
 
 
+def diagnostic_json(value):
+    """Bound diagnostic summaries without cutting a JSON token in half."""
+    encoded=json.dumps(redact(value),ensure_ascii=False)
+    if len(encoded)<=16000:return encoded
+    def compact(item,depth=0):
+        if depth>8:return '[diagnostic depth limit]'
+        if isinstance(item,dict):
+            result={}
+            for key,entry in list(item.items())[:64]:
+                if isinstance(entry,list) and len(entry)>8:
+                    result[key]=[compact(v,depth+1) for v in entry[:4]+entry[-4:]]
+                    result[key+'_diagnostic_total']=len(entry)
+                else:result[key]=compact(entry,depth+1)
+            return result
+        if isinstance(item,list):return [compact(v,depth+1) for v in item[:32]]
+        if isinstance(item,str):return item[:600]
+        return item
+    result=compact(redact(value));encoded=json.dumps(result,ensure_ascii=False)
+    if len(encoded)>16000:return json.dumps({'diagnostic_summary':'too large','type':type(value).__name__},ensure_ascii=False)
+    return encoded
+
+
 def redact(value):
     if isinstance(value,dict):
         return {k:('[REDACTED]' if re.search(r'password|secret|token|credential|api.?key|authorization|catalog_key',k,re.I) else redact(v)) for k,v in value.items()}
@@ -74,7 +96,7 @@ def create_diagnostics(root: Path, store=None, config=None, activity=None, gui=N
                                 for value in row:
                                     if table=='jobs' and columns[len(values)]=='payload':value='[prompt/source omitted]'
                                     if isinstance(value,str):
-                                        try: value=json.dumps(redact(json.loads(value)),ensure_ascii=False)
+                                        try: value=diagnostic_json(json.loads(value))
                                         except (ValueError,TypeError): value=redact(value)
                                         value=value[:16000]
                                     values.append(value)

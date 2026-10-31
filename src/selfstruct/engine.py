@@ -50,6 +50,8 @@ class Controller:
         self.monitor_thread = None
         self.game = game
         self.restarts = 0
+        self.recovering=threading.Event()
+        self.recovery_delay=2.
         self.error = ""
         self.protect_until = 0.
         self.experiment = self._experiment()
@@ -215,7 +217,7 @@ class Controller:
                         self.game.release_due()
                     if time.monotonic() - self.last_progress > 5:
                         self.game.release()
-                    if time.monotonic() - self.last_progress > 30 and not self.paused.is_set():
+                    if time.monotonic() - self.last_progress > 30 and not self.paused.is_set() and not self.recovering.is_set() and self.activity.snapshot().connection=="接続済み":
                         self.pause()
                         self.notify("観測が応答しないため入力を解放しました。接続状態を確認してください。")
             except Exception:
@@ -232,7 +234,9 @@ class Controller:
                                         cancel=self.stopped)
             self.status = "ゲームへ接続中"
             self.activity.update(phase=self.status, connection="接続中",revision=self.agent_id)
-            self.game.start()
+            try:self.game.start()
+            except (GameUnavailable,OSError):self.recover_game('ゲームを起動し直して再接続しました。')
+            if self.stopped.is_set():return
             if isinstance(self.game,WindowsGame):
                 state_path=self.root/'host'/'experiment.json'
                 state=json.loads(state_path.read_text(encoding='utf-8'))
@@ -297,22 +301,48 @@ class Controller:
             self.stopped.set()
 
     def recover_game(self, message: str, restart: bool=False):
-        self.activity.update(recovery="接続を復旧中",phase="復旧中")
-        self.activity.emit("recovery")
-        self.store.protect_recent("recovery")
-        self.protect_until=time.time()+30
+        self.recovering.set()
+        self.activity.update(recovery='接続を復旧中',phase='復旧中',connection='再接続待ち')
+        self.activity.emit('recovery')
+        self.store.protect_recent('recovery');self.protect_until=time.time()+30
         self.game.release()
-        if self.restarts >= self.config.max_restarts:
-            raise RuntimeError("ゲームの復旧回数の上限に達しました。実験装置の状態を確認してください。")
-        self.restarts += 1
-        self.scientist.abort_trial("Game restarted during comparison")
-        if restart:
-            self.game.restart()
-        else:
-            try:self.game.connect()
-            except GameUnavailable:self.game.restart()
-        self.notify(message)
-        self.activity.update(recovery="",connection="接続済み")
+        self.scientist.suspend_trial('ゲーム接続の復旧後に比較を再開します。',self.last_eid)
+        # An input without a matching after-frame must never become evidence of
+        # the next process generation, even when the process restarts quickly.
+        with self.store.lock,self.store.db:
+            self.store.db.execute("UPDATE events SET state='interrupted' WHERE session=? AND state IN ('pending','sent')",(self.session,))
+        attempt=0
+        try:
+            while not self.stopped.is_set():
+                attempt+=1;self.last_progress=time.monotonic()
+                self.status=f'ゲームを復旧中（{attempt}回目）'
+                self.activity.update(phase=self.status,recovery='起動・再接続を試行中')
+                try:
+                    if isinstance(self.game,WindowsGame) and attempt>1:self.game.restart(force=True)
+                    elif restart:self.game.restart()
+                    else:
+                        try:self.game.connect()
+                        except (GameUnavailable,OSError):self.game.restart()
+                    if self.stopped.is_set():return
+                    self.game.capture()  # Rebinding a HWND alone does not prove capture recovered.
+                    if self.stopped.is_set():return
+                    self.latest=None;self.latest_before=None
+                    self.notify(message)
+                    self.activity.update(recovery='',connection='接続済み',phase='観測を再開')
+                    return
+                except WindowMinimized as error:
+                    self.status=str(error)
+                    self.activity.update(phase=self.status,recovery='最小化の解除待ち')
+                    restart=False;attempt=max(0,attempt-1)
+                    self.stopped.wait(.5)
+                except (GameUnavailable,OSError) as error:
+                    log.warning('Game recovery attempt %d: %s',attempt,error)
+                    self.game.release()
+                    delay=min(30,self.recovery_delay*2**min(attempt-1,4))
+                    self.status=f'ゲームの復旧待ち（{delay:g}秒後に再試行）'
+                    self.activity.update(phase=self.status,recovery='起動元・ゲーム本体を再検出中')
+                    self.stopped.wait(delay)
+        finally:self.recovering.clear()
 
     def step(self) -> float:
         started = time.perf_counter()

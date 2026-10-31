@@ -20,6 +20,48 @@ class InferenceUnavailable(RuntimeError):
     """No candidate was evaluated: the inference request itself failed."""
 
 
+class IncompleteInference(ValueError):
+    """A draft was returned and must be retained, never executed unfinished."""
+
+
+class ResearchRepairNeeded(InferenceUnavailable):
+    pass
+
+
+PROPOSAL_SCHEMA={
+    'type':'object','additionalProperties':False,
+    'required':['findings','problem','reason','wat'],
+    'properties':{
+        'findings':{'type':'array','maxItems':8,'items':{'type':'object','additionalProperties':False,
+            'required':['text','evidence'],'properties':{
+                'text':{'type':'string','maxLength':2000},
+                'evidence':{'type':'array','maxItems':64,'items':{'type':'integer'}},
+                'action':{'type':'integer','minimum':0},
+                'change_probability':{'type':'number','minimum':0,'maximum':1}}}},
+        'problem':{'type':'string'},'reason':{'type':'string'},'wat':{'type':'string'}}}
+
+
+def parse_proposal(response,allowed,keys):
+    text=response.strip()
+    if text.startswith('```'):text=text.split('\n',1)[1].rsplit('```',1)[0]
+    value=json.loads(text)
+    if not isinstance(value,dict):raise ResearchRepairNeeded('研究応答はJSONオブジェクトにしてください。')
+    findings=value.get('findings',[])
+    if isinstance(findings,dict) and 'text' in findings:findings=[findings]
+    if not isinstance(findings,list) or len(findings)>8:raise ResearchRepairNeeded('findingsは最大8件のオブジェクト配列にしてください。')
+    for finding in findings:
+        if not isinstance(finding,dict) or not isinstance(finding.get('text'),str) or not 1<=len(finding['text'])<=2000:raise ResearchRepairNeeded('各findingにはtext文字列とevidence整数配列が必要です。')
+        evidence=finding.get('evidence')
+        if not isinstance(evidence,list) or not evidence or len(evidence)>64 or any(type(e)!=int or e not in allowed for e in evidence):
+            raise ResearchRepairNeeded('evidenceには今回提示した経験IDの整数だけを指定してください。')
+        if 'action' in finding and (type(finding['action'])!=int or not 0<=finding['action']<len(keys)):
+            raise ResearchRepairNeeded('actionは許可入力の番号で指定してください。')
+        if 'change_probability' in finding and (type(finding['change_probability']) not in (int,float) or not 0<=finding['change_probability']<=1):
+            raise ResearchRepairNeeded('change_probabilityは0〜1の数値にしてください。')
+    if not isinstance(value.get('wat',''),str):raise ResearchRepairNeeded('watは完全なWAT文字列か空文字にしてください。')
+    return {**value,'findings':findings,'wat':value.get('wat','')}
+
+
 class LocalLLM:
     def __init__(self, url: str, model: str):
         from urllib.parse import urlparse
@@ -44,7 +86,7 @@ class LocalLLM:
             return len(json.loads(response.read(1024**2))['tokens'])
 
     def complete(self, prompt: str, max_tokens: int = 2048, json_mode: bool = False,
-                 *, allow_partial=False, timeout=600, cancel=None) -> str:
+                 *, allow_partial=False, timeout=600, cancel=None, schema=None, on_progress=None) -> str:
         import http.client
         import io
         import select
@@ -56,6 +98,7 @@ class LocalLLM:
             if cancel and cancel.is_set():raise InterruptedError('推論を中断しました。')
             if time.monotonic()>=deadline:raise TimeoutError('推論の制限時間を超えました。')
         check()
+        self.last_response=''
         self.last_completion={'status':'started','max_output_tokens':max_tokens,'deadline_seconds':timeout}
         parsed=urlparse(self.url)
         connection=http.client.HTTPConnection(parsed.hostname,parsed.port or 80,timeout=3)
@@ -76,7 +119,9 @@ class LocalLLM:
         payload={'model':self.model,'messages':[{'role':'user','content':prompt}],
                  'temperature':.2,'max_tokens':max_tokens}
         if self.managed:payload['chat_template_kwargs']={'enable_thinking':False}
+        if on_progress:payload['stream']=True
         if json_mode:payload['response_format']={'type':'json_object'}
+        if schema and self.managed:payload['response_format']={'type':'json_schema','json_schema':{'name':'research_proposal','schema':schema}}
         try:
             connection.connect();raw_socket=connection.sock
             check()
@@ -85,12 +130,38 @@ class LocalLLM:
             connection.sock=ResponseSocket()
             response=connection.getresponse()
             if response.status!=200:raise OSError(f'Local inference HTTP {response.status}')
-            data=response.read(512*1024+1);check()
-            if len(data)>512*1024:raise ValueError('LLM response too large')
-            result=json.loads(data);choice=result['choices'][0]
+            if on_progress and 'text/event-stream' in response.getheader('Content-Type',''):
+                buffer=b'';size=0;finish=None;usage={};done=False
+                while True:
+                    chunk=response.read1(8192);check()
+                    if not chunk:break
+                    size+=len(chunk)
+                    if size>2*1024**2:raise ValueError('LLM stream too large')
+                    buffer+=chunk
+                    while b'\n' in buffer:
+                        line,buffer=buffer.split(b'\n',1)
+                        if not line.startswith(b'data:'):continue
+                        value=line[5:].strip()
+                        if value==b'[DONE]':done=True;break
+                        item=json.loads(value)
+                        usage=item.get('usage') or usage
+                        for part in item.get('choices',[]):
+                            if part.get('finish_reason'):finish=part['finish_reason']
+                            delta=part.get('delta',{}).get('content') or ''
+                            self.last_response+=delta
+                            if delta:on_progress(self.last_response)
+                    if done:break
+                result={'usage':usage,'choices':[{'finish_reason':finish,'message':{'content':self.last_response}}]}
+                if finish is None:raise IncompleteInference('推論ストリームが途中で切断されました。')
+            else:
+                data=response.read(512*1024+1);check()
+                if len(data)>512*1024:raise ValueError('LLM response too large')
+                result=json.loads(data)
+            choice=result['choices'][0]
             self.last_completion={'finish_reason':choice.get('finish_reason'),'usage':result.get('usage',{}),'elapsed':timeout-(deadline-time.monotonic())}
+            self.last_response=choice['message'].get('content') or choice['message'].get('reasoning_content','')
             if choice.get('finish_reason')=='length' and not allow_partial:
-                raise ValueError('推論の出力が途中で終了しました。未完成の提案は実行しません。')
+                raise IncompleteInference('推論の出力が途中で終了しました。未完成の提案は実行しません。')
             return choice['message'].get('content') or (choice['message'].get('reasoning_content','') if allow_partial else '')
         finally:
             if response:response.close()
@@ -185,7 +256,7 @@ PROMPT = """あなたは未知の画面と入力だけを扱う自律研究Agent
 JSONオブジェクトだけを返してください。形式:
 {{"findings":[], "problem":"", "reason":"", "wat":""}}
 実際の根拠がある場合だけfindingsへtext（日本語の仮説と次の実験）、evidence（提供された経験IDの整数配列）を持つ要素を追加します。
-入力候補の変化確率を検証する仮説にはaction（整数）とchange_probability（0..1）を追加できます。
+状態条件を付けない入力全体の変化確率を検証する仮説だけにaction（整数）とchange_probability（0..1）を追加できます。特定の特徴fや領域に限定する仮説ではこの2項目を省略して検証待ちにしてください。
 改善が必要ならproblemとreasonを実際の根拠と改善内容で埋め、watに実行可能なWebAssemblyモジュール全文を入れてください。
 watには説明文やプレースホルダーを絶対に入れないでください。実行可能な改善案が作れなければ空文字のままにします。
 Agent ABI: memoryをexport(最低1ページ、最大256ページ)。OSやWASIなどのimportは禁止。
@@ -251,6 +322,7 @@ class Scientist:
         self.live: dict | None = None
         self.last_event = 0
         self.failed_calls = 0
+        self.current_job = None
         self.retry_base_delay = 5
         self.automatic = True
         self.recover_llm = None
@@ -263,6 +335,9 @@ class Scientist:
             result=self.client.complete(*args,**kwargs)
             self.activity.update(llm='待機')
             return result
+        except IncompleteInference:
+            self.activity.update(llm='待機')
+            raise
         except InterruptedError:
             self.activity.update(llm='待機')
             raise
@@ -282,6 +357,7 @@ class Scientist:
         self.thread.join(timeout=10)
         if self.thread.is_alive():
             raise TimeoutError("Research is still stopping")
+        self.activity.update(llm="待機")
 
     def tick(self):
         self.wake.set()
@@ -333,23 +409,46 @@ class Scientist:
             if adopted:self.activity.update(adoption=summary)
             self.notify(summary)
 
+    def suspend_trial(self,reason,after_id):
+        with self.lock:
+            if self.live:
+                live=self.live
+                source=(self.revisions.root/live['revision']/'agent.wat').read_text(encoding='utf-8')
+                payload=json.loads(self.store.get_job(live['job'])['payload'])
+                self.store.set_job(live['job'],'pending',{**payload,'source':source,'after':after_id,'suspended_live':live['metrics'],'reason':reason})
+                self.store.pin([r['id'] for r in live['metrics']['base']['samples']],'suspended-'+live['job'])
+                self.live=None;self.store.unpin('live-trial')
+                self.activity.update(comparison='保存して復旧待ち',candidate='')
+
     def abort_trial(self, reason: str) -> None:
         with self.lock:
             if self.live:
                 self.store.report(self.live["revision"], False, "候補の動作異常を検出し、安定版の探索へ戻りました。", {"error": reason,"live":self.live["metrics"],"replay":self.live["replay"]})
-                self.store.set_job(self.live["job"], "failed", {"error": reason})
+                payload=json.loads(self.store.get_job(self.live['job'])['payload'])
+                source=(self.revisions.root/self.live['revision']/'agent.wat').read_text(encoding='utf-8')
+                payload.pop('source',None)
+                payload.update(repair_response=json.dumps({'findings':[],'wat':source}),repair_error=reason,retained_live=self.live['metrics'])
+                self.store.set_job(self.live['job'],'pending',payload)
                 self.live = None
                 self.store.unpin('live-trial')
-                self.activity.update(comparison='中断',candidate='')
+                self.activity.update(comparison='保存して修正待ち',candidate='')
 
     def run(self):
-        try:
-            self._run()
-        except CapacityError:
-            self.notify("研究用の保存容量が不足しました。根拠を保持し、新しい研究処理を停止しました。")
-        except Exception:
-            log.exception("Research supervisor stopped")
-            self.notify("研究装置の異常を記録しました。診断情報を確認してください。")
+        while not self.stop_event.is_set():
+            try:
+                if self.current_job:
+                    if self.store.get_job(self.current_job)['state']=='running':self.store.set_job(self.current_job,'pending')
+                    self.current_job=None
+                self._run()
+                return
+            except CapacityError:
+                self.activity.update(llm='待機',comparison='保存領域の回復待ち')
+                self.notify('研究内容を保持し、保存領域の回復を待って再試行します。')
+            except Exception:
+                log.exception('Research supervisor will retry without discarding jobs')
+                self.activity.update(llm='復旧中')
+                self.notify('研究処理の異常を記録しました。保存済みの作業を保持して再開します。')
+            self.stop_event.wait(5)
 
     def _run(self):
         while not self.stop_event.is_set():
@@ -369,23 +468,33 @@ class Scientist:
             if rows:
                 self.last_event = rows[-1]["id"]
             jid = pending[0]["id"] if pending else self.store.job("research", {"last_event": self.last_event})
+            self.current_job=jid
             self.store.set_job(jid, "running")
             try:
                 payload = json.loads(pending[0]["payload"]) if pending else {}
                 if pending and pending[0]["kind"] == "agent_llm":
-                    response = self.complete(payload["prompt"], max_tokens=2048)
-                    self.store.set_job(jid, "complete", {"prompt": payload["prompt"], "response": response})
+                    self.agent_request(jid,payload)
                 elif payload.get("source"):
                     self.evaluate_proposal(payload["source"], payload["after"], jid)
                 else:
                     self.study(rows, jid)
                 self.failed_calls = 0
+            except ResearchRepairNeeded as error:
+                self.store.set_job(jid,'pending')
+                self.activity.update(llm='待機',comparison='保存して修正待ち')
+                self.activity.emit('llm_saved')
+                self.notify('研究応答を保存しました。形式・途中出力を修正して同じ研究を再試行します。')
+                self.stop_event.wait(min(30,self.retry_base_delay))
             except (ValueError, TimeoutError, MemoryError) as error:
-                self.activity.update(llm="エラー",comparison="棄却")
-                self.activity.emit("rejected")
-                log.exception("Candidate rejected")
-                self.store.report("candidate", False, "候補の実行・出力・資源制限を検証し、不適合のため棄却しました。", {"job": jid, "error": str(error)[:4000]})
-                self.store.set_job(jid, "failed")
+                log.warning('Candidate retained for repair: %s',error)
+                self.store.report('candidate',False,'候補の不適合を記録しました。内容を保持し、修正を再試行します。',{'job':jid,'error':str(error)[:4000]})
+                payload=json.loads(self.store.get_job(jid)['payload'])
+                draft=payload.pop('source','')
+                payload['repair_response']=json.dumps({'findings':[],'wat':draft},ensure_ascii=False)
+                payload['repair_error']=str(error)[:500]
+                self.store.set_job(jid,'pending',payload)
+                self.activity.update(llm='待機',comparison='保存して修正待ち')
+                self.stop_event.wait(min(30,self.retry_base_delay))
             except CapacityError:
                 raise
             except Exception:
@@ -395,7 +504,7 @@ class Scientist:
                 log.exception("Research failed")
                 self.failed_calls += 1
                 self.store.set_job(jid, "pending")
-                if self.recover_llm and 2 <= self.failed_calls <= 4:
+                if self.recover_llm and self.failed_calls >= 2:
                     try:
                         self.activity.update(llm='復旧中')
                         self.recover_llm()
@@ -409,6 +518,32 @@ class Scientist:
 
             finally:
                 self.store.unpin('research-current')
+                job_state=self.store.get_job(jid)['state']
+                if job_state=='complete':self.store.unpin('research-job-'+jid)
+                if job_state!='running' or self.live:self.current_job=None
+
+    def agent_request(self,jid,payload):
+        prompt=payload['prompt']
+        draft=payload.get('repair_response') or payload.get('stream_draft')
+        if draft:prompt+='\n前回の途中経過は保存されています。内容を引き継いで完全な応答を返してください。\n'+draft[:6000]
+        budget=4096
+        if isinstance(self.client,LocalLLM) and self.client.managed:
+            budget=min(4096,8192-self.client.count_tokens(prompt)-256)
+            if budget<512:raise InferenceUnavailable('入力が大きいため作業を保存して待機します。')
+        saved=[0.]
+        def journal(text):
+            if time.monotonic()-saved[0]>=.5:
+                payload['stream_draft']=text;self.store.set_job(jid,'running',payload);saved[0]=time.monotonic()
+        try:response=self.complete(prompt,max_tokens=budget,on_progress=journal)
+        except (IncompleteInference,InferenceUnavailable,InterruptedError) as error:
+            draft=getattr(self.client,'last_response','') or payload.get('stream_draft','')
+            if draft:
+                self.store.proposal(jid,draft);payload['repair_response']=draft
+            self.store.set_job(jid,'pending',payload)
+            if isinstance(error,IncompleteInference):raise ResearchRepairNeeded('途中応答を保存しました。') from error
+            raise
+        self.store.proposal(jid,response)
+        self.store.set_job(jid,'complete',{**payload,'response':response})
 
     def study(self, rows: list[dict], jid: str):
         self.activity.update(experiment="未確認の変化条件と観測方法を研究",next="仮説を形成して独立の経験で検証")
@@ -422,19 +557,57 @@ class Scientist:
                 index = self.keys.index(key) + 1
                 self.store.knowledge("observation", f"入力候補{index}の後、画面変化を{len(selected)}回中{sum(r['change'] > .01 for r in selected)}回観測しました。意味と因果関係は未確認です。",
                                      "observed", "unknown", [r["id"] for r in selected[-32:]])
+        payload=json.loads(self.store.get_job(jid)['payload'])
+        if payload.get('research_rows'):rows=payload['research_rows']
+        else:
+            rows=rows[-16:]
+            payload['research_rows']=rows
+            self.store.set_job(jid,'running',payload)
+            self.store.pin([r['id'] for r in rows],'research-job-'+jid)
         prompt=research_prompt(self.revisions.source(),rows,self.keys,self.store.reports()[:2])
-        if isinstance(self.client,LocalLLM) and self.client.url=='http://127.0.0.1:8766/v1':
+        if payload.get('stream_draft') and not payload.get('repair_response'):
+            payload['repair_response']=payload['stream_draft'];payload['repair_error']='保存された途中出力を完全なJSONに修正してください。'
+        if payload.get('repair_response'):
+            prompt+='\n前の出力を次の検査結果に従って修正し、完全なJSONを返してください。未完成コードの実行は禁止です。\n検査：'+payload.get('repair_error','')+'\n保存済み下書きの抜粋：'+payload['repair_response'][:6000]
+        budget=4096
+        if isinstance(self.client,LocalLLM) and self.client.managed:
             count=self.client.count_tokens(prompt)
-            if count+2048+256>8192:raise InferenceUnavailable('研究入力が8192トークンの予算を超えました。')
-        response = self.complete(prompt, max_tokens=2048, json_mode=True)
-        self.store.proposal(jid, response)
-        if response.strip().startswith("```"):
-            response = response.strip().split("\n", 1)[1].rsplit("```", 1)[0]
-        proposal = json.loads(response)
-        allowed = {r["id"] for r in rows[-64:]}
+            budget=min(4096,8192-count-256)
+            if budget<512:raise InferenceUnavailable('研究の入力枠が不足しています。下書きを保存して待機します。')
+        saved_at=[0.]
+        def journal(text):
+            if time.monotonic()-saved_at[0]>=.5:
+                payload['stream_draft']=text
+                self.store.set_job(jid,'running',payload)
+                saved_at[0]=time.monotonic()
+        try:
+            response=self.complete(prompt,max_tokens=budget,json_mode=True,schema=PROPOSAL_SCHEMA,on_progress=journal)
+        except IncompleteInference:
+            response=getattr(self.client,'last_response','')
+            self.store.proposal(jid,response)
+            payload['repair_response']=response;payload['repair_error']='出力上限で途切れています。説明は短くし、実行可能な完全な候補を返してください。'
+            self.store.set_job(jid,'pending',payload)
+            raise ResearchRepairNeeded('途中応答を保存しました。') from None
+        except (InferenceUnavailable,InterruptedError):
+            draft=getattr(self.client,'last_response','') or payload.get('stream_draft','')
+            if draft:
+                self.store.proposal(jid,draft)
+                payload['repair_response']=draft;payload['repair_error']='接続または停止操作で途中までになりました。保存した内容から完全な応答へ修正してください。'
+            self.store.set_job(jid,'pending',payload)
+            raise
+        self.store.proposal(jid,response)
+        allowed={r['id'] for r in rows}
+        try:proposal=parse_proposal(response,allowed,self.keys)
+        except (ValueError,TypeError,KeyError,ResearchRepairNeeded) as error:
+            payload['repair_response']=response;payload['repair_error']=str(error)[:500]
+            self.store.set_job(jid,'pending',payload)
+            raise ResearchRepairNeeded(str(error)) from error
         for finding in proposal.get("findings", [])[:8]:
-            evidence = list(dict.fromkeys(finding["evidence"]))
+            evidence = sorted(set(finding["evidence"]))
             if evidence and set(evidence) <= allowed:
+                with self.store.lock:
+                    existing=self.store.db.execute("SELECT id FROM knowledge WHERE kind='hypothesis' AND text=? AND evidence=?",(finding['text'],json.dumps(evidence))).fetchone()
+                if existing:continue
                 kid = self.store.knowledge("hypothesis", finding["text"], "inferred", "hypothesis", evidence)
                 action, probability = finding.get("action"), finding.get("change_probability")
                 if isinstance(action, int) and 0 <= action < len(self.keys) and isinstance(probability, (int, float)) and 0 <= probability <= 1:
@@ -447,7 +620,8 @@ class Scientist:
 
     def evaluate_proposal(self, source: str, after_id: int, jid: str):
         # Persist the proposal before execution; resume it rather than regenerating it.
-        self.store.set_job(jid, "running", {"source": source, "after": after_id})
+        payload=json.loads(self.store.get_job(jid)["payload"])
+        self.store.set_job(jid,"running",{**payload,"source":source,"after":after_id})
         self.notify("改善候補を作成しました。新しい経験を集めてから独立した比較評価を行います。")
         deadline = time.monotonic() + 300
         future = []

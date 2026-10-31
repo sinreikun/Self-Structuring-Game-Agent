@@ -180,7 +180,7 @@ class App:
         ttk.Button(self.setup,text='起動中から選択',command=self.choose_process).grid(row=1,column=2)
         self.selected_process=tk.StringVar(value=f'接続先プロセス: {Path(self.config.target_exe).name}' if self.config.target_exe else 'ランチャーを使う場合は「ランチャーから起動」を選び、ゲーム本体の起動を待ちます。')
         ttk.Label(self.setup,textvariable=self.selected_process,wraplength=950).grid(row=2,column=0,columnspan=3,sticky='w',pady=5)
-        entries = [("game_exe", "ゲーム・ランチャーの実行ファイル", self.config.game_exe), ("window_title", "ウィンドウ名の一部（空欄可）", self.config.window_title),
+        entries = [("game_exe", "起動・自動再起動用のゲーム／ランチャー", self.config.game_exe), ("window_title", "ウィンドウ名の一部（空欄可）", self.config.window_title),
                    ("game_args", "起動オプション（空欄可）", __import__('subprocess').list2cmdline(self.config.game_args)),
                    ("root", "作業・保存フォルダ", self.config.root), ("keys", "許可キー（カンマ区切り・Num0〜Num9対応）", ",".join(self.config.keys)),
                    ("quota", "保存容量の上限（GB）", str(self.config.quota_bytes / 1024**3)),
@@ -246,7 +246,7 @@ class App:
         self.connection_method.set('起動中のプロセスに接続')
         if not self.fields['game_exe'].get():self.fields['game_exe'].set(item.process.exe)
         self.fields['window_title'].set('')
-        self.selected_process.set(f'{item.process.name} — {item.title}（プロセスID {item.process.pid}）。STOP後もゲームは終了しません。')
+        self.selected_process.set(f'{item.process.name} — {item.title}（プロセスID {item.process.pid}）。STOP後もゲームは終了しません。ゲーム終了時は設定した実行ファイルから自動再起動します。')
 
     def read_settings(self) -> Config:
         from .windows import parse_arguments
@@ -539,7 +539,9 @@ class App:
         elif info:
             layers=info.get('gpu_layers',0)
             mode=f"GPU / VRAM使用 / {layers}/{info.get('total_layers','?')}層" if layers else ('GPUオフロード未確認' if info.get('backend')=='vulkan' else 'CPU推論')
+            if info.get('status')!='利用可能':mode='未稼働'
             self.active_model.set('使用モデル：'+info['name']+'\n推論：'+mode+' / '+info.get('status','')+('（GPU起動失敗のためCPUへ復帰）' if info.get('gpu_error') else ''))
+        else:self.active_model.set('使用モデル：未接続')
         ctrl = self.controller
         if ctrl:
             game=ctrl.game

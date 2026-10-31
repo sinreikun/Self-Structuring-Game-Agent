@@ -83,7 +83,7 @@ class Gateway:
             folder = self.root / "assets" / kind / digest
             folder.mkdir(parents=True, exist_ok=True)
             dest, partial = folder / "artifact", folder / "artifact.part"
-            if dest.exists() and dest.stat().st_size == size and self.digest(dest) == digest:
+            if dest.exists() and dest.stat().st_size == size and self.digest(dest,cancel) == digest:
                 if not (folder / "receipt.json").exists():
                     write_json(folder / "receipt.json", {**item, "kind": kind, "acquired": time.time()})
                 return dest
@@ -118,7 +118,7 @@ class Gateway:
                         progress(done, size)
                     out.flush()
                     os.fsync(out.fileno())
-            if partial.stat().st_size != size or self.digest(partial) != digest:
+            if partial.stat().st_size != size or self.digest(partial,cancel) != digest:
                 partial.unlink(missing_ok=True)
                 raise ValueError("配布ファイルの完全性を確認できません。取得物は使用しません。")
             os.replace(partial, dest)
@@ -126,9 +126,14 @@ class Gateway:
             return dest
 
     @staticmethod
-    def digest(path: Path) -> str:
-        with path.open("rb") as file:
-            return hashlib.file_digest(file, "sha256").hexdigest()
+    def digest(path: Path, cancel=None) -> str:
+        with path.open('rb') as file:
+            if cancel is None:return hashlib.file_digest(file,'sha256').hexdigest()
+            digest=hashlib.sha256()
+            while data:=file.read(1024**2):
+                if cancel.is_set():raise InterruptedError('完全性確認を中断しました。取得物は保持しています。')
+                digest.update(data)
+            return digest.hexdigest()
 
     def extract_engine(self, artifact: Path) -> Path:
         dest = artifact.parent / "expanded"
@@ -264,7 +269,7 @@ class ManagedLLM:
             source=Path(selected['local_path'])
             with source.open('rb') as file:
                 if file.read(4)!=b'GGUF':raise ValueError('GGUF形式を確認できません。')
-            digest=Gateway.digest(source)
+            digest=Gateway.digest(source,cancel)
             model_item={'name':source.name,'sha256':digest,'size':source.stat().st_size,'license':'ユーザー指定・要確認'}
             model=self.root/'assets'/'model'/digest/'artifact'
             model.parent.mkdir(parents=True,exist_ok=True)
@@ -276,7 +281,7 @@ class ManagedLLM:
                 while chunk:=src.read(1024**2):
                     if cancel.is_set():raise InterruptedError('導入を中断しました。')
                     dst.write(chunk);done+=len(chunk);progress(done,model_item['size'])
-            if Gateway.digest(partial)!=digest:raise ValueError('モデルの完全性を確認できません。')
+            if Gateway.digest(partial,cancel)!=digest:raise ValueError('モデルの完全性を確認できません。')
             os.replace(partial,model)
             write_json(model.parent/'receipt.json',model_item)
         else:
@@ -287,7 +292,7 @@ class ManagedLLM:
             if file.read(4)!=b'GGUF':raise ValueError('GGUF形式を確認できません。')
         old = json.loads(self.state_path.read_text(encoding="utf-8")) if self.state_path.exists() else None
         self.stop()
-        state = {"engine": str(engine), "model": str(model), "engine_sha256": Gateway.digest(engine),
+        state = {"engine": str(engine), "model": str(model), "engine_sha256": Gateway.digest(engine,cancel),
                  "model_sha256": model_item["sha256"], "model_info": model_item, "backend":engine_item.get("backend","cpu"), "previous": old}
         try:
             self.start(state, cancel=cancel)
@@ -332,12 +337,12 @@ class ManagedLLM:
                 if not cpu:
                     item=Catalog.resolve_engine(backend='cpu')
                     path=gateway.extract_engine(gateway.download(item,'engine',cancel=cancel))
-                    cpu={'engine':str(path),'engine_sha256':Gateway.digest(path)}
+                    cpu={'engine':str(path),'engine_sha256':Gateway.digest(path,cancel)}
                 fallback={**state,**cpu,'backend':'cpu','gpu_error':str(error)[:500]}
                 return self.start(fallback,cancel,auto_gpu=False)
         engine, model = Path(state["engine"]), Path(state["model"])
         for path, digest in ((engine, state["engine_sha256"]), (model, state["model_sha256"])):
-            if not path.resolve().is_relative_to((self.root / "assets").resolve()) or Gateway.digest(path) != digest:
+            if not path.resolve().is_relative_to((self.root / "assets").resolve()) or Gateway.digest(path,cancel) != digest:
                 raise ValueError("推論環境の完全性を確認できません。")
         manifests = [parent / "expanded-files.json" for parent in engine.parents if (parent / "expanded-files.json").is_file()]
         if not manifests:
@@ -346,14 +351,14 @@ class ManagedLLM:
         expanded = (manifest.parent / "expanded").resolve()
         for name, digest in json.loads(manifest.read_text(encoding="utf-8")).items():
             path = (expanded / name).resolve()
-            if not path.is_relative_to(expanded) or Gateway.digest(path) != digest:
+            if not path.is_relative_to(expanded) or Gateway.digest(path,cancel) != digest:
                 raise ValueError("推論エンジンの共有ライブラリの完全性を確認できません。")
         if auto_gpu and state.get('backend','cpu')=='cpu' and preferred_backend()=='vulkan':
             try:
                 gateway=Gateway(self.root,self.quota)
                 item=Catalog.resolve_engine(backend='vulkan')
                 gpu_engine=gateway.extract_engine(gateway.download(item,'engine',cancel=cancel))
-                upgraded={**state,'engine':str(gpu_engine),'engine_sha256':Gateway.digest(gpu_engine),'backend':'vulkan',
+                upgraded={**state,'engine':str(gpu_engine),'engine_sha256':Gateway.digest(gpu_engine,cancel),'backend':'vulkan',
                           'cpu_fallback':{'engine':str(engine),'engine_sha256':state['engine_sha256']}}
                 self.start(upgraded,cancel=cancel)
                 upgraded=dict(self.active_state or upgraded)
@@ -432,3 +437,7 @@ class ManagedLLM:
                 self.reader.join(timeout=2)
             self.log.close()
             self.log = None
+        if self.current_info:
+            self.current_info={**self.current_info,'status':'停止','gpu_layers':0}
+            try:write_json(self.root/'host'/'llm-runtime.json',self.current_info)
+            except OSError:logging.getLogger(__name__).warning('Runtime status could not be saved')

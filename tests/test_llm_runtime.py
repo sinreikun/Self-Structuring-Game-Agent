@@ -140,3 +140,29 @@ def test_compact_feedback_preserves_candidate_errors_without_replay_arrays():
     prompt=research_prompt(Path('src/selfstruct/assets/seed.wat').read_text(),[],['A'],[report])
     assert 'missing memory export' in prompt and 'baseline_loss' in prompt
     assert 'large-array' not in prompt and len(prompt.encode())<8000
+
+
+def test_streamed_generation_checkpoints_before_completion():
+    state={'first':threading.Event(),'continue':threading.Event()}
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self,*a):pass
+        def do_POST(self):
+            self.rfile.read(int(self.headers['Content-Length']))
+            self.send_response(200);self.send_header('Content-Type','text/event-stream');self.end_headers()
+            first={'choices':[{'delta':{'content':'{"findings":['},'finish_reason':None}]}
+            self.wfile.write(('data: '+json.dumps(first)+'\n\n').encode());self.wfile.flush()
+            state['first'].set();state['continue'].wait(3)
+            last={'choices':[{'delta':{'content':'],"wat":""}'},'finish_reason':'stop'}]}
+            self.wfile.write(('data: '+json.dumps(last)+'\n\ndata: [DONE]\n\n').encode());self.wfile.flush()
+    server=Server(('127.0.0.1',0),Handler);thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+    client=LocalLLM(f'http://127.0.0.1:{server.server_port}/v1','test');drafts=[];results=[]
+    worker=threading.Thread(target=lambda:results.append(client.complete('test',on_progress=drafts.append)))
+    try:
+        worker.start();assert state['first'].wait(2)
+        deadline=time.monotonic()+2
+        while not drafts and time.monotonic()<deadline:time.sleep(.01)
+        assert drafts==['{"findings":['] and worker.is_alive()
+        state['continue'].set();worker.join(timeout=2)
+        assert json.loads(results[0])=={'findings':[],'wat':''}
+    finally:
+        state['continue'].set();worker.join(timeout=3);server.shutdown();server.server_close();thread.join()

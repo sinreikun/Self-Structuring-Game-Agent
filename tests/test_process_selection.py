@@ -154,3 +154,72 @@ def test_controller_attach_collects_experience_and_detaches_without_killing(tmp_
     finally:
         if controller:controller.close()
         external.terminate();external.wait(timeout=5)
+
+
+@pytest.mark.skipif(os.name!='nt',reason='Windows process API')
+def test_attach_closed_game_relaunches_origin_and_rebinds_new_pid():
+    from selfstruct.windows import WindowsGame
+    from selfstruct.processes import LiveProcess
+    script=str(Path('tests/fixtures/message_window.py').resolve())
+    decoy=subprocess.Popen([sys.executable,script]);external=subprocess.Popen([sys.executable,script]);game=None;restarted=None
+    try:
+        _wait_window(decoy);info,window=_wait_window(external)
+        game=WindowsGame(sys.executable,[script],'SelfStruct Message Test',['A'],mode='attach',
+                         target_pid=info.pid,target_created=info.created,target_exe=info.exe,target_hwnd=window.hwnd)
+        game.start();game.capture()
+        external.terminate();external.wait(timeout=5)
+        game.restart();restarted=process_info(game.target_pid)
+        assert restarted and restarted.pid not in {external.pid,decoy.pid}
+        assert game.generation==2 and decoy.poll() is None
+        game.capture();game.act('A',.02,threading.Event())
+        game.stop()
+        assert process_info(restarted.pid) is not None  # STOP detaches an attached game.
+    finally:
+        if game:game.stop()
+        if restarted:
+            handle=LiveProcess(restarted)
+            try:handle.terminate();handle.wait(timeout=5)
+            finally:handle.close()
+        for proc in (external,decoy):
+            if proc.poll() is None:proc.terminate()
+            proc.wait(timeout=5)
+
+
+@pytest.mark.skipif(os.name!='nt',reason='Windows process API')
+def test_controller_recovers_repeated_closures_and_continues_same_experiment(tmp_path):
+    from selfstruct.engine import Controller
+    from selfstruct.processes import LiveProcess
+    script=str(Path('tests/fixtures/message_window.py').resolve())
+    external=subprocess.Popen([sys.executable,script]);ctrl=None;last_info=None
+    try:
+        info,window=_wait_window(external)
+        ctrl=Controller(Config(root=str(tmp_path/'data'),game_exe=sys.executable,game_args=[script],
+                               connection_mode='attach',target_pid=info.pid,target_created=info.created,
+                               target_exe=info.exe,target_hwnd=window.hwnd,keys=['A'],max_restarts=1,
+                               research_every=1000000,restart_after=1000000,quota_bytes=64*1024**2))
+        ctrl.start()
+        def until(predicate):
+            deadline=time.monotonic()+30
+            while time.monotonic()<deadline and not ctrl.stopped.is_set():
+                if predicate():return
+                time.sleep(.05)
+            raise AssertionError(ctrl.error+' / '+ctrl.status)
+        until(lambda:ctrl.steps>=3);revision=ctrl.agent_id;session=ctrl.session
+        for _ in range(2):
+            previous=ctrl.game.process.pid;steps=ctrl.steps
+            ctrl.game.process.terminate();ctrl.game.process.wait(timeout=5)
+            until(lambda:ctrl.game.process and ctrl.game.process.pid!=previous and ctrl.steps>steps+2)
+        last_info=process_info(ctrl.game.process.pid)
+        assert ctrl.agent_id==revision and ctrl.session==session
+        assert not ctrl.paused.is_set() and not ctrl.stopped.is_set()
+        ctrl.close()
+    finally:
+        if ctrl:
+            if ctrl.game and ctrl.game.process:last_info=process_info(ctrl.game.process.pid)
+            ctrl.close()
+        if last_info:
+            handle=LiveProcess(last_info)
+            try:handle.terminate();handle.wait(timeout=5)
+            finally:handle.close()
+        if external.poll() is None:external.terminate()
+        external.wait(timeout=5)

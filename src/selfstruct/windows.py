@@ -124,6 +124,13 @@ class WindowsGame:
         self.known_processes={}
         self.launched_after=0
         self.target_owned=False
+        self.ignored_processes=set()
+        self.identity_bound=False
+        self.ever_connected=False
+        self.last_launch=0.
+        self.launch_strategy=0
+        self.pending_launch=False
+        self.startup_timeout=120 if mode in {"attach","launcher"} else 60
         self.keys = set(keys)
         self.process: LiveProcess | None = None
         self.hwnd = None
@@ -165,44 +172,77 @@ class WindowsGame:
         for func, args, result in definitions:
             func.argtypes, func.restype = args, result
 
+    def _launch_if_needed(self):
+        if self.cancel and self.cancel.is_set():raise GameUnavailable('再起動を中止しました。')
+        if self.root_process and self.root_process.poll() is None and self.pending_launch and time.monotonic()-self.last_launch<self.startup_timeout:return
+        processes=snapshot_processes()
+        # A matching live process may still be creating its window. Never spawn
+        # duplicates while that process or an earlier launch is still pending.
+        if self.target_exe and any(p.exe.casefold()==self.target_exe.casefold()
+                and p.created>=self.target_created and (p.pid,p.created) not in self.ignored_processes
+                for p in processes.values()):return
+        if self.pending_launch and self.last_launch and time.monotonic()-self.last_launch<self.startup_timeout:return
+        plans=[(self.exe,list(self.args))] if self.exe else []
+        if self.target_exe and self.target_exe.casefold()!=self.exe.casefold():plans.append((self.target_exe,[]))
+        plans=[plan for plan in plans if Path(plan[0]).is_file()]
+        executable,args=plans[self.launch_strategy%len(plans)] if plans else ('',[])
+        if not executable:
+            raise GameUnavailable('再起動用の実行ファイルが見つかりません。初回設定のゲーム・ランチャーの実行ファイルを確認してください。再試行を継続します。')
+        startup=subprocess.STARTUPINFO();startup.dwFlags|=subprocess.STARTF_USESHOWWINDOW
+        startup.wShowWindow=4
+        if self.cancel and self.cancel.is_set():raise GameUnavailable('再起動を中止しました。')
+        self.launched_after=time.time_ns()//100+116444736000000000
+        self.last_launch=time.monotonic()
+        self.pending_launch=True
+        self.root_process=subprocess.Popen([executable,*args],cwd=str(Path(executable).parent),shell=False,startupinfo=startup)
+        root=process_info(self.root_process.pid)
+        self.known_processes={self.root_process.pid:root.created if root else self.launched_after}
+
     def start(self) -> None:
-        if self.mode=='attach':
-            selected=process_info(self.target_pid)
-            if not selected or selected.created!=self.target_created:
-                raise GameUnavailable('選択したプロセスは終了しています。起動中のプロセスから選択し直してください。')
-        if self.mode!='attach' and (self.root_process is None or self.root_process.poll() is not None):
-            self.launched_after=time.time_ns()//100+116444736000000000
-            startup = subprocess.STARTUPINFO()
-            startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startup.wShowWindow = 4  # SW_SHOWNOACTIVATE: do not request foreground focus.
-            self.root_process = subprocess.Popen([self.exe, *self.args], cwd=str(Path(self.exe).parent), shell=False,
-                                                 startupinfo=startup)
-            root=process_info(self.root_process.pid)
-            self.known_processes={self.root_process.pid:root.created if root else self.launched_after}
-        deadline = time.monotonic() + (60 if self.mode=='launcher' else 20)
-        while time.monotonic() < deadline:
+        try:
+            self.connect()
+            return
+        except GameUnavailable:pass
+        self._launch_if_needed()
+        deadline=time.monotonic()+self.startup_timeout
+        while time.monotonic()<deadline:
             if self.cancel and self.cancel.is_set():raise GameUnavailable('ゲームへの接続を中止しました。')
             if self.on_wait:self.on_wait()
             try:
                 self.connect()
                 return
             except GameUnavailable:
-                time.sleep(0.2)
-        raise GameUnavailable("対象ゲームの画面が見つかりません。起動中のプロセスからゲーム本体を選択するか、ウィンドウ名を確認してください。")
+                if self.cancel:self.cancel.wait(.2)
+                else:time.sleep(.2)
+        if self.root_process is None or self.root_process.poll() is not None:self.launch_strategy+=1
+        raise GameUnavailable('ゲームの起動・画面作成を待っています。起動元とゲーム本体を再検出して再試行します。')
 
     def connect(self) -> None:
         processes=snapshot_processes()
         windows=enumerate_windows(processes)
+        ignored=getattr(self,'ignored_processes',set())
         if self.mode=='attach':
             exact=processes.get(self.target_pid)
             if exact and exact.created==self.target_created:
                 allowed={exact.pid}
+                if not getattr(self,'identity_bound',False):
+                    ignored={(p.pid,p.created) for p in processes.values() if p.pid!=exact.pid}
+                    self.ignored_processes=ignored;self.identity_bound=True
             else:
-                raise GameUnavailable('選択したプロセスは終了しています。起動中のプロセスから選択し直してください。')
+                allowed={p.pid for p in processes.values() if self.target_exe and
+                         p.exe.casefold()==self.target_exe.casefold() and p.created>self.target_created
+                         and (p.pid,p.created) not in ignored}
+                visible={w.process.pid for w in windows if w.process.pid in allowed}
+                if len(visible)!=1:raise GameUnavailable('選択したゲームの新しいプロセスを再検出しています。候補が複数の場合は入力せず待機します。')
+                allowed=visible
         else:
             track_descendants(processes,self.known_processes,self.launched_after)
             allowed={pid for pid,created in self.known_processes.items() if pid in processes and processes[pid].created==created}
             if self.mode=='launcher' and self.root_process:allowed.discard(self.root_process.pid)
+            if self.target_filter:
+                replacements={w.process.pid for w in windows if w.process.exe.casefold()==self.target_filter.casefold()
+                              and w.process.created>=self.launched_after and (w.process.pid,w.process.created) not in ignored}
+                if not any(w.process.pid in allowed for w in windows) and len(replacements)==1:allowed=replacements
         candidates=[window for window in windows if window.process.pid in allowed
                     and (not self.title or self.title.casefold() in window.title.casefold())
                     and (not self.target_filter or window.process.exe.casefold()==self.target_filter.casefold())]
@@ -222,6 +262,8 @@ class WindowsGame:
         self.hwnd=chosen.hwnd
         self.target_pid,self.target_created=chosen.process.pid,chosen.process.created
         self.target_exe=chosen.process.exe
+        self.ever_connected=True
+        self.pending_launch=False
         self.target_owned=self.mode!='attach'
 
     def check(self) -> None:
@@ -237,7 +279,7 @@ class WindowsGame:
     def _owns(self, hwnd) -> bool:
         pid = W.DWORD()
         self.user.GetWindowThreadProcessId(hwnd,C.byref(pid))
-        return bool(self.process and pid.value==self.process.pid and self.user.IsWindow(hwnd))
+        return bool(self.process and self.process.poll() is None and pid.value==self.process.pid and self.user.IsWindow(hwnd))
 
     def _input_target(self):
         class ThreadInfo(C.Structure):
@@ -361,8 +403,11 @@ class WindowsGame:
             self.gdi.DeleteDC(mem)
             self.user.ReleaseDC(hwnd, dc)
 
-    def restart(self) -> None:
+    def restart(self, force: bool=False) -> None:
         if self.mode=='attach':
+            if force and self.process and self.process.poll() is None:
+                self.release();self.process.terminate();self.process.wait(timeout=5)
+                self.last_launch=0.
             self.release()
             self.capturer.close()
             self.start()
@@ -381,11 +426,15 @@ class WindowsGame:
                 self.process.kill()
                 self.process.wait(timeout=5)
         if self.process:self.process.close();self.process=None
-        if self.root_process and self.root_process.poll() is None:
+        command=getattr(self.root_process,'args',[]) if self.root_process else []
+        launched_exe=command[0] if isinstance(command,list) and command else ''
+        root_is_game=bool(launched_exe and self.target_exe and Path(launched_exe)==Path(self.target_exe))
+        if self.mode!='attach' and self.root_process and self.root_process.poll() is None and (not self.target_exe or root_is_game):
             self.root_process.terminate()
             try:self.root_process.wait(timeout=5)
             except subprocess.TimeoutExpired:self.root_process.kill();self.root_process.wait(timeout=5)
         self.root_process=None
         self.known_processes.clear()
+        self.last_launch=0.
         self.hwnd = None
         self.last_input_target = None

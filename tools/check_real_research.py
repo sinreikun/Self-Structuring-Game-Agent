@@ -29,12 +29,13 @@ def main():
         terminal=False
         while time.monotonic()<deadline:
             with controller.store.lock:
-                jobs=controller.store.db.execute('SELECT state FROM jobs').fetchall()
+                jobs=controller.store.db.execute('SELECT state,payload FROM jobs').fetchall()
                 proposals=controller.store.db.execute('SELECT count(*) FROM proposals').fetchone()[0]
             if jobs:
                 # Let the real supervisor own the job; do not issue a competing manual call.
                 controller.scientist.every=1000000
-                terminal=jobs[0]['state'] in {'complete','failed'}
+                payload=json.loads(jobs[0]['payload'])
+                terminal=jobs[0]['state']=='complete' or (jobs[0]['state']=='pending' and bool(payload.get('repair_error')) and bool(controller.store.reports()))
                 if terminal and not controller.scientist.live:
                     break
             time.sleep(.05)
@@ -42,11 +43,14 @@ def main():
         with controller.store.lock:
             response=controller.store.db.execute('SELECT response FROM proposals ORDER BY id DESC LIMIT 1').fetchone()['response']
         proposal=json.loads(response)
-        assert isinstance(proposal,dict) and isinstance(proposal.get('findings'),list) and isinstance(proposal.get('wat'),str)
+        from selfstruct.research import parse_proposal
+        with controller.store.lock:
+            evidence={r['id'] for r in controller.store.db.execute('SELECT id FROM events')}
+        parse_proposal(response,evidence,['A','B'])
         if args.report:
             data=json.loads(args.report.read_text(encoding='utf-8'))
             data['checks'].append('real research prompt completed with structured proposal')
-            data['research']={'status':'passed','synthetic_only':True,'valid_structured_proposal':True,'adoption_required':False}
+            data['research']={'status':'passed','synthetic_only':True,'valid_structured_proposal':True,'adoption_required':False,'job_preserved':True}
             from selfstruct.config import write_json
             write_json(args.report,data)
         print('PASS: real model research response archived; observations:',len(controller.store.knowledge_rows()),
