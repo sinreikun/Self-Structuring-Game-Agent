@@ -67,3 +67,6 @@ Windows CIのデスクトップ上での自動操作は、人が実PCで操作�
 
 
 署名鍵移行版の最終CIは[41216143843](https://github.com/sinreikun/Self-Structuring-Game-Agent/actions/runs/41216143843)、ソースは`c47523c7b31ae0e93dd5a473ae454c56e80030e2`。Windowsは154 passed / 1 skipped、Linuxは142 passed / 13 skippedで成功しました。新しくビルドしたLauncher 1.1.0の自己診断が返す版・公開鍵と、ビルド記録・ソースの版・公開鍵を照合し、ネイティブ本体の鍵移行を含む検証を確認しました。実モデルの取得・推論・構造化研究応答も成功しています。
+
+
+v0.5.0-dev.2は[公開ワークフロー41216951913](https://github.com/sinreikun/Self-Structuring-Game-Agent/actions/runs/41216951913)で公開しました。公開された8資産のSHA-256を検証済みCI成果物と照合し、配信中のStable/Development Manifestを新鍵で検証しました。公式URLから実際に本体を取得して署名・ハッシュ・Windows PEを確認し、Launcher 1.1.0も公開済みの固定URLとpinのハッシュで照合しています。既存利用者は今回のみLauncher 1.1.0を取得し直す移行です。
