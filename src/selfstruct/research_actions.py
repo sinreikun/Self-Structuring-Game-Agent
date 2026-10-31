@@ -102,6 +102,7 @@ def execute(scientist,jid,payload,request,token):
         payload['implementation_plan']={k:request[k] for k in ('problem','evidence','behavior','evaluation')};payload['research_phase']='implementation';p['candidate_plans']+=1
         return {'phase':'implementation','plan':payload['implementation_plan']},None,None
     translated=dict(request)
+    if op=='compare' and not isinstance(request.get('compare'),dict):raise ValueError('compare requires a second Evidence reference')
     if op in ('compare','analyze'):translated['op']='observe'
     if translated.get('op','observe')=='observe' and translated.get('output','pixels') in ('pixels','image'):translated={'limit':128,**translated}
     scientist.activity.update(experiment=f'研究Job {jid[:8]}：{op} Experience {request.get("event","現在")} {request.get("phase","before")} 領域 {request.get("box","全体")} 解像度 {request.get("size","既定")}',next='取得結果を同じ研究Jobへ返して再推論')

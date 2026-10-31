@@ -50,7 +50,7 @@ PROPOSAL_SCHEMA={
                 'evidence':{'type':'array','maxItems':64,'items':{'type':'integer'}},
                 'action':{'type':'integer','minimum':0},
                 'change_probability':{'type':'number','minimum':0,'maximum':1}}}},
-        'actions':{'type':'array','maxItems':4,'items':{'type':'object'}},
+        'actions':{'type':'array','maxItems':4,'items':{'type':'object','required':['op'],'properties':{'op':{'type':'string'}}}},
         'visual_requests':{'type':'array','maxItems':4,'items':{'type':'object'}},
         'problem':{'type':'string'},'reason':{'type':'string'},'wat':{'type':'string'}}}
 
@@ -851,7 +851,10 @@ class Scientist:
                 self.store.set_job(jid,'pending',payload)
                 raise ResearchRepairNeeded(str(error)) from error
             payload['last_research_response']=value
-            requests=value.get('actions',[])+value.get('visual_requests',[]) if isinstance(value.get('actions',[]),list) and isinstance(value.get('visual_requests',[]),list) else None
+            actions=value.get('actions',[]);legacy=value.get('visual_requests',[])
+            if isinstance(actions,list) and any(not isinstance(a,dict) or not isinstance(a.get('op'),str) for a in actions):
+                raise ResearchRepairNeeded('actionsには明示的なopを持つオブジェクトを指定してください。')
+            requests=actions+[{"op":"observe",**r} if isinstance(r,dict) else r for r in legacy] if isinstance(actions,list) and isinstance(legacy,list) else None
             if requests is None or len(requests)>4:raise ResearchRepairNeeded('actions/visual_requestsは合計最大4件の配列にしてください。')
             if not requests:
                 if value.get('wat'):
