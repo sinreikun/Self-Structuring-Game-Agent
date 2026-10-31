@@ -45,6 +45,8 @@ def test_loaded_records_and_diagnostic_available_without_start_and_follow_select
         assert '(module' in app.raw_text.get('1.0','end')
         assert '保存済み記録' in app.record_scope.get()
         assert 'STOP前' in app.diagnostic_help.cget('text')
+        root.geometry('900x650');app.tabs.select(app.home);root.update()
+        assert int(app.diagnostic_help.cget('wraplength'))<=app.home.winfo_width()
         app.export()
         assert app.control_buttons['診断ZIPをコピー'].cget('style')=='Working.TButton'
         until(lambda:not app.busy)

@@ -185,6 +185,7 @@ class App(ManagementUI):
         self.control_help.pack(anchor='w')
         self.diagnostic_help=ttk.Label(self.home,text='診断ZIP：症状が出たらSTOP前に採取。稼働中／PAUSE中でも可。状態と記録をコピーし、停止・リセットはしません。',font=(UI_FONT,9),foreground='#a8bbc9',wraplength=1050)
         self.diagnostic_help.pack(anchor='w',pady=(2,0))
+        self.home.bind('<Configure>',lambda event:[label.configure(wraplength=max(280,event.width-20)) for label in (self.control_help,self.diagnostic_help)])
         for name,color in [('Running','#459d76'),('Paused','#d2a44e'),('Stopped','#a95f67'),('Working','#7d8daf'),('Copied','#459d76')]:
             style=ttk.Style(self.window);style.configure(name+'.TButton',background=color,foreground='#101820',font=(UI_FONT,10,'bold'))
             style.map(name+'.TButton',background=[('disabled',color),('active',color)],foreground=[('disabled','#26333c')])
