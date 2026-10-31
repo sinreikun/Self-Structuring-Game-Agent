@@ -6,3 +6,7 @@ __pycache__/
 build/
 dist/
 *.spec
+
+# Publisher keys belong outside the checkout.
+*.pem
+*.key

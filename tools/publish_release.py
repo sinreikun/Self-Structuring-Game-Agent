@@ -40,6 +40,11 @@ def verify_artifacts(folder: Path, commit: str, allow_reuse: bool=False) -> dict
     if not (info['platform']=='win32' and info['commit']==commit and info['sha256']==expected==hashes['SelfStruct.exe']):
         raise ValueError('Artifact identity or digest does not match verified CI')
     if info.get('launcher_sha256')!=hashes['SelfStructLauncher.exe']:raise ValueError('Launcher digest mismatch')
+    from selfstruct.release import UPDATE_KEY, LAUNCHER_VERSION
+    identity=json.loads((folder/'launcher-validation.json').read_text(encoding='utf-8'))
+    if info.get('launcher_version')!=LAUNCHER_VERSION or identity.get('launcher_version')!=LAUNCHER_VERSION or info.get('launcher_public_key')!=UPDATE_KEY or identity.get('launcher_public_key')!=UPDATE_KEY:
+        raise ValueError('Launcher trust anchor or version differs from the verified source')
+    if identity.get('key_migration')!='passed':raise ValueError('Launcher key migration was not verified')
     with (folder/'SelfStruct.exe').open('rb') as stream:
         header=stream.read(64)
         if header[:2]!=b'MZ':raise ValueError('Not a Windows executable')

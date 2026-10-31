@@ -106,3 +106,47 @@ def test_detaching_healthy_application_does_not_kill_it():
     finally:
         if app.poll() is None:app.child.terminate()
         app.child.wait(timeout=10)
+
+
+def test_key_migration_preserves_old_cached_body_offline_and_rejects_legacy_network_updates(tmp_path, monkeypatch):
+    old=Ed25519PrivateKey.generate();new=Ed25519PrivateKey.generate()
+    public=lambda key:key.public_key().public_bytes(Encoding.Raw,PublicFormat.Raw).hex()
+    def signed(key,body,version,sequence):
+        payload=json.dumps({'schema':1,'protocol':1,'channel':'Development','sequence':sequence,
+                            'expires':time.time()+1000,'version':version,
+                            'application':{'size':body.stat().st_size,'sha256':Gateway.digest(body)}}).encode()
+        return {'payload':base64.b64encode(payload).decode(),'signature':base64.b64encode(key.sign(payload)).decode()}
+    cached=tmp_path/'runtime'/'versions'/'old-stable';cached.mkdir(parents=True)
+    old_body=cached/'SelfStruct.exe';old_body.write_bytes(pe(b'previous verified application'))
+    (cached/'manifest.json').write_text(json.dumps(signed(old,old_body,'0.4.1',10)))
+    (tmp_path/'runtime'/'state.json').write_text(json.dumps({'last-known-good':'old-stable','sequence':10}))
+    individual=tmp_path/'experiments'/'individual'/'host';individual.mkdir(parents=True)
+    database=individual/'experience.sqlite3';database.write_bytes(b'preserved evidence and learned state')
+    model=tmp_path/'assets'/'model'/'existing';model.mkdir(parents=True);(model/'artifact').write_bytes(b'existing model')
+    calls=[]
+    def spawn(args,env):
+        calls.append(args[0]);return Child(True,args[-1])
+    launcher=Launcher(tmp_path,public(new),'url',legacy_keys=(public(old),),
+                      fetch=lambda _:(_ for _ in ()).throw(OSError('offline')),spawn=spawn,timeout=.1)
+    assert launcher.run() and calls[-1]==str(old_body)
+    downloaded=[]
+    def download(self,item,kind):
+        downloaded.append(True)
+        path=tmp_path/'download';path.write_bytes(pe(b'new trusted application'))
+        return path
+    monkeypatch.setattr(Gateway,'download',download)
+    # A legacy-signed network update must not inherit local-cache privileges.
+    launcher.fetch=lambda _:signed(old,old_body,'9.0.0',100)
+    assert launcher.run() and not downloaded and calls[-1]==str(old_body)
+    proposed=tmp_path/'proposal';proposed.write_bytes(pe(b'new trusted application'))
+    launcher.fetch=lambda _:signed(new,proposed,'0.5.0',11)
+    assert launcher.run() and downloaded
+    assert launcher.state['previous-known-good']=='old-stable'
+    assert launcher.state['last-known-good'].startswith('0.5.0-')
+    # If the new cached body is damaged, rollback still authenticates the old body.
+    current=launcher.root/'versions'/launcher.state['last-known-good']/'SelfStruct.exe'
+    current.write_bytes(b'corrupted')
+    launcher.fetch=lambda _:(_ for _ in ()).throw(OSError('offline'))
+    assert launcher.run() and calls[-1]==str(old_body)
+    assert database.read_bytes()==b'preserved evidence and learned state'
+    assert (model/'artifact').read_bytes()==b'existing model'

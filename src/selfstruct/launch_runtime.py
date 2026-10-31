@@ -13,7 +13,7 @@ from .config import InstanceLock, default_root, write_json
 from .resources import Gateway, fetch_json, verify_catalog
 from .owned_process import start_application
 
-LAUNCHER_VERSION='1.0.0'
+from .release import LAUNCHER_VERSION
 
 
 def stop_owned_process(child):
@@ -35,9 +35,9 @@ def stop_owned_process(child):
 
 
 class Launcher:
-    def __init__(self, root, key, url, channel='Development', fetch=fetch_json, spawn=start_application, timeout=60):
+    def __init__(self, root, key, url, channel='Development', fetch=fetch_json, spawn=start_application, timeout=60, legacy_keys=()):
         self.root=Path(root)/'runtime';self.root.mkdir(parents=True,exist_ok=True)
-        self.key=key;self.url=url;self.channel=channel;self.fetch=fetch;self.spawn=spawn;self.timeout=timeout
+        self.key=key;self.legacy_keys=tuple(legacy_keys);self.url=url;self.channel=channel;self.fetch=fetch;self.spawn=spawn;self.timeout=timeout
         self.state_path=self.root/'state.json';self.message=''
         try:self.state=json.loads(self.state_path.read_text(encoding='utf-8'))
         except (OSError,ValueError):self.state={}
@@ -52,7 +52,15 @@ class Launcher:
         if not isinstance(identity,str) or not re.fullmatch(r'[0-9A-Za-z._-]{1,128}',identity):return None
         folder=self.root/'versions'/identity
         try:
-            manifest=verify_catalog(json.loads((folder/'manifest.json').read_text(encoding='utf-8')),self.key,allow_expired=True)
+            envelope=json.loads((folder/'manifest.json').read_text(encoding='utf-8'))
+            manifest=None
+            for public in (self.key,*self.legacy_keys):
+                try:
+                    manifest=verify_catalog(envelope,public,allow_expired=True)
+                    break
+                except Exception:
+                    continue
+            if manifest is None:return None
             if manifest.get('channel')!=self.channel or manifest.get('protocol')!=1:return None
             item=manifest['application'];binary=folder/'SelfStruct.exe'
             if binary.is_symlink() or binary.stat().st_size!=item['size'] or Gateway.digest(binary)!=item['sha256']:return None
@@ -153,10 +161,10 @@ class Launcher:
 
 
 def main():
-    from .release import UPDATE_KEY, UPDATE_URL
+    from .release import UPDATE_KEY, UPDATE_URL, LEGACY_UPDATE_KEYS
     from .config import Config
     channel=Config.load(default_root()/'host'/'settings.json').channel
-    launcher=Launcher(default_root(),UPDATE_KEY,UPDATE_URL.format(channel=channel),channel=channel)
+    launcher=Launcher(default_root(),UPDATE_KEY,UPDATE_URL.format(channel=channel),channel=channel,legacy_keys=LEGACY_UPDATE_KEYS)
     try:launcher.run()
     except Exception as e:
         import tkinter as tk

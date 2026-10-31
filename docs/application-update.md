@@ -1,6 +1,6 @@
 # 固定Launcherの更新プロトコル
 
-`SelfStructLauncher.exe` はprotocol=1 / Launcher 1.0.0。通常の本体変更ではLauncherを作り直して配布する必要はない。初回公開のLauncherを使い続け、本体Manifestだけ更新する。ビルド工程は再現性確認のためLauncherも生成するが、既存ユーザーへ再ダウンロードを求めない。
+`SelfStructLauncher.exe` はprotocol=1 / Launcher 1.1.0。2026-11-01の署名鍵移行に限り、既存利用者はLauncher 1.1.0を一度取得し直す。以後の通常の本体変更では同じLauncherを使い、本体Manifestだけを更新する。
 
 公式URLはリポジトリmainの `updates/Stable.json` / `Development.json`。TLSに加え、Launcher内の固定公開鍵でEd25519署名を検証する。Manifestのschema、protocol、channel、sequence、expires、version、application（URL・size・SHA-256・license・trust）を検証する。未知schema/protocol、不正署名、期限切れの配布情報、逆行sequenceは採用しない。
 
@@ -25,3 +25,12 @@ Launcherのテストは、署名検証、二世代の実体起動、ヘルス応
 本体には現時点でOSSライセンスファイルが指定されていないため、ManifestでMIT等のライセンスを推測して付与しない。公開はリポジトリ所有者の配布指示に基づくものと記録する。依存のライセンスはTHIRD_PARTY_NOTICESで別途保持する。
 
 Windows onefile本体はBootloaderとGUIの親子構成になる。失敗時は自分が起動したPopenのプロセス群を停止してから復帰する。親だけを強制終了して新旧GUIが並走する状態を避ける。正常起動した本体はLauncher終了後も継続する。
+
+
+## 2026-11-01: Launcher 1.1.0への署名鍵移行
+
+ユーザーの承認に基づき、元の秘密鍵の引継ぎ不能を解消するため、新しい署名鍵とLauncher 1.1.0を配布する。利用者は今回だけ新Launcherを取得する。旧Launcherが新鍵のManifestを受け入れるとは案内しない。新Launcherはネットワーク更新を新鍵だけで検証し、旧鍵は既存ローカル本体の検証・オフライン復帰にだけ使用する。更新先、protocol=1、個体・経験・モデルの保存先は継続する。
+
+秘密鍵はリポジトリ外の永続保存先 `/workspace/selfstruct-publisher-keys/launcher-1.1.0-ed25519.pem` に権限0600で保存する。一時ディレクトリへだけ保管しない。公開するのは公開鍵と署名済みManifestのみ。所有者はチャットで提供する秘密鍵の控えを別途保管する。秘密鍵をGit・CI成果物・公開リリース・診断へ含めない。
+
+`updates/launcher.json` は公開済みLauncherのタグ・バージョン・公開鍵・SHA-256を固定する。現在の鍵と版に一致するpinがない場合は新Launcherをビルドし、公開後の通常更新では同じLauncherをハッシュ照合して再使用する。公開器はビルド記録と梱包済みLauncherの自己診断が報告した公開鍵・版・移行試験を照合する。

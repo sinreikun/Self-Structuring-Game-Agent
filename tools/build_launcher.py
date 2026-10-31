@@ -16,5 +16,7 @@ if diagnostic:sys.exit(0)
 import hashlib,json
 info=root/'dist'/'build-info.json'
 metadata=json.loads(info.read_text(encoding='utf-8'))
+from selfstruct.release import UPDATE_KEY, LAUNCHER_VERSION
+metadata.update(launcher_version=LAUNCHER_VERSION,launcher_public_key=UPDATE_KEY,launcher_source='built:'+subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip())
 metadata['launcher_sha256']=hashlib.sha256((root/'dist'/'SelfStructLauncher.exe').read_bytes()).hexdigest()
 info.write_text(json.dumps(metadata,indent=2),encoding='utf-8')
