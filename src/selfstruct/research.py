@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import multiprocessing
 import queue
@@ -28,6 +29,14 @@ class IncompleteInference(ValueError):
 
 class ResearchRepairNeeded(InferenceUnavailable):
     pass
+
+
+class ResearchInputLimit(InferenceUnavailable):
+    """A deterministic context limit; restarting inference cannot repair it."""
+
+
+MAX_REPAIR_FAILURES = 3
+MAX_IDENTICAL_FAILURES = 2
 
 
 PROPOSAL_SCHEMA={
@@ -286,7 +295,7 @@ PROMPT = """あなたは未知の画面と入力だけを扱う自律研究Agent
 仮説は事実と分け、日本語で根拠IDと反証する次の実験を述べてください。
 自己改善はゲーム非依存の画像解析、画面変化予測、観測密度、探索効率を対象にします。
 JSONオブジェクトだけを返してください。形式:
-{{"findings":[], "problem":"", "reason":"", "wat":""}}
+{{"findings":[], "visual_requests":[], "problem":"", "reason":"", "wat":""}}
 実際の根拠がある場合だけfindingsへtext（日本語の仮説と次の実験）、evidence（提供された経験IDの整数配列）を持つ要素を追加します。
 状態条件を付けない入力全体の変化確率を検証する仮説だけにaction（整数）とchange_probability（0..1）を追加できます。特定の特徴fや領域に限定する仮説ではこの2項目を省略して検証待ちにしてください。
 改善が必要ならproblemとreasonを実際の根拠と改善内容で埋め、watに実行可能なWebAssemblyモジュール全文を入れてください。
@@ -300,7 +309,7 @@ predict(feature:i32,action:i32)->i32 は画面差分が0.01を超える確率0..
 learn(before:i32,action:i32,after:i32,changed:i32)->void。各呼出しの燃料上限200万。
 内部の構造や役割分割、学習用メモリ、解析器は自由に作り変えられます。
 再起動後に保持したい状態はmutable globalではなく線形memoryへ格納してください。Hostが定期的に保存し、復旧時には未反映の経験をlearnへ再送します。
-featureは量子化された画像ハッシュで意味ラベルではありません。
+featureは量子化された画像ハッシュです。その大小・ビット位置に、画面上の位置や色・形の意味はありません。画面構造は画素Evidenceで調べてください。
 actionとchange_probabilityは指定入力の後に画像が変化する確率の仮説だけに使い、意味や攻略成功を表しません。該当しない仮説ではこの2項目は省略してください。
 任意のrequest()->i32をexportすると、memoryの4096からJSON要求を返せます。0は要求なし、最大8192バイト。
 許可操作はop=write/read/delete/mkdir/list、相対path、writeにはtext。応答は16384に長さ4バイトlittle endian、その後JSON。
@@ -336,14 +345,14 @@ def research_prompt(source,rows,keys,reports):
                     for key in ('balanced_loss','classes','references','prediction_range'):
                         if key in measured:entry[name+'_'+key]=measured[key]
         history.append(entry)
-    prompt='構文修正だけでは改善ではありません。learnが空、使わない変数、現行と同一・定数の予測では、経験に応じた改善を証明できません。watなしは観測・仮説のみの完了です。改善を提案する場合は説明に対応した完全な実装を返してください。評価は変化あり・なし各4例以上で、両群を均等に扱い、定数0/0.5/1・因果的な過去頻度と比較します。ゲームの意味は与えません。\n'
+    prompt='まず画面Evidenceを調べてください。初期のBefore/Afterは小さいRGB概観です。情報不足ならvisual_requestsで領域・解像度・処理を選び、追加観測してください。WATだけでなく汎用演算の解析器も利用できます。\n構文修正だけでは改善ではありません。learnが空、使わない変数、現行と同一・定数の予測では、経験に応じた改善を証明できません。watなしは観測・仮説のみの完了です。改善を提案する場合は説明に対応した完全な実装を返してください。評価は変化あり・なし各4例以上で、両群を均等に扱い、定数0/0.5/1・因果的な過去頻度と比較します。ゲームの意味は与えません。\n'
     prompt+='経験の略記：a=入力番号、f=画像特徴、d=画面変化。\n'
     prompt+='過去評価：'+json.dumps(history,ensure_ascii=False,separators=(',',':'))+'\n'
     prompt+=PROMPT.format(source=source,rows=json.dumps(summaries,separators=(',',':')))
     # UTF-8 byte budget is conservative for the 8192-token managed context.
     # Never silently cut an Agent program or invent an answer to fit the budget.
     if len(prompt.encode('utf-8'))>20000:
-        raise InferenceUnavailable('研究入力がコンテキスト予算を超えています。Agentの自己記述を短くしてください。')
+        raise ResearchInputLimit('研究入力がコンテキスト予算を超えています。Agentの自己記述を短くしてください。')
     return prompt
 
 
@@ -485,6 +494,71 @@ class Scientist:
                 self.store.unpin('live-trial')
                 self.activity.update(comparison='保存して修正待ち',candidate='')
 
+    def finish_failed_research(self, jid, payload, error, outcome="repair_exhausted"):
+        payload.update(outcome=outcome, implementation_verified=False, repair_error=str(error)[:1000],
+                       response="候補を採用せず保存しました。修正上限または入力制約のため、新しい経験で研究を進めます。")
+        self.store.set_job(jid, "complete", payload)
+        self.store.report("candidate", False, "修正を打ち切り、根拠と候補を保存して新しい研究へ進みます。",
+                          {"job": jid, "error": str(error)[:1000], "outcome": outcome,
+                           "repair_failures": payload.get("repair_failures", 0), "implementation_verified": False})
+        for prefix in ("research-job-", "pending-", "suspended-"):
+            self.store.unpin(prefix+jid)
+        self.activity.update(llm="待機", comparison="候補を保存・新しい研究へ", experiment="修正上限に達した研究を保存")
+        self.activity.emit("research_exhausted")
+        self.notify("同じ候補の修正を終了しました。既存の個体を保持し、新しい画面Evidenceで次の研究を行います。")
+
+    def restore_repair_budget(self, jid, payload):
+        """Upgrade queued pre-fix jobs using their existing failure reports."""
+        if "repair_failures" not in payload:
+            failures=[]
+            with self.store.lock:
+                records=self.store.db.execute("SELECT metrics FROM reports ORDER BY id DESC LIMIT 256").fetchall()
+            for record in reversed(records):
+                try:metrics=json.loads(record[0])
+                except (ValueError, TypeError):continue
+                if isinstance(metrics,dict) and metrics.get("job")==jid and metrics.get("error") and metrics.get("outcome")!="repair_exhausted":
+                    failures.append(str(metrics["error"]))
+            payload["repair_failures"]=len(failures)
+            previous=None;consecutive=0
+            for error in failures:
+                fingerprint=hashlib.sha256(error[:4000].encode()).hexdigest()
+                consecutive=consecutive+1 if fingerprint==previous else 1
+                previous=fingerprint
+            payload.update(last_repair_fingerprint=previous, same_error_failures=consecutive)
+            if failures:
+                payload["repair_error"]=failures[-1][:1000]
+                self.store.set_job(jid,"running",payload)
+        if payload.get("repair_failures",0)>=MAX_REPAIR_FAILURES or payload.get("same_error_failures",0)>=MAX_IDENTICAL_FAILURES:
+            self.finish_failed_research(jid,payload,payload.get("repair_error","修正回数の上限"))
+            return True
+        return False
+
+    def repair_or_finish(self, jid, error):
+        payload=json.loads(self.store.get_job(jid)["payload"])
+        source=payload.pop("source",None)
+        if source is not None:
+            payload["repair_response"]=json.dumps({"findings":[],"wat":source},ensure_ascii=False)
+        elif not payload.get("repair_response") and payload.get("stream_draft"):
+            payload["repair_response"]=payload["stream_draft"]
+        text=str(error)[:4000]
+        fingerprint=hashlib.sha256(text.encode()).hexdigest()
+        payload["same_error_failures"]=payload.get("same_error_failures",0)+1 if payload.get("last_repair_fingerprint")==fingerprint else 1
+        payload["last_repair_fingerprint"]=fingerprint
+        payload["repair_failures"]=payload.get("repair_failures",0)+1
+        payload["repair_error"]=text[:1000]
+        payload["repair_history"]=[*payload.get("repair_history",[])[-2:],
+                                   {"attempt":payload["repair_failures"],"error":text[:1000],"at":time.time()}]
+        self.store.report("candidate",False,"候補の検査に失敗しました。有限回の修正を行います。",
+                          {"job":jid,"error":text,"repair_failures":payload["repair_failures"]})
+        if payload["repair_failures"]>=MAX_REPAIR_FAILURES or payload["same_error_failures"]>=MAX_IDENTICAL_FAILURES:
+            self.finish_failed_research(jid,payload,text)
+            return False
+        self.store.set_job(jid,"pending",payload)
+        self.activity.update(llm="待機",comparison=f"修正待ち（失敗{payload['repair_failures']}/{MAX_REPAIR_FAILURES}）")
+        self.activity.emit("llm_saved")
+        self.notify("候補の不適合と下書きを保存しました。上限内で修正し、解決しなければ次の研究へ進みます。")
+        return True
+
     def run(self):
         while not self.stop_event.is_set():
             try:
@@ -524,6 +598,8 @@ class Scientist:
             self.store.set_job(jid, "running")
             try:
                 payload = json.loads(pending[0]["payload"]) if pending else {}
+                if self.restore_repair_budget(jid,payload):
+                    continue
                 if pending and pending[0]["kind"] == "visual":
                     try:
                         result, _ = self.visual.handle(payload["request"], pin="research-job-"+jid)
@@ -539,22 +615,16 @@ class Scientist:
                 else:
                     self.study(rows, jid)
                 self.failed_calls = 0
+            except ResearchInputLimit as error:
+                payload=json.loads(self.store.get_job(jid)["payload"])
+                self.finish_failed_research(jid,payload,error,"input_budget_exceeded")
             except ResearchRepairNeeded as error:
-                self.store.set_job(jid,'pending')
-                self.activity.update(llm='待機',comparison='保存して修正待ち')
-                self.activity.emit('llm_saved')
-                self.notify('研究応答を保存しました。形式・途中出力を修正して同じ研究を再試行します。')
-                self.stop_event.wait(min(30,self.retry_base_delay))
+                if self.repair_or_finish(jid,error):
+                    self.stop_event.wait(min(30,self.retry_base_delay))
             except (ValueError, TimeoutError, MemoryError) as error:
-                log.warning('Candidate retained for repair: %s',error)
-                self.store.report('candidate',False,'候補の不適合を記録しました。内容を保持し、修正を再試行します。',{'job':jid,'error':str(error)[:4000]})
-                payload=json.loads(self.store.get_job(jid)['payload'])
-                draft=payload.pop('source','')
-                payload['repair_response']=json.dumps({'findings':[],'wat':draft},ensure_ascii=False)
-                payload['repair_error']=str(error)[:500]
-                self.store.set_job(jid,'pending',payload)
-                self.activity.update(llm='待機',comparison='保存して修正待ち')
-                self.stop_event.wait(min(30,self.retry_base_delay))
+                log.warning('Candidate failed finite repair: %s',error)
+                if self.repair_or_finish(jid,error):
+                    self.stop_event.wait(min(30,self.retry_base_delay))
             except CapacityError:
                 raise
             except Exception:
@@ -589,7 +659,7 @@ class Scientist:
         budget=4096
         if isinstance(self.client,LocalLLM) and self.client.managed:
             budget=min(4096,getattr(self.client,'context',8192)-self.client.count_tokens(prompt)-256)
-            if budget<512:raise InferenceUnavailable('入力が大きいため作業を保存して待機します。')
+            if budget<512:raise ResearchInputLimit('入力が大きいため作業を保存して待機します。')
         saved=[0.]
         def journal(text):
             if time.monotonic()-saved[0]>=.5:
@@ -604,6 +674,32 @@ class Scientist:
             raise
         self.store.proposal(jid,response)
         self.store.set_job(jid,'complete',{**payload,'response':response})
+
+    def initial_visual_evidence(self, jid, payload):
+        if payload.get("initial_visual_evidence"):
+            return
+        rows=payload.get("research_rows",[])
+        if not rows:
+            return
+        event=rows[-1]["id"]
+        with self.store.lock:
+            present=self.store.db.execute("SELECT 1 FROM events WHERE id=? AND state='complete'",(event,)).fetchone()
+        if not present:
+            return
+        history=payload.setdefault("visual_history",[])
+        native=bool(getattr(self.client,"vision",False))
+        for phase in ("before","after"):
+            request={"op":"observe","event":event,"phase":phase,"mode":"RGB",
+                     "size":[128,128] if native else [8,8],"output":"image" if native else "pixels","limit":192}
+            try:
+                result,attachment=self.visual.handle(request,pin="research-job-"+jid,native=native)
+                history.append({"kind":"initial_evidence","request":request,"result":result,"native":bool(attachment)})
+            except CapacityError:
+                raise
+            except (ValueError,OSError,KeyError,TypeError) as error:
+                history.append({"kind":"initial_evidence","request":request,"error":str(error)[:240]})
+        payload["initial_visual_evidence"]=True
+        self.store.set_job(jid,"running",payload)
 
     def visual_dialogue(self, prompt, jid, payload, budget, journal):
         """Research stays on its worker; every extra observation is explicit/bounded.
@@ -625,6 +721,7 @@ class Scientist:
                 self.client.capabilities = {"input": "text", "status": "unverified", "checked_at": time.time()}
             from .config import write_json
             write_json(self.store.root/"host"/"model-capabilities.json", self.client.capabilities)
+        self.initial_visual_evidence(jid,payload)
         for _ in range(7):
             if self.stop_event.is_set():
                 raise InterruptedError("研究を中断しました。")
@@ -686,9 +783,9 @@ class Scientist:
             if isinstance(self.client, LocalLLM) and self.client.managed:
                 output_budget = min(budget, getattr(self.client, "context", 8192)-self.client.count_tokens(text)-256-len(images)*1024)
                 if output_budget < 512:
-                    raise InferenceUnavailable("追加視覚観測がモデルの入力枠を超えました。保存済み結果を保持します。")
+                    raise ResearchInputLimit("追加視覚観測がモデルの入力枠を超えました。保存済み結果を保持します。")
             if len(text.encode()) > 100000:
-                raise InferenceUnavailable("視覚研究の入力予算を超えました。")
+                raise ResearchInputLimit("視覚研究の入力予算を超えました。")
             options = {"max_tokens": output_budget, "json_mode": True, "schema": PROPOSAL_SCHEMA, "on_progress": journal}
             if images:
                 options["images"] = images
@@ -764,7 +861,7 @@ class Scientist:
         if isinstance(self.client,LocalLLM) and self.client.managed:
             count=self.client.count_tokens(prompt)
             budget=min(4096,getattr(self.client,'context',8192)-count-256)
-            if budget<512:raise InferenceUnavailable('研究の入力枠が不足しています。下書きを保存して待機します。')
+            if budget<512:raise ResearchInputLimit('研究の入力枠が不足しています。下書きを保存して待機します。')
         saved_at=[0.]
         def journal(text):
             if time.monotonic()-saved_at[0]>=.5:
@@ -817,7 +914,14 @@ class Scientist:
     def evaluate_proposal(self, source: str, after_id: int, jid: str):
         # Persist the proposal before execution; resume it rather than regenerating it.
         payload=json.loads(self.store.get_job(jid)["payload"])
-        self.store.set_job(jid,"running",{**payload,"source":source,"after":after_id})
+        payload={**payload,"source":source,"after":after_id}
+        self.store.set_job(jid,"running",payload)
+        digest=hashlib.sha256(source.encode()).hexdigest()
+        if payload.get("validated_source_digest")!=digest:
+            self.activity.update(llm="評価中",comparison="候補の構文・ABIを先に検査")
+            evaluate(source,self.revisions.source(),[],self.store.root/"evidence",self.keys)
+            payload["validated_source_digest"]=digest
+            self.store.set_job(jid,"running",payload)
         self.notify("改善候補を作成しました。新しい経験を集めてから独立した比較評価を行います。")
         deadline = time.monotonic() + 300
         future = []

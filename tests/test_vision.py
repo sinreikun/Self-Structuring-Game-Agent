@@ -132,7 +132,8 @@ def test_scientist_iterates_from_overview_to_detail_and_stores_inference_as_hypo
     job = store.job('research', {})
     scientist.study(store.rows(), job)
     payload = json.loads(store.get_job(job)['payload'])
-    assert len(client.calls) == 3 and len(payload['visual_history']) == 2
+    assert len(client.calls) == 3 and len(payload['visual_history']) == 4
+    assert sum(entry.get('kind')=='initial_evidence' for entry in payload['visual_history']) == 2
     assert all('images' not in kwargs for _, kwargs in client.calls)
     note = next(row for row in store.knowledge_rows() if row['kind'] == 'hypothesis')
     assert note['provenance'] == 'inferred' and note['validation'] == 'hypothesis'
@@ -148,9 +149,9 @@ def test_native_research_selects_images_and_persists_references_without_base64(w
         def complete(self, prompt, **kwargs):
             self.calls += 1
             if self.calls == 1:
-                assert 'images' not in kwargs
+                assert len(kwargs['images']) == 2
                 return json.dumps({'visual_requests': [{'event': event, 'output': 'image', 'size': [64, 64]}]})
-            assert len(kwargs['images']) == 1
+            assert len(kwargs['images']) == 3
             return '{"findings":[],"wat":""}'
     client = Client()
     scientist = Scientist(store, Revisions(store.root/'revisions'), client, ['A'], 48, lambda _: None)
@@ -348,7 +349,7 @@ def test_managed_vision_context_pressure_preserves_references_and_does_not_retry
     job = store.job('research', {})
     scientist.study(store.rows(), job)
     assert len(calls) == 2 and store.get_job(job)['state'] == 'complete'
-    assert len(json.loads(store.get_job(job)['payload'])['visual_history']) == 4
+    assert len(json.loads(store.get_job(job)['payload'])['visual_history']) == 6
 
 
 def test_actual_trace_identifies_evidence_region_and_resolution_within_display_budget(world):

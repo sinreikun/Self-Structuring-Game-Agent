@@ -52,6 +52,30 @@ def redact(value):
     return value
 
 
+def diagnostic_job_payload(value):
+    """Expose repair/visual progress without exporting prompts, code, or pixels."""
+    try:payload=json.loads(value)
+    except (ValueError,TypeError):return "[prompt/source omitted]"
+    if not isinstance(payload,dict):return "[prompt/source omitted]"
+    keys=("outcome","implementation_verified","repair_failures","same_error_failures","repair_error",
+          "repair_history","behavior_repairs","visual_rounds","initial_visual_evidence","visual_budget_exhausted")
+    result={k:payload[k] for k in keys if k in payload}
+    history=payload.get("visual_history",[])
+    result["visual_request_count"]=len(history) if isinstance(history,list) else 0
+    result["visual_requests"]=[]
+    if isinstance(history,list):
+        for entry in history[-24:]:
+            if not isinstance(entry,dict):continue
+            request=entry.get("request",{})
+            if not isinstance(request,dict):continue
+            safe={k:request[k] for k in ("op","event","phase","observation","box","size","mode","output","offset","limit","id") if k in request}
+            safe["kind"]=entry.get("kind","requested")
+            if entry.get("error"):safe["error"]=str(entry["error"])[:240]
+            result["visual_requests"].append(safe)
+    result["omitted"]="prompt/source/arrays"
+    return diagnostic_json(result)
+
+
 def create_diagnostics(root: Path, store=None, config=None, activity=None, gui=None, destination=None) -> Path:
     root=Path(root).resolve()
     folder=root/'exports'/'diagnostics';folder.mkdir(parents=True,exist_ok=True)
@@ -87,14 +111,15 @@ def create_diagnostics(root: Path, store=None, config=None, activity=None, gui=N
                 with store.lock, tempfile.TemporaryDirectory() as temp:
                     db=sqlite3.connect(Path(temp)/'diagnostics.sqlite3')
                     try:
-                        for table,order,limit in [('events','id',512),('knowledge','id',256),('reports','id',100),('gc_history','id',200),('compacted','last',256),('jobs','updated',40)]:
+                        for table,order,limit in [('events','id',512),('knowledge','id',256),('reports','id',100),('gc_history','id',200),('compacted','last',256),('jobs','updated',40),('visual_analyzers','created',32),('visual_library_requests','created',32)]:
                             columns=[r[1] for r in store.db.execute(f'PRAGMA table_info({table})')]
+                            if not columns:continue
                             # All values are bound; never execute user content.
                             db.execute(f'CREATE TABLE {table}('+','.join('"'+c+'"' for c in columns)+')')
                             for row in store.db.execute(f'SELECT * FROM {table} ORDER BY {order} DESC LIMIT ?',(limit,)):
                                 values=[]
                                 for value in row:
-                                    if table=='jobs' and columns[len(values)]=='payload':value='[prompt/source omitted]'
+                                    if table=='jobs' and columns[len(values)]=='payload':value=diagnostic_job_payload(value)
                                     if isinstance(value,str):
                                         try: value=diagnostic_json(json.loads(value))
                                         except (ValueError,TypeError): value=redact(value)
@@ -114,7 +139,7 @@ def create_diagnostics(root: Path, store=None, config=None, activity=None, gui=N
                     path=store.root/'evidence'/(digest+'.png')
                     if path.is_file() and path.stat().st_size<=2*1024**2:
                         put('evidence/'+path.name,path.read_bytes())
-                for filename in ('checkpoint.json','activity.json'):
+                for filename in ('checkpoint.json','activity.json','model-capabilities.json'):
                     path=store.root/'host'/filename
                     if path.is_file() and path.stat().st_size<65536:
                         try:put('experiment/'+filename,json.dumps(redact(json.loads(path.read_text(encoding='utf-8'))),ensure_ascii=False))

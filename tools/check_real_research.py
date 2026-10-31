@@ -35,11 +35,13 @@ def main():
                 # Let the real supervisor own the job; do not issue a competing manual call.
                 controller.scientist.every=1000000
                 payload=json.loads(jobs[0]['payload'])
-                terminal=jobs[0]['state']=='complete' or (jobs[0]['state']=='pending' and bool(payload.get('repair_error')) and bool(controller.store.reports()))
+                terminal=jobs[0]['state']=='complete'
                 if terminal and not controller.scientist.live:
                     break
             time.sleep(.05)
         assert proposals>=1 and terminal, 'Real research did not complete within its budget'
+        observed=[entry for entry in payload.get('visual_history',[]) if entry.get('kind')=='initial_evidence' and entry.get('result',{}).get('evidence')]
+        assert payload.get('initial_visual_evidence') and len(observed)==2, 'Real research did not inspect its primary screen evidence'
         with controller.store.lock:
             response=controller.store.db.execute('SELECT response FROM proposals ORDER BY id DESC LIMIT 1').fetchone()['response']
         proposal=json.loads(response)
@@ -50,7 +52,7 @@ def main():
         if args.report:
             data=json.loads(args.report.read_text(encoding='utf-8'))
             data['checks'].append('real research prompt completed with structured proposal')
-            data['research']={'status':'passed','synthetic_only':True,'valid_structured_proposal':True,'adoption_required':False,'job_preserved':True,'job_outcome':payload.get('outcome','evaluated'),'adoption_verified':False}
+            data['research']={'status':'passed','synthetic_only':True,'valid_structured_proposal':True,'adoption_required':False,'job_preserved':True,'initial_visual_evidence':True,'visual_observations':len(observed),'repair_failures':payload.get('repair_failures',0),'job_outcome':payload.get('outcome','evaluated'),'adoption_verified':False}
             from selfstruct.config import write_json
             write_json(args.report,data)
         print('PASS: real model research response archived; observations:',len(controller.store.knowledge_rows()),

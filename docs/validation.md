@@ -70,3 +70,8 @@ Windows CIのデスクトップ上での自動操作は、人が実PCで操作�
 
 
 v0.5.0-dev.2は[公開ワークフロー41216951913](https://github.com/sinreikun/Self-Structuring-Game-Agent/actions/runs/41216951913)で公開しました。公開された8資産のSHA-256を検証済みCI成果物と照合し、配信中のStable/Development Manifestを新鍵で検証しました。公式URLから実際に本体を取得して署名・ハッシュ・Windows PEを確認し、Launcher 1.1.0も公開済みの固定URLとpinのハッシュで照合しています。既存利用者は今回のみLauncher 1.1.0を取得し直す移行です。
+
+
+## 0.5.1 研究修正ループの復旧
+
+2026-11-01の追加診断2件で、同じWAT構文エラーと同一Jobの再開を確認しました。ローカルLinuxで144 passed / 19 skipped、アプリ自己診断も成功しました。tests/test_research_stall.pyの8件で、早期構文拒否、反復エラーの打切り、再起動後の回数保持、旧62回失敗Jobの自動終了、新経験の視覚研究への移行、初回推論へのRGB入力、応答形式エラーと推論サービス復旧の分離、診断情報の秘匿を確認しました。Windows CI・配布EXE・実モデルでの完了と初期視覚Evidenceも検証します。

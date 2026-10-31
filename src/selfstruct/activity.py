@@ -67,7 +67,7 @@ class Activity:
             self._value=replace(self._value,trace=(*self._value.trace[-199:],entry))
 
     def emit(self, kind: str, **data):
-        prefix={'llm_start':'LLM','llm_timeout':'LLM','llm_error':'LLM','llm_saved':'LLM','replay':'EVAL','comparison':'EVAL','rejected':'REJECT','adopted':'PROMOTE','recovery':'RECOVER'}.get(kind)
+        prefix={'llm_start':'LLM','llm_timeout':'LLM','llm_error':'LLM','llm_saved':'LLM','replay':'EVAL','comparison':'EVAL','research_exhausted':'RESEARCH','rejected':'REJECT','adopted':'PROMOTE','recovery':'RECOVER'}.get(kind)
         if prefix:self.record(prefix,kind)
         text = event_message(kind, data)
         with self._lock:
