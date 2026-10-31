@@ -350,6 +350,7 @@ def research_prompt(source,rows,keys,reports):
     prompt='画面Evidenceを調べ、分かったこととunknownを区別してください。初期Before/Afterは低解像度の概観です。情報不足ならactions（旧visual_requestsも可）で領域・解像度・処理・比較・実験を選び、取得結果を見て続行してください。WATは任意の最終手段で、必要な場合はcandidateで実装計画を要求してください。採用評価では変化あり・なしを独立比較し、定数0/0.5/1・過去頻度・現行Agentの基準を維持します。\n'
     prompt+='ゲーム名や攻略を補完せず、分からない意味はunknownです。\n'
     prompt+='経験の略記：a=入力番号、f=画像特徴、d=画面変化。\n'
+    prompt+='許可入力（0始まり。キー名は識別子で、ゲーム内の意味は未確認）：'+json.dumps(dict(enumerate(keys)),ensure_ascii=False,separators=(',',':'))+'\n'
     prompt+='過去評価：'+json.dumps(history,ensure_ascii=False,separators=(',',':'))+'\n'
     # World research does not request a full program; implementation has its own phase.
     from .research_actions import INSTRUCTIONS

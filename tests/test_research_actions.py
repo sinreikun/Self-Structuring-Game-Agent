@@ -35,6 +35,7 @@ def test_same_job_crop_compare_experiment_evaluate_analyzer_loop(tmp_path,vision
         def complete(self,prompt,**options):
             self.calls.append((prompt,options));n=len(self.calls)
             if n==1:
+                assert '許可入力' in prompt and '"0":"A"' in prompt and '"1":"B"' in prompt
                 return json.dumps({'actions':[{'op':'observe','event':last,'phase':'before','box':[80,0,160,48],'size':[128,64],'mode':'RGB','output':'image' if vision else 'pixels','limit':64}]})
             assert f'"job":"{job}"' in prompt and '追加観測結果' in prompt
             if vision:assert options.get('images') and all(i.startswith('data:image/png;base64,') for i in options['images'])
