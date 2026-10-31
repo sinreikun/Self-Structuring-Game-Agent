@@ -57,6 +57,8 @@ def verify_artifacts(folder: Path, commit: str, allow_reuse: bool=False) -> dict
 def main():
     request=json.loads(Path('.github/release-request.json').read_text(encoding='utf-8'))
     tag,run_id=request['tag'],request['run_id']
+    draft_only=request.get('draft_only',False)
+    if type(draft_only) is not bool:raise ValueError('Invalid draft preparation flag')
     if not re.fullmatch(r'v\d+\.\d+\.\d+-dev\.\d+',tag) or not isinstance(run_id,int) or run_id<=0:
         raise ValueError('Invalid development release request')
     repository=os.environ['GITHUB_REPOSITORY']
@@ -79,12 +81,13 @@ def main():
         hashes=verify_artifacts(folder,obj['sha'],allow_reuse=True)
         from selfstruct.resources import verify_catalog
         from selfstruct.release import UPDATE_KEY
-        for channel in ('Stable','Development'):
-            envelope=json.loads((Path('updates')/(channel+'.json')).read_text(encoding='utf-8'))
-            manifest=verify_catalog(envelope,UPDATE_KEY)
-            item=manifest['application']
-            if manifest['protocol']!=1 or manifest['channel']!=channel or item['sha256']!=hashes['SelfStruct.exe'] or item['size']!=(folder/'SelfStruct.exe').stat().st_size or f'/download/{tag}/SelfStruct.exe' not in item['url']:
-                raise ValueError('Signed manifest differs from verified body')
+        if not draft_only:
+            for channel in ('Stable','Development'):
+                envelope=json.loads((Path('updates')/(channel+'.json')).read_text(encoding='utf-8'))
+                manifest=verify_catalog(envelope,UPDATE_KEY)
+                item=manifest['application']
+                if manifest['protocol']!=1 or manifest['channel']!=channel or item['sha256']!=hashes['SelfStruct.exe'] or item['size']!=(folder/'SelfStruct.exe').stat().st_size or f'/download/{tag}/SelfStruct.exe' not in item['url']:
+                    raise ValueError('Signed manifest differs from verified body')
         inference=json.loads((folder/'inference-validation.json').read_text(encoding='utf-8'))
         if inference.get('status')=='reused':
             baseline=inference['baseline_tag']
@@ -113,6 +116,7 @@ def main():
         releases=api(f'{prefix}/releases?per_page=100')
         release=next((item for item in releases if item['tag_name']==tag),None)
         if release and not release['draft']:
+            if draft_only:raise ValueError('Draft preparation cannot change a published release')
             existing={item['name']:item.get('digest') for item in release['assets']}
             if any(existing.get(name)!='sha256:'+digest for name,digest in hashes.items()):
                 raise ValueError('Published release exists with different assets; refusing changes')
@@ -129,6 +133,9 @@ def main():
         existing={item['name']:item.get('digest') for item in release['assets']}
         if any(existing.get(name)!='sha256:'+digest for name,digest in hashes.items()):
             raise ValueError('Uploaded asset hashes did not match')
+        if draft_only:
+            print('Prepared verified draft; signed manifests are still required before publication:',release['html_url'])
+            return
         gh('release','edit',tag,'--repo',repository,'--draft=false','--prerelease','--latest=false','--notes-file',str(notes))
         print('Published verified development release:',f'https://github.com/{repository}/releases/tag/{tag}')
 
