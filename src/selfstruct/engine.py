@@ -201,7 +201,9 @@ class Controller:
                 old_stage=self.store.storage_state
                 self.store.collect()
                 if self.store.storage_state!=old_stage and self.store.storage_state!='通常':self.activity.emit('gc')
-                self.telemetry={'counts':self.store.counts(),'storage':self.store.storage_snapshot()}
+                with self.store.lock:
+                    report=self.store.db.execute('SELECT metrics FROM reports ORDER BY id DESC LIMIT 1').fetchone()
+                self.telemetry={'counts':self.store.counts(),'storage':self.store.storage_snapshot(),'evaluation':json.loads(report[0]) if report else {}}
             except Exception: log.exception('Telemetry failed')
             if self.stopped.wait(2):break
 

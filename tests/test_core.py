@@ -136,7 +136,8 @@ def test_replay_comparison_rejects_regressions(tmp_path, seed):
     prediction = seed.replace('(i32.const -1)', '(i32.const 950)')
     base = replay(seed, rows, tmp_path / "evidence", ["A"])
     candidate = replay(prediction, rows, tmp_path / "evidence", ["A"])
-    assert improves(base, candidate)
+    # One-class data and constant output cannot establish learned discrimination.
+    assert not improves(base, candidate)
     assert not improves(candidate, base)
     assert not improves(base | {"n":0}, candidate | {"n":0})
     bad = candidate | {"samples": [dict(x) for x in candidate["samples"]]}

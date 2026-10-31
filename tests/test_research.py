@@ -28,7 +28,8 @@ def test_isolated_evaluation_real_process(tmp_path):
         store.finish(eid, after, 1, .01)
     source = seed.replace('(i32.const -1)', '(i32.const 950)')
     result = evaluate(source, seed, store.rows(), tmp_path / "evidence", ["A"])
-    assert result["passed"]
+    assert result["ok"] and not result["passed"]
+    assert "件数不足" in result["reason"]
     with pytest.raises(ValueError):
         evaluate(seed.replace('(i32.const 60)', '(loop $forever (br $forever)) (i32.const 60)'), seed,
                  store.rows(), tmp_path / "evidence", ["A"])

@@ -50,7 +50,7 @@ def main():
         if args.report:
             data=json.loads(args.report.read_text(encoding='utf-8'))
             data['checks'].append('real research prompt completed with structured proposal')
-            data['research']={'status':'passed','synthetic_only':True,'valid_structured_proposal':True,'adoption_required':False,'job_preserved':True}
+            data['research']={'status':'passed','synthetic_only':True,'valid_structured_proposal':True,'adoption_required':False,'job_preserved':True,'job_outcome':payload.get('outcome','evaluated'),'adoption_verified':False}
             from selfstruct.config import write_json
             write_json(args.report,data)
         print('PASS: real model research response archived; observations:',len(controller.store.knowledge_rows()),

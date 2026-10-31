@@ -12,6 +12,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 from .sandbox import Revisions, Sandbox, improves, replay
 from .store import CapacityError, Store
+from .evaluation import sample, summarize, assessment
 
 log = logging.getLogger(__name__)
 
@@ -186,7 +187,8 @@ def evaluation_worker(source: str, baseline: str, rows: list[dict], folder: str,
             _limit_windows_worker()
         base = replay(baseline, rows, Path(folder), keys)
         candidate = replay(source, rows, Path(folder), keys)
-        output.put({"ok": True, "baseline": base, "candidate": candidate, "passed": improves(base, candidate)})
+        passed,reason=assessment(base,candidate)
+        output.put({"ok": True, "baseline": base, "candidate": candidate, "passed": passed,"reason":reason,"evaluation_schema":2,"evidence_sufficient":all(candidate["classes"][k]["n"]>=4 for k in ("changed","unchanged"))})
     except BaseException as error:
         output.put({"ok": False, "error": f"{type(error).__name__}: {error}"})
 
@@ -293,13 +295,19 @@ def research_prompt(source,rows,keys,reports):
             try:metrics=json.loads(metrics)
             except ValueError:metrics={}
         if isinstance(metrics,dict):
+            if metrics.get('reason'):entry['reason']=str(metrics['reason'])[:400]
             if metrics.get('error'):entry['error']=str(metrics['error'])[:300]
+            if metrics.get('live'):
+                metrics={**metrics,'baseline':metrics['live'].get('base',{}),'candidate':metrics['live'].get('agent',{})}
             for name in ('baseline','candidate'):
                 measured=metrics.get(name,{})
                 if isinstance(measured,dict) and isinstance(measured.get('loss'),(int,float)):
                     entry[name+'_loss']=measured['loss']
+                    for key in ('balanced_loss','classes','references','prediction_range'):
+                        if key in measured:entry[name+'_'+key]=measured[key]
         history.append(entry)
-    prompt='経験の略記：a=入力番号、f=画像特徴、d=画面変化。\n'
+    prompt='構文修正だけでは改善ではありません。learnが空、使わない変数、現行と同一・定数の予測では、経験に応じた改善を証明できません。watなしは観測・仮説のみの完了です。改善を提案する場合は説明に対応した完全な実装を返してください。評価は変化あり・なし各4例以上で、両群を均等に扱い、定数0/0.5/1・因果的な過去頻度と比較します。ゲームの意味は与えません。\n'
+    prompt+='経験の略記：a=入力番号、f=画像特徴、d=画面変化。\n'
     prompt+='過去評価：'+json.dumps(history,ensure_ascii=False,separators=(',',':'))+'\n'
     prompt+=PROMPT.format(source=source,rows=json.dumps(summaries,separators=(',',':')))
     # UTF-8 byte budget is conservative for the 8192-token managed context.
@@ -383,24 +391,36 @@ class Scientist:
                 if not -1 <= pred <= 1000:
                     raise ValueError("Invalid live prediction")
                 metrics = live["metrics"][name]
-                metrics["samples"].append({"id": row["id"], "loss": .25 if pred == -1 else (pred / 1000 - outcome)**2,
-                                            "known": pred >= 0})
+                metrics['samples'].append(sample(row['id'],pred,outcome,row['action']))
                 agent.pixels(after_raw, 1024)
                 agent.call("learn", row["feature"], action, after, outcome)
             if len(live["metrics"]["base"]["samples"]) < 32:
                 return
-            for name in ("base", "agent"):
-                metrics = live["metrics"][name]
-                metrics.update(n=len(metrics["samples"]), loss=statistics.mean(x["loss"] for x in metrics["samples"]),
-                               unknown=statistics.mean(not x["known"] for x in metrics["samples"]), seconds=0)
-            adopted = improves(live["metrics"]["base"], live["metrics"]["agent"])
+            samples=live['metrics']['agent']['samples']
+            if min(sum(s['outcome']==y for s in samples) for y in (0,1))<4 and len(samples)<128:return
+            for name in ('base','agent'):
+                live['metrics'][name]=summarize(live['metrics'][name]['samples'])
+            adopted,reason=assessment(live["metrics"]["base"],live["metrics"]["agent"])
             summary = "画面変化の予測方法を比較し、改善を確認して採用しました。" if adopted else "実際の入力でも比較しましたが、確かな改善を確認できず候補を棄却しました。"
             bm, cm = live["metrics"]["base"], live["metrics"]["agent"]
+            summary += " 判定："+reason+"。"
             summary += f" 比較した経験は{cm['n']}件。予測誤差は{bm['loss']:.3f}から{cm['loss']:.3f}、未確認率は{bm['unknown']:.0%}から{cm['unknown']:.0%}でした。"
             if adopted:
                 self.revisions.promote(live["revision"])
-            self.store.report(live["revision"], adopted, summary, {"replay": live["replay"], "live": live["metrics"]})
-            self.store.set_job(live["job"], "complete", {"revision": live["revision"], "adopted": adopted})
+            self.store.report(live["revision"], adopted, summary, {"replay": live["replay"], "live": live["metrics"],"reason":reason,"evaluation_schema":2})
+            payload=json.loads(self.store.get_job(live['job'])['payload'])
+            sufficient=all(cm['classes'][k]['n']>=4 for k in ('changed','unchanged'))
+            payload.update(revision=live['revision'],adopted=adopted,implementation_verified=adopted,
+                           outcome='adopted' if adopted else ('evaluated_not_adopted' if sufficient else 'insufficient_evidence'),evaluation_reason=reason)
+            state='complete'
+            if not adopted and sufficient and payload.get('behavior_repairs',0)<2:
+                source=self.revisions.source(live['revision'])
+                payload.pop('source',None)
+                payload.update(behavior_repairs=payload.get('behavior_repairs',0)+1,
+                               repair_response=json.dumps({'findings':[],'wat':source},ensure_ascii=False),
+                               repair_error='実機比較の結果：'+reason,after=row['id'],outcome='behavior_repair')
+                state='pending'
+            self.store.set_job(live['job'],state,payload)
             self.store.pin([r['id'] for r in bm['samples']], 'evaluation-'+live['revision'])
             self.store.unpin('live-trial')
             self.live = None
@@ -614,9 +634,12 @@ class Scientist:
                     self.store.claim(kid, self.keys[action], probability, rows[-1]["id"])
         source = proposal.get("wat", "")
         if not source:
-            self.store.set_job(jid, "complete")
+            self.store.set_job(jid, "complete",{**payload,"outcome":"observations_only","implementation_verified":False})
+            self.activity.update(experiment="観測・仮説を保存（実装改善なし）")
             return
-        self.evaluate_proposal(source, rows[-1]["id"], jid)
+        latest=self.store.rows(1)
+        cutoff=max(rows[-1]['id'],payload.get('after',0),latest[-1]['id'] if latest else 0)
+        self.evaluate_proposal(source,cutoff,jid)
 
     def evaluate_proposal(self, source: str, after_id: int, jid: str):
         # Persist the proposal before execution; resume it rather than regenerating it.
@@ -627,7 +650,7 @@ class Scientist:
         future = []
         while not self.stop_event.wait(.5) and time.monotonic() < deadline:
             future = [r for r in self.store.rows(128,pin_reason='pending-'+jid) if r["id"] > after_id]
-            if len(future) >= 48:
+            if len(future)>=48 and (all(sum((r['change']>.01)==y for r in future)>=4 for y in (False,True)) or len(future)>=128):
                 break
         if len(future) < 48:
             self.store.set_job(jid, "pending")
@@ -643,15 +666,32 @@ class Scientist:
             self.store.pin([r['id'] for r in historical],'evaluation-'+jid)
             regression = evaluate(source, self.revisions.source(), historical, self.store.root / "evidence", self.keys)
             base, candidate = regression["baseline"], regression["candidate"]
-            broken = any(a["known"] and a["loss"] < .04 and b["loss"] > .16
-                         for a,b in zip(base["samples"], candidate["samples"]))
-            result["regression"] = regression
-            result["passed"] = result["passed"] and not broken and candidate["loss"] <= base["loss"] + .02
+            regression_ok=True
+            for label in ('changed','unchanged'):
+                old=base.get('classes',{}).get(label,{})
+                new=candidate.get('classes',{}).get(label,{})
+                if old.get('n',0)>=4 and new.get('n',0)>=4 and new['loss']>old['loss']+.02:regression_ok=False
+            result['regression']=regression
+            if not regression_ok:result.update(passed=False,reason='過去経験のクラス別損失が悪化しました')
         if not result["passed"]:
-            self.store.report("candidate", False, "新しい経験で予測精度と過去成功例を検証し、改善不足の候補を棄却しました。", result)
-            self.store.set_job(jid, "complete")
-            self.activity.update(llm='待機',comparison='棄却')
-            self.activity.emit('rejected')
+            reason=result.get('reason','改善不足')
+            self.store.report('candidate',False,'候補を保存しました。判定：'+reason,result)
+            payload=json.loads(self.store.get_job(jid)['payload'])
+            attempts=payload.get('behavior_repairs',0)
+            if result.get('evidence_sufficient') is False:
+                self.store.set_job(jid,'complete',{**payload,'outcome':'insufficient_evidence','implementation_verified':False,'evaluation_reason':reason})
+                self.activity.update(llm='待機',comparison='変化あり・なしの比較不足')
+                self.activity.emit('llm_saved')
+            elif attempts<2:
+                payload.pop('source',None)
+                payload.update(behavior_repairs=attempts+1,repair_response=json.dumps({'findings':[],'wat':source},ensure_ascii=False),repair_error='動作比較の結果：'+reason,after=future[-1]['id'],outcome='behavior_repair',implementation_verified=False)
+                self.store.set_job(jid,'pending',payload)
+                self.activity.update(llm='待機',comparison='動作の改善を修正待ち')
+                self.activity.emit('llm_saved')
+            else:
+                self.store.set_job(jid,'complete',{**payload,'outcome':'evaluated_not_adopted','implementation_verified':False,'evaluation_reason':reason})
+                self.activity.update(llm='待機',comparison='改善未確認・記録を保存')
+                self.activity.emit('rejected')
             return
         revision = self.revisions.create(source)
         with self.lock:

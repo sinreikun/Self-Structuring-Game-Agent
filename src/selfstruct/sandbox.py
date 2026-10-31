@@ -219,24 +219,15 @@ def replay(source: str, rows: list[dict], evidence: Path, keys: list[str]) -> di
         errors.append(loss)
         known += prediction >= 0
         times.append(elapsed)
-        samples.append({"id": row["id"], "loss": loss, "known": prediction >= 0})
+        from .evaluation import sample
+        samples.append(sample(row['id'],prediction,outcome,row['action']))
         # Reveal the outcome only after scoring the prediction.
         agent.pixels(after_raw, 1024)
         agent.call("learn", feature, keys.index(row["action"]), after, outcome)
-    n = len(rows)
-    return {"n": n, "loss": sum(errors) / max(n, 1), "unknown": 1 - known / max(n, 1),
-            "seconds": sum(times) / max(n, 1), "samples": samples}
+    from .evaluation import summarize
+    return summarize(samples,sum(times)/max(len(times),1))
 
 
 def improves(baseline: dict, candidate: dict) -> bool:
-    # Paired held-out comparison: require both practical and statistical improvement.
-    if baseline["n"] < 24 or candidate["n"] != baseline["n"]:
-        return False
-    gains = [a["loss"] - b["loss"] for a, b in zip(baseline["samples"], candidate["samples"])]
-    mean = sum(gains) / len(gains)
-    variance = sum((g - mean)**2 for g in gains) / max(1, len(gains) - 1)
-    bound = 1.96 * math.sqrt(variance / len(gains))
-    regression = any(a["known"] and a["loss"] < .04 and b["loss"] > .16
-                     for a, b in zip(baseline["samples"], candidate["samples"]))
-    return (mean > max(.02, bound) and not regression and candidate["unknown"] <= baseline["unknown"]
-            and candidate["seconds"] <= max(.005, baseline["seconds"] * 2))
+    from .evaluation import assessment
+    return assessment(baseline,candidate)[0]

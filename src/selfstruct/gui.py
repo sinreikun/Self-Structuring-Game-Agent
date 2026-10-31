@@ -143,6 +143,8 @@ class App(ManagementUI):
         ttk.Label(readout,textvariable=self.current_activity,wraplength=320).pack(fill='x',pady=6)
         self.timeline=tk.StringVar(value='最近のイベントは開始後に表示されます。')
         ttk.Label(readout,textvariable=self.timeline,wraplength=320,foreground='#a8bbc9').pack(fill='x',pady=6)
+        self.evaluation_status=tk.StringVar(value='評価：変化あり・なしの独立比較を待っています')
+        ttk.Label(readout,textvariable=self.evaluation_status,wraplength=320,foreground='#a8c9dd').pack(fill='x',pady=4)
         self.adoption=tk.StringVar()
         ttk.Label(readout,textvariable=self.adoption,wraplength=320,foreground='#7fd2af').pack(fill='x')
         streams=ttk.Panedwindow(readout,orient='horizontal');streams.pack(fill='both',expand=True)
@@ -616,6 +618,13 @@ class App(ManagementUI):
             self.timeline.set('\n'.join(e.text for e in a.events[-3:]))
             self.adoption.set(a.adoption if time.time()-a.adoption_at<20 else '')
             telemetry=ctrl.telemetry;c=telemetry.get('counts',{});storage=telemetry.get('storage',{})
+            evaluation=telemetry.get('evaluation',{})
+            measured=evaluation.get('candidate',{})
+            if not measured and evaluation.get('live'):measured=evaluation['live'].get('agent',{})
+            if measured.get('classes'):
+                groups=measured['classes'];loss=measured.get('balanced_loss')
+                self.evaluation_status.set(f"評価：変化 {groups['changed']['n']} / なし {groups['unchanged']['n']}\n均等損失："+(f'{loss:.3f}' if loss is not None else '比較不足')+f"\n見逃し {groups['changed']['misses']} / 誤反応 {groups['unchanged'].get('false_positives',0)}"+'\n'+evaluation.get('reason',''))
+            elif evaluation:self.evaluation_status.set('評価：旧形式または候補の検査段階。能力向上は未確認です。')
             self.metrics.set(f"経験 {c.get('experience',ctrl.steps)}　発見 {c.get('discoveries',0)}　仮説 {c.get('hypotheses',0)}　支持 {c.get('supported',0)}　反証 {c.get('refuted',0)}　技能 {c.get('skills',0)}　自己改善 {c.get('improvements',0)}　世代 {ctrl.generation_number}")
             if storage:
                 text=f"保存領域 {storage['used']/1024**3:.2f} / {storage['quota']/1024**3:g}GB"
