@@ -78,3 +78,6 @@ v0.5.0-dev.2は[公開ワークフロー41216951913](https://github.com/sinreiku
 
 
 0.5.1の最終CIは[41244982240](https://github.com/sinreikun/Self-Structuring-Game-Agent/actions/runs/41244982240)、ソースは`0e44ec367df6bd6f827b355ab422b1f33e6ce043`。Windowsは162 passed / 1 skipped、Linuxは150 passed / 13 skippedで成功しました。実モデルの初期視覚Evidence 2件とJob完了を確認し、終了はobservations_only、修正失敗は0件でした。梱包済みGUI・自己診断・入出力・固定Launcherの検証も成功し、Launcher 1.1.0の公開済みハッシュが不変であることを照合しました。
+
+
+v0.5.1-dev.1は[公開ワークフロー41245743684](https://github.com/sinreikun/Self-Structuring-Game-Agent/actions/runs/41245743684)で公開しました。公開済み8資産のハッシュが検証済み成果物と一致すること、配信中のStable/Developmentが0.5.1であり署名・ハッシュ・サイズが正しいことを確認しました。公式URLから本体を実際に取得し、署名・ハッシュ・Windows PEを検証しました。Launcher 1.1.0は更新不要です。
