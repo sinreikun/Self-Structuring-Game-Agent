@@ -35,6 +35,7 @@ class Controller:
         if event is not None:
             self.store.interrupt(event)
             self.activity.record('INTERRUPT',f'event={event} completed evidence not recorded')
+        if self.current_experiment:self.experiments.finish(self.current_experiment,'interrupted');self.current_experiment=None
         self.activity.update(phase='停止中' if self.stopped.is_set() else '一時停止中' if self.paused.is_set() else '入力中断')
         return True
 
@@ -94,6 +95,10 @@ class Controller:
         self.visual_condition = threading.Condition(self.visual_lock)
         self.visual = VisualAccess(Eyes(self.store, self.activity, self.current_visual_frame, self.fresh_visual_frame))
         self.scientist.visual = self.visual
+        from .experiments import Experiments
+        self.experiments=Experiments(self.store,self.config.keys,self.activity)
+        self.scientist.experiments=self.experiments
+        self.current_experiment=None
         self.visual.eyes.cancel = self.scientist.stop_event
         self.scientist.client.context = config.llm_context
         handler = RotatingFileHandler(self.experiment / "host" / "host.log", maxBytes=2 * 1024**2, backupCount=2, encoding="utf-8")
@@ -412,6 +417,12 @@ class Controller:
         if "research_due" in agent.exports:
             self.scientist.automatic = bool(agent.call("research_due", self.steps))
         index, duration, wait, pred = agent.action(feature, len(self.config.keys))
+        experiment=self.experiments.next(before) if not trial and not self.scientist.live and not self.revisions.state['trial'] else None
+        self.current_experiment=experiment['id'] if experiment else None
+        if experiment:
+            plan=experiment['plan'];index=plan['action'];duration=plan['duration']/1000;wait=plan['wait']/1000
+            raw_prediction=agent.call('predict',feature,index);pred=-1 if raw_prediction<0 else raw_prediction/1000
+            self.activity.record('EXPERIMENT',f"execute job={experiment['job']} id={experiment['id']} action={index}")
         if self.halted_step():return 0
         self.activity.update(phase="入力中", action=self.config.keys[index],duration=duration,prediction=pred,
                              next="入力後の画面を観測します")
@@ -419,11 +430,14 @@ class Controller:
         before_hash = self.store.image(before,critical=time.time()<self.protect_until or bool(self.scientist.live) or self.revisions.state["trial"])
         eid = self.store.begin(self.session, before_hash, self.config.keys[index], duration,
                                self.game.generation, revision, feature, pred)
+        if experiment and not self.experiments.link(experiment['id'],eid):
+            self.store.interrupt(eid);self.current_experiment=None;return 0
         if self.halted_step(eid):return 0
         try:
             self.game.act(self.config.keys[index], duration, self.cancel_input, lambda timestamp: self.record_sent(eid,timestamp,self.config.keys[index],duration))
         except BaseException:
             self.store.interrupt(eid)
+            if self.current_experiment:self.experiments.finish(self.current_experiment,'interrupted');self.current_experiment=None
             raise
         if self.halted_step(eid):return 0
         self.cancel_input.wait(wait)
@@ -434,6 +448,7 @@ class Controller:
         after_hash = self.store.image(after_image,critical=time.time()<self.protect_until or bool(self.scientist.live) or self.revisions.state["trial"])
         change = difference(before, after_image)
         self.store.finish(eid, after_hash, change, time.perf_counter() - started)
+        if experiment:self.experiments.completed(experiment['id']);self.current_experiment=None
         self.activity.record("DIFF",f"score={change:.4f}")
         self.activity.record("STORE",f"event={eid}")
         if time.time()<self.protect_until:self.store.pin([eid],"error-after")
@@ -443,7 +458,7 @@ class Controller:
         if not self.scientist.live:
             self.agent.call("learn", feature, index, after, int(change > .01))
             self.activity.record("LEARN",f"feature={feature}")
-        self.scientist.trial_result({"id": eid, "action": self.config.keys[index], "feature": feature, "change": change}, raw, after_raw, after)
+        self.scientist.trial_result({"id": eid, "action": self.config.keys[index], "feature": feature, "change": change,"arm":"agent" if trial else "base","cost":time.perf_counter()-started}, raw, after_raw, after)
         self.latest_before, self.latest = before, after_image
         self.steps += 1
         self.last_eid = eid

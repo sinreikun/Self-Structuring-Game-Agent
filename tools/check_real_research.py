@@ -52,7 +52,7 @@ def main():
         if args.report:
             data=json.loads(args.report.read_text(encoding='utf-8'))
             data['checks'].append('real research prompt completed with structured proposal')
-            data['research']={'status':'passed','synthetic_only':True,'valid_structured_proposal':True,'adoption_required':False,'job_preserved':True,'initial_visual_evidence':True,'visual_observations':len(observed),'repair_failures':payload.get('repair_failures',0),'job_outcome':payload.get('outcome','evaluated'),'adoption_verified':False}
+            data['research']={'status':'passed','synthetic_only':True,'valid_structured_proposal':True,'adoption_required':False,'job_preserved':True,'initial_visual_evidence':True,'visual_observations':len(observed),'repair_failures':payload.get('repair_failures',0),'job_outcome':payload.get('outcome','evaluated'),'adoption_verified':False,'research_calls':payload.get('research_calls',0),'research_progress':payload.get('progress',{}),'executed_actions':sum(e.get('state')=='done' for e in payload.get('action_history',[])),'stalled':payload.get('stalled',False),'limit':payload.get('research_limit'),'same_job_reinference':any(e.get('consumed_actions') for e in payload.get('research_steps',[]))}
             from selfstruct.config import write_json
             write_json(args.report,data)
         print('PASS: real model research response archived; observations:',len(controller.store.knowledge_rows()),

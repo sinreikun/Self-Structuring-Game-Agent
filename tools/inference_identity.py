@@ -3,7 +3,7 @@ import ast
 import hashlib
 
 FILES=('src/selfstruct/resources.py','src/selfstruct/research.py','src/selfstruct/store.py',
-       'src/selfstruct/sandbox.py','src/selfstruct/vision.py','src/selfstruct/visual_libraries.py','src/selfstruct/assets/catalog.json','pyproject.toml')
+       'src/selfstruct/experiments.py','src/selfstruct/research_actions.py','src/selfstruct/sandbox.py','src/selfstruct/vision.py','src/selfstruct/visual_libraries.py','src/selfstruct/assets/catalog.json','pyproject.toml')
 
 
 def component_hashes(read):

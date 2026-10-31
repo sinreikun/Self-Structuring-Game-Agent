@@ -17,6 +17,7 @@ class ReadOnlyRecords:
     storage_snapshot=Store.storage_snapshot
     storage_breakdown=Store.storage_breakdown
     note_rows=Store.note_rows
+    research_history=Store.research_history
     knowledge_rows=Store.knowledge_rows
     reports=Store.reports
     book=Store.book

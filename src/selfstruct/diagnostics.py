@@ -52,13 +52,32 @@ def redact(value):
     return value
 
 
+def research_request_summary(request,depth=0):
+    if not isinstance(request,dict) or depth>2:return {}
+    fields=('op','event','phase','observation','box','size','mode','output','offset','limit','id','action','duration','wait','repeat','hypothesis','change_probability','evidence','mean_min','mean_max','max_wait_steps')
+    result={}
+    for key in fields:
+        value=request.get(key)
+        if type(value) in (int,float,bool) or value is None:
+            if key in request:result[key]=value
+        elif isinstance(value,str):result[key]=value[:128]
+        elif isinstance(value,list) and all(type(v) in (int,float) for v in value):result[key]=value[:64]
+    for key in ('compare','condition'):
+        if key in request:result[key]=research_request_summary(request[key],depth+1)
+    if isinstance(request.get('operations'),list):
+        result['operations']=[{k:v for k,v in entry.items() if k in ('op','value','radius') and type(v) in (int,float,str)} for entry in request['operations'][:8] if isinstance(entry,dict)]
+    return result
+
+
 def diagnostic_job_payload(value):
     """Expose repair/visual progress without exporting prompts, code, or pixels."""
     try:payload=json.loads(value)
     except (ValueError,TypeError):return "[prompt/source omitted]"
     if not isinstance(payload,dict):return "[prompt/source omitted]"
     keys=("outcome","implementation_verified","repair_failures","same_error_failures","repair_error",
-          "repair_history","behavior_repairs","visual_rounds","initial_visual_evidence","visual_budget_exhausted")
+          "repair_history","behavior_repairs","visual_rounds","initial_visual_evidence","visual_budget_exhausted",
+          "research_job","research_started","research_steps","research_calls","research_phase","research_limit","progress","hypotheses","candidate_sha256",
+          "stagnation_detected","stalled","duplicate_requests","image_bytes","redirected")
     result={k:payload[k] for k in keys if k in payload}
     history=payload.get("visual_history",[])
     result["visual_request_count"]=len(history) if isinstance(history,list) else 0
@@ -72,8 +91,16 @@ def diagnostic_job_payload(value):
             safe["kind"]=entry.get("kind","requested")
             if entry.get("error"):safe["error"]=str(entry["error"])[:240]
             result["visual_requests"].append(safe)
+    result['action_history']=[]
+    for entry in payload.get('action_history',[])[-24:]:
+        safe={k:entry[k] for k in ('action_id','step','state','at','returned_at','finished_at','fingerprint') if k in entry}
+        request=entry.get('request',{})
+        safe['request']=research_request_summary(request)
+        raw=entry.get('result',{})
+        safe['result']={k:raw[k] for k in ('error','detail','duplicate','original_step','experiment','job','hypothesis','state','completed','events','evidence','box','size','mode','coordinates','status','n','observed_probability','expected_probability','interval95','pre_registered','phase','id','retained') if k in raw}
+        result['action_history'].append(safe)
     result["omitted"]="prompt/source/arrays"
-    return diagnostic_json(result)
+    return json.dumps(redact(result),ensure_ascii=False)
 
 
 def create_diagnostics(root: Path, store=None, config=None, activity=None, gui=None, destination=None) -> Path:
@@ -111,7 +138,7 @@ def create_diagnostics(root: Path, store=None, config=None, activity=None, gui=N
                 with store.lock, tempfile.TemporaryDirectory() as temp:
                     db=sqlite3.connect(Path(temp)/'diagnostics.sqlite3')
                     try:
-                        for table,order,limit in [('events','id',512),('knowledge','id',256),('reports','id',100),('gc_history','id',200),('compacted','last',256),('jobs','updated',40),('visual_analyzers','created',32),('visual_library_requests','created',32)]:
+                        for table,order,limit in [('events','id',512),('knowledge','id',256),('reports','id',100),('gc_history','id',200),('compacted','last',256),('jobs','updated',40),('visual_analyzers','created',32),('visual_library_requests','created',32),('research_experiments','created',32)]:
                             columns=[r[1] for r in store.db.execute(f'PRAGMA table_info({table})')]
                             if not columns:continue
                             # All values are bound; never execute user content.
@@ -120,10 +147,10 @@ def create_diagnostics(root: Path, store=None, config=None, activity=None, gui=N
                                 values=[]
                                 for value in row:
                                     if table=='jobs' and columns[len(values)]=='payload':value=diagnostic_job_payload(value)
-                                    if isinstance(value,str):
+                                    if isinstance(value,str) and not (table=='jobs' and columns[len(values)]=='payload'):
                                         try: value=diagnostic_json(json.loads(value))
                                         except (ValueError,TypeError): value=redact(value)
-                                        value=value[:16000]
+                                        value=value[:64000 if table=='jobs' else 16000]
                                     values.append(value)
                                 db.execute(f'INSERT INTO {table} VALUES('+','.join('?' for _ in columns)+')',values)
                         db.commit();db.close()

@@ -45,10 +45,12 @@ PROPOSAL_SCHEMA={
     'properties':{
         'findings':{'type':'array','maxItems':8,'items':{'type':'object','additionalProperties':False,
             'required':['text','evidence'],'properties':{
+                'id':{'type':'string','maxLength':40},
                 'text':{'type':'string','maxLength':2000},
                 'evidence':{'type':'array','maxItems':64,'items':{'type':'integer'}},
                 'action':{'type':'integer','minimum':0},
                 'change_probability':{'type':'number','minimum':0,'maximum':1}}}},
+        'actions':{'type':'array','maxItems':4,'items':{'type':'object'}},
         'visual_requests':{'type':'array','maxItems':4,'items':{'type':'object'}},
         'problem':{'type':'string'},'reason':{'type':'string'},'wat':{'type':'string'}}}
 
@@ -345,10 +347,13 @@ def research_prompt(source,rows,keys,reports):
                     for key in ('balanced_loss','classes','references','prediction_range'):
                         if key in measured:entry[name+'_'+key]=measured[key]
         history.append(entry)
-    prompt='まず画面Evidenceを調べてください。初期のBefore/Afterは小さいRGB概観です。情報不足ならvisual_requestsで領域・解像度・処理を選び、追加観測してください。WATだけでなく汎用演算の解析器も利用できます。\n構文修正だけでは改善ではありません。learnが空、使わない変数、現行と同一・定数の予測では、経験に応じた改善を証明できません。watなしは観測・仮説のみの完了です。改善を提案する場合は説明に対応した完全な実装を返してください。評価は変化あり・なし各4例以上で、両群を均等に扱い、定数0/0.5/1・因果的な過去頻度と比較します。ゲームの意味は与えません。\n'
+    prompt='画面Evidenceを調べ、分かったこととunknownを区別してください。初期Before/Afterは低解像度の概観です。情報不足ならactions（旧visual_requestsも可）で領域・解像度・処理・比較・実験を選び、取得結果を見て続行してください。WATは任意の最終手段で、必要な場合はcandidateで実装計画を要求してください。採用評価では変化あり・なしを独立比較し、定数0/0.5/1・過去頻度・現行Agentの基準を維持します。\n'
+    prompt+='ゲーム名や攻略を補完せず、分からない意味はunknownです。\n'
     prompt+='経験の略記：a=入力番号、f=画像特徴、d=画面変化。\n'
     prompt+='過去評価：'+json.dumps(history,ensure_ascii=False,separators=(',',':'))+'\n'
-    prompt+=PROMPT.format(source=source,rows=json.dumps(summaries,separators=(',',':')))
+    # World research does not request a full program; implementation has its own phase.
+    from .research_actions import INSTRUCTIONS
+    prompt+=INSTRUCTIONS+'\n経験:\n'+json.dumps(summaries,separators=(',',':'))
     # UTF-8 byte budget is conservative for the 8192-token managed context.
     # Never silently cut an Agent program or invent an answer to fit the budget.
     if len(prompt.encode('utf-8'))>20000:
@@ -423,6 +428,8 @@ class Scientist:
             if live:self.store.pin([row['id']],'live-trial')
             if not live:
                 return
+            arm=row.get('arm','unrecorded')
+            live.setdefault('behavior_samples',[]).append({'id':row['id'],'arm':arm,'feature':row['feature'],'after_feature':after,'action':row['action'],'change':row['change'],'seconds':row.get('cost')})
             action = self.keys.index(row["action"])
             outcome = int(row["change"] > .01)
             for name in ("base", "agent"):
@@ -448,9 +455,19 @@ class Scientist:
             summary += f" 比較した経験は{cm['n']}件。予測誤差は{bm['loss']:.3f}から{cm['loss']:.3f}、未確認率は{bm['unknown']:.0%}から{cm['unknown']:.0%}でした。"
             if adopted:
                 self.revisions.promote(live["revision"])
-            self.store.report(live["revision"], adopted, summary, {"replay": live["replay"], "live": live["metrics"],"reason":reason,"evaluation_schema":2})
+            behavior={}
+            for arm in ('base','agent'):
+                observed=[r for r in live.get('behavior_samples',[]) if r['arm']==arm]
+                seconds=sum(r.get('seconds') or 0 for r in observed)
+                states={r['after_feature'] for r in observed}
+                behavior[arm]={'n':len(observed),'distinct_visual_hashes':len(states),'changed':sum(r['change']>.01 for r in observed),
+                               'distinct_states_per_second':len(states)/seconds if seconds else None,'seconds':seconds,
+                               'repeated_action_state_pairs':len(observed)-len({(r['feature'],r['action']) for r in observed})}
+            behavior['limitation']='Alternating observational comparison; hashes are visual proxies, not game states or causal proof. Adoption still requires predictive and regression gates.'
+            self.store.report(live['revision'], adopted, summary, {'replay':live['replay'],'live':live['metrics'],'reason':reason,'evaluation_schema':2,'behavior':behavior})
             payload=json.loads(self.store.get_job(live['job'])['payload'])
             sufficient=all(cm['classes'][k]['n']>=4 for k in ('changed','unchanged'))
+            payload.setdefault('progress',{})['unknown_reduction']=bm['unknown']-cm['unknown']
             payload.update(revision=live['revision'],adopted=adopted,implementation_verified=adopted,
                            outcome='adopted' if adopted else ('evaluated_not_adopted' if sufficient else 'insufficient_evidence'),evaluation_reason=reason)
             state='complete'
@@ -681,7 +698,11 @@ class Scientist:
         rows=payload.get("research_rows",[])
         if not rows:
             return
-        event=rows[-1]["id"]
+        # Prioritize predictive errors/large changes, tie-breaking by recency.
+        def priority(row):
+            outcome=int(row.get('change',0)>.01);prediction=row.get('prediction',-1)
+            return (abs(outcome-prediction) if type(prediction) in (float,int) and prediction>=0 else .5,row.get('change',0),row['id'])
+        event=max(rows,key=priority)['id']
         with self.store.lock:
             present=self.store.db.execute("SELECT 1 FROM events WHERE id=? AND state='complete'",(event,)).fetchone()
         if not present:
@@ -721,8 +742,18 @@ class Scientist:
                 self.client.capabilities = {"input": "text", "status": "unverified", "checked_at": time.time()}
             from .config import write_json
             write_json(self.store.root/"host"/"model-capabilities.json", self.client.capabilities)
+        from .research_actions import (MAX_CALLS,MAX_SECONDS,MAX_IMAGE_BYTES,INSTRUCTIONS,
+            record_findings,run_actions,needs_followup,history_context,progress)
+        payload.setdefault('research_started',time.time());payload['research_job']=jid
+        if payload.get('pending_actions'):
+            run_actions(self,jid,payload,payload['pending_actions']);payload.pop('pending_actions',None)
         self.initial_visual_evidence(jid,payload)
-        for _ in range(7):
+        for _ in range(MAX_CALLS+1):
+            if payload.get('research_calls',0)>=MAX_CALLS or time.time()-payload['research_started']>=MAX_SECONDS or payload.get('research_limit'):
+                payload.setdefault('research_limit','calls' if payload.get('research_calls',0)>=MAX_CALLS else 'time')
+                self.activity.record('RESEARCH',f'limit job={jid} reason={payload["research_limit"]}')
+                self.store.set_job(jid,'running',payload)
+                return json.dumps({'findings':[],'wat':'','reason':'研究上限。成果と未確認事項は保存済み。'},ensure_ascii=False)
             if self.stop_event.is_set():
                 raise InterruptedError("研究を中断しました。")
             images = []
@@ -747,7 +778,13 @@ class Scientist:
                         item["attachment_error"] = "Source image unavailable"
                 visible.append(item)
             rounds = payload.get("visual_rounds", 0)
-            prefix = prompt+"\n"+VISUAL_INSTRUCTIONS+"\nモデル画像入力: "+str(bool(getattr(self.client,"vision",False)))
+            prefix = prompt+"\n"+VISUAL_INSTRUCTIONS+("" if INSTRUCTIONS in prompt else "\n"+INSTRUCTIONS)+"\nモデル画像入力: "+str(bool(getattr(self.client,"vision",False)))
+            if payload.get('research_phase')=='implementation':
+                prefix='実装フェーズ。根拠と必要挙動を満たす完全な候補だけを作成してください。新しい世界仮説は不要。\n計画：'+json.dumps(payload['implementation_plan'],ensure_ascii=False)+'\n'+PROMPT[PROMPT.index('Agent ABI:'):].format(source=self.revisions.source(),rows='[]')
+            if payload.get('repair_response'):
+                prefix='修正フェーズ。新しい世界理解・仮説・追加実験は不要。保存された候補の構文・ABI・評価エラーだけを修正してください。\n検査：'+payload.get('repair_error','')+'\n候補：'+payload['repair_response'][:12000]+'\n'+PROMPT[PROMPT.index('Agent ABI:'):PROMPT.index('featureは')]+ '\nJSON形式 {"findings":[],"actions":[],"wat":"完全なモジュール"}'
+                visible=[];images=[]
+            prefix+='\n研究履歴：'+history_context(payload)
             def render():
                 return prefix+"\n追加観測結果（attachment_indexは画像添付の0始まり番号）:"+json.dumps(visible, ensure_ascii=False, separators=(",", ":"))
             text = render()
@@ -777,8 +814,7 @@ class Scientist:
                         else:
                             item["attachment_index"] -= 1
                     text = render()
-            if rounds >= 6:
-                text += "\n追加観測の予算終了。visual_requestsを空配列にし、現時点の根拠と未確認事項だけを返してください。"
+
             output_budget = budget
             if isinstance(self.client, LocalLLM) and self.client.managed:
                 output_budget = min(budget, getattr(self.client, "context", 8192)-self.client.count_tokens(text)-256-len(images)*1024)
@@ -789,49 +825,68 @@ class Scientist:
             options = {"max_tokens": output_budget, "json_mode": True, "schema": PROPOSAL_SCHEMA, "on_progress": journal}
             if images:
                 options["images"] = images
+            image_bytes=sum(len(i.encode()) for i in images)
+            if payload.get('image_bytes',0)+image_bytes>MAX_IMAGE_BYTES:
+                payload['research_limit']='image_bytes';continue
+            payload['image_bytes']=payload.get('image_bytes',0)+image_bytes
+            payload['research_calls']=payload.get('research_calls',0)+1
+            step={'step':payload['research_calls'],'phase':'repair' if payload.get('repair_response') else payload.get('research_phase','observation'),
+                  'started_at':time.time(),'consumed_actions':[r['action_id'] for r in payload.get('action_history',[]) if r['state'] in ('done','duplicate','error')], 'image_count':len(images)}
+            payload.setdefault('research_steps',[]).append(step)
+            self.store.set_job(jid,'running',payload)
+            self.activity.update(experiment=f'研究Job {jid[:8]}：取得結果を再分析（step {payload["research_calls"]}）' if payload.get('action_history') else f'研究Job {jid[:8]}：観測・仮説を分析（step {payload["research_calls"]}）',next='必要な観測・実験をLLMが選択します')
+            self.activity.record('RESEARCH',f'resume job={jid} step={payload["research_calls"]} results={len(payload.get("action_history",[]))}')
             response = self.complete(text, **options)
+            step['finished_at']=time.time()
+            self.store.set_job(jid,'running',payload)
             try:
                 value = json.loads(response.strip().removeprefix("```json").removesuffix("```").strip())
             except (ValueError, TypeError):
                 return response  # Existing proposal repair retains invalid output.
-            requests = value.get("visual_requests", []) if isinstance(value, dict) else []
+            if not isinstance(value,dict):return response
+            try:record_findings(self,jid,payload,value)
+            except (ValueError,TypeError,KeyError,ResearchRepairNeeded) as error:
+                payload['repair_response']=response;payload['repair_error']=str(error)[:500]
+                self.store.proposal(jid,response)
+                self.store.set_job(jid,'pending',payload)
+                raise ResearchRepairNeeded(str(error)) from error
+            payload['last_research_response']=value
+            requests=value.get('actions',[])+value.get('visual_requests',[]) if isinstance(value.get('actions',[]),list) and isinstance(value.get('visual_requests',[]),list) else None
+            if requests is None or len(requests)>4:raise ResearchRepairNeeded('actions/visual_requestsは合計最大4件の配列にしてください。')
             if not requests:
+                if value.get('wat'):
+                    progress(payload)['candidates']+=1
+                    payload['candidate_sha256']=hashlib.sha256(value['wat'].encode()).hexdigest()
+                    self.activity.record('CANDIDATE',f'generated job={jid} sha256={payload["candidate_sha256"]}')
+                    self.store.set_job(jid,'running',payload)
+                    return response
+                with self.store.lock:
+                    previous=self.store.db.execute("SELECT value FROM meta WHERE key='research-no-action-streak'").fetchone()
+                streak=int(previous[0]) if previous else 0
+                if not payload.get('repair_response') and not payload.get('redirected') and (needs_followup(value) or streak>=2):
+                    payload['redirected']=True
+                    payload['stagnation_detected']=True
+                    payload['redirect']='追加観測・実験はまだ実行されていません。仮説は未検証です。次に何が不明で、どのEvidence・領域・解像度・入力を確認するかactionsで明示してください。不要なら根拠を述べて完了してください。Hostは観測場所や入力を選びません。'
+                    self.activity.record('RESEARCH',f'redirect job={jid} step={payload["research_calls"]} reason=no_concrete_action')
+                    self.store.set_job(jid,'running',payload)
+                    continue
+                with self.store.lock,self.store.db:
+                    self.store.db.execute("INSERT INTO meta VALUES('research-no-action-streak',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(str(streak+1 if not payload.get('action_history') else 0),))
+                from .research_actions import made_progress
+                payload['stalled']=bool((payload.get('stagnation_detected') or payload.get('action_history')) and not made_progress(payload))
+                self.store.set_job(jid,'running',payload)
                 return response
-            if rounds >= 6:
-                payload["visual_budget_exhausted"] = True
-                return json.dumps({"findings": [], "problem": "追加観測の予算終了", "reason": "研究結果を保存し、次の経験を待ちます", "wat": ""}, ensure_ascii=False)
-            if not isinstance(requests, list) or len(requests) > 4:
-                raise ResearchRepairNeeded("visual_requestsは最大4件の配列にしてください。")
-            self.store.proposal(jid, response)
-            for request in requests:
-                try:
-                    if isinstance(request, dict) and request.get("op", "observe") == "observe" and request.get("output", "pixels") in {"pixels", "image"}:
-                        request = {"limit": 128, **request}
-                    # Large individual arrays remain accessible by paging. An
-                    # oversized result never silently becomes a fabricated summary.
-                    result, attachment = self.visual.handle(request, pin=pin, native=bool(getattr(self.client,"vision",False)))
-                    if len(json.dumps(result).encode()) > 12000:
-                        result = {"error": "VisualResultTooLarge", "detail": "Use a smaller region/size or pixels with limit <= 512"}
-                        attachment = None
-                    ids = sorted(evidence_ids(result.get("evidence", {})))
-                    if ids:
-                        observed = {k: result[k] for k in ("evidence", "box", "size", "mode", "mean", "component_count", "coordinates") if k in result}
-                        note = "視覚APIで取得した観測（ゲーム意味は未確認）："+json.dumps(observed, ensure_ascii=False, separators=(",", ":"))
-                        with self.store.lock:
-                            exists = self.store.db.execute("SELECT 1 FROM knowledge WHERE kind='observation' AND text=?", (note,)).fetchone()
-                        if not exists:
-                            self.store.knowledge("observation", note, "observed", "unknown", ids)
-                    resolved = resolved_request(request, result["evidence"]) if "evidence" in result else dict(request)
-                    history.append({"request": resolved, "result": result, "native": bool(attachment)})
-                except CapacityError:
-                    raise
-                except (ValueError, OSError, KeyError, TypeError) as error:
-                    history.append({"request": request, "error": str(error)[:240]})
-            payload["visual_rounds"] = rounds+1
-            payload["visual_history"] = history
-            payload.pop("stream_draft", None)
-            self.store.set_job(jid, "running", payload)
-        raise ResearchRepairNeeded("追加観測の応答を確認できませんでした。")
+            if payload.get('repair_response'):raise ResearchRepairNeeded('修正フェーズではactionsを空にし、保存候補だけを修正してください。')
+            self.store.proposal(jid,response)
+            payload['pending_actions']=requests
+            self.store.set_job(jid,'running',payload)
+            run_actions(self,jid,payload,requests)
+            payload.pop('pending_actions',None)
+            payload['visual_rounds']=rounds+1
+            payload.pop('stream_draft',None)
+            self.store.set_job(jid,'running',payload)
+        payload['research_limit']='calls'
+        return '{"findings":[],"wat":""}'
 
     def study(self, rows: list[dict], jid: str):
         self.activity.update(experiment="未確認の変化条件と観測方法を研究",next="仮説を形成して独立の経験で検証")
@@ -855,8 +910,7 @@ class Scientist:
         prompt=research_prompt(self.revisions.source(),rows,self.keys,self.store.reports()[:2])
         if payload.get('stream_draft') and not payload.get('repair_response'):
             payload['repair_response']=payload['stream_draft'];payload['repair_error']='保存された途中出力を完全なJSONに修正してください。'
-        if payload.get('repair_response'):
-            prompt+='\n前の出力を次の検査結果に従って修正し、完全なJSONを返してください。未完成コードの実行は禁止です。\n検査：'+payload.get('repair_error','')+'\n保存済み下書きの抜粋：'+payload['repair_response'][:6000]
+        if payload.get('repair_response'):prompt='修正フェーズ'
         budget=4096
         if isinstance(self.client,LocalLLM) and self.client.managed:
             count=self.client.count_tokens(prompt)
@@ -884,7 +938,8 @@ class Scientist:
             self.store.set_job(jid,'pending',payload)
             raise
         self.store.proposal(jid,response)
-        allowed={r['id'] for r in rows}
+        from .research_actions import allowed_evidence
+        allowed=allowed_evidence(payload)
         for entry in payload.get('visual_history', []):
             allowed.update(evidence_ids(entry.get('result', {}).get('evidence', {})))
         try:proposal=parse_proposal(response,allowed,self.keys)
@@ -904,8 +959,10 @@ class Scientist:
                     self.store.claim(kid, self.keys[action], probability, rows[-1]["id"])
         source = proposal.get("wat", "")
         if not source:
-            self.store.set_job(jid, "complete",{**payload,"outcome":"observations_only","implementation_verified":False})
-            self.activity.update(experiment="観測・仮説を保存（実装改善なし）")
+            from .research_actions import made_progress
+            self.store.set_job(jid, "complete",{**payload,"outcome":"research_limit" if payload.get("research_limit") else "stalled" if payload.get("stalled") else "research_progress" if made_progress(payload) else "observations_only","implementation_verified":False})
+            self.activity.update(experiment='研究上限・成果を保存' if payload.get('research_limit') else '研究停滞・未確認事項を保存' if payload.get('stalled') else '観測・実験結果を保存（実装改善なし）')
+            self.activity.record('RESEARCH',f'complete job={jid} calls={payload.get("research_calls",0)} progress={payload.get("progress",{})}')
             return
         latest=self.store.rows(1)
         cutoff=max(rows[-1]['id'],payload.get('after',0),latest[-1]['id'] if latest else 0)

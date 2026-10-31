@@ -21,7 +21,7 @@ class CapacityError(OSError):
 
 
 PROVENANCE = {"observed", "action_experience", "inferred", "self_generated_model", "external", "human_provided"}
-VALIDATION = {"unknown", "hypothesis", "supported", "reproduced", "disputed", "refuted"}
+VALIDATION = {"unknown", "hypothesis", "supported", "reproduced", "disputed", "refuted", "testing", "inconclusive"}
 
 
 class Store:
@@ -71,6 +71,8 @@ class Store:
           CREATE INDEX IF NOT EXISTS knowledge_status ON knowledge(validation,kind);
           CREATE INDEX IF NOT EXISTS event_session ON events(session,id);
         """)
+        from .experiments import setup
+        setup(self.db)
         with self.db:
             self.db.execute("UPDATE events SET state='interrupted' WHERE state IN ('pending','sent')")
             self.db.execute("UPDATE jobs SET state='pending' WHERE state='running'")
@@ -356,9 +358,13 @@ class Store:
             return result
 
     def note_rows(self, category: str, limit: int = 80) -> list[dict]:
-        clauses={"発見":"kind='observation'", "仮説":"kind='hypothesis'", "支持":"validation IN ('supported','reproduced')", "反証":"validation='refuted'"}
+        clauses={"実験":"kind='experiment'", "検証中":"validation='testing'", "判定不能":"validation='inconclusive'", "発見":"kind='observation'", "仮説":"kind='hypothesis'", "支持":"validation IN ('supported','reproduced')", "反証":"validation='refuted'"}
         with self.lock:
             return [dict(r) for r in self.db.execute("SELECT * FROM knowledge WHERE "+clauses.get(category,'1')+" ORDER BY id DESC LIMIT ?",(limit,))]
+
+    def research_history(self):
+        with self.lock:
+            return [dict(r) for r in self.db.execute("SELECT id,state,payload,updated FROM jobs WHERE kind='research' ORDER BY updated DESC LIMIT 40")]
 
     def knowledge_rows(self) -> list[dict]:
         with self.lock:

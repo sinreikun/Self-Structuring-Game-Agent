@@ -74,7 +74,8 @@ def test_real_prompt_excludes_large_report_metrics_and_limits_experiences():
     assert len(prompt.encode())<8000
     assert '"id":48' in prompt and '"id":0,' not in prompt
     assert 'x'*100 not in prompt
-    assert 'unknown' in prompt and '(export "learn")' in prompt
+    assert 'unknown' in prompt and '(export "learn")' not in prompt
+    assert 'actions' in prompt and 'candidate' in prompt
 
 
 def test_gpu_release_selection_does_not_choose_cpu_or_cuda_dependency(monkeypatch):
