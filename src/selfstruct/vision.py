@@ -434,14 +434,8 @@ class Analyzers:
         return {"id": identifier, "status": "retired"}
 
     def graph(self):
-        nodes = []
-        for record in self.list():
-            nodes.append({"id": record["id"], "description": record["definition"]["description"],
-                          "role": "個体の視覚解析器（外部由来）" if record["definition"].get("source") else "個体が定義した視覚解析器", "input": "視覚Evidence",
-                          "output": record["definition"]["query"].get("output", ""),
-                          "uses": record["uses"], "active": record["status"] == "promoted",
-                          "effectiveness": record["metrics"].get("reason", "未評価"), "status": {"candidate": "評価待ち", "promoted": "採用済み", "rejected": "不採用", "retired": "廃止"}.get(record["status"], record["status"])})
-        return nodes
+        from .inspection import analyzer_nodes
+        return analyzer_nodes(self.list())
 
     def trace(self, action, identifier, detail=""):
         if self.eyes.activity:

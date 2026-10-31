@@ -36,6 +36,11 @@ class App(ManagementUI):
         self.closing = False
         self.close_pending = False
         self.stop_pending = False
+        self.starting = False
+        self.last_ui_error = None
+        self.diagnostic_busy = False
+        self.diagnostic_done_until = 0.
+        self.last_record_refresh = 0.
         self.download_cancel = threading.Event()
         self.health_marker = health_marker
         window.title("自己発達ゲームAI — 自律研究室")
@@ -86,6 +91,9 @@ class App(ManagementUI):
                 message=json.loads(launcher_status.read_text(encoding='utf-8')).get('message','')
                 if message:self.activity.set(prose(message))
             except (OSError,ValueError):pass
+        self.record_scope=tk.StringVar(value='個体：未ロード')
+        for frame in (self.book,self.capabilities,self.details):
+            ttk.Label(frame,textvariable=self.record_scope,foreground='#a8c9dd').pack(anchor='w',pady=(0,8))
         self.note_category=tk.StringVar(value='現在')
         categories=ttk.Combobox(self.book,textvariable=self.note_category,values=['現在','発見','仮説','支持','反証','自己改善'],state='readonly')
         categories.pack(anchor='w',pady=(0,10));categories.bind('<<ComboboxSelected>>',self.refresh_text)
@@ -103,6 +111,8 @@ class App(ManagementUI):
             self.tabs.select(self.setup)
         elif self.config.auto_run:
             window.after(1000, self.start)
+        self.refresh_text()
+        self.update_control_buttons()
         window.after(200, self.poll)
         if health_marker:
             from .sandbox import Sandbox
@@ -165,8 +175,19 @@ class App(ManagementUI):
         self.layout.panel('lab-capability-graph',self.mini_graph)
         self.mini_graph.bind('<Button-1>',lambda _:self.tabs.select(self.capabilities))
         footer=ttk.Frame(self.home);footer.pack(fill='x',pady=(8,0))
-        for title,command in [('START',self.start),('PAUSE',self.pause),('STOP',self.stop),('NEWBORN',self.newborn),('診断ZIPをコピー',self.export)]:
-            ttk.Button(footer,text=title,command=command).pack(side='left',padx=(0,4))
+        self.control_buttons={}
+        for title,command in [('START',self.start),('PAUSE',self.pause),('STOP',self.stop),('診断ZIPをコピー',self.export)]:
+            button=ttk.Button(footer,text=title,command=command)
+            button.pack(side='left',padx=(0,4));self.control_buttons[title]=button
+        self.control_state=tk.StringVar(value='停止中')
+        ttk.Label(footer,textvariable=self.control_state).pack(side='left',padx=12)
+        self.control_help=ttk.Label(self.home,text='START：開始／再開　PAUSE：ゲーム操作を休止（研究は継続）　STOP：操作・研究を終了して保存',font=(UI_FONT,9),foreground='#a8bbc9',wraplength=1050)
+        self.control_help.pack(anchor='w')
+        self.diagnostic_help=ttk.Label(self.home,text='診断ZIP：症状が出たらSTOP前に採取。稼働中／PAUSE中でも可。状態と記録をコピーし、停止・リセットはしません。',font=(UI_FONT,9),foreground='#a8bbc9',wraplength=1050)
+        self.diagnostic_help.pack(anchor='w',pady=(2,0))
+        for name,color in [('Running','#459d76'),('Paused','#d2a44e'),('Stopped','#a95f67'),('Working','#7d8daf'),('Copied','#459d76')]:
+            style=ttk.Style(self.window);style.configure(name+'.TButton',background=color,foreground='#101820',font=(UI_FONT,10,'bold'))
+            style.map(name+'.TButton',background=[('disabled',color),('active',color)],foreground=[('disabled','#26333c')])
         self.metrics=tk.StringVar(value='経験 0　発見 0　仮説 0　支持 0　反証 0　技能 0　自己改善 0　世代 1')
         ttk.Label(self.home,textvariable=self.metrics).pack(anchor='e')
         storage=ttk.Frame(self.home);storage.pack(fill='x')
@@ -335,6 +356,7 @@ class App(ManagementUI):
             return
         if self.controller and not self.controller.stopped.is_set():
             self.controller.start()
+            self.update_control_buttons()
             return
         previous = self.controller
         self.controller = None
@@ -379,9 +401,12 @@ class App(ManagementUI):
             except MissingModel:self.missing_model();return
         self.download_cancel.clear()
         self.status.set("ローカル推論とゲームの接続を確認しています。")
+        self.starting=True
         self.task(operation, self.started)
+        self.update_control_buttons()
 
     def started(self, controller):
+        self.starting=False
         self.controller = controller
         if self.download_cancel.is_set():
             self.stop();return
@@ -389,17 +414,22 @@ class App(ManagementUI):
         self.trace_sequence=0
         self.refresh_individual_list();self.refresh_saved_models()
         self.tabs.select(self.home)
+        self.update_control_buttons()
 
     def pause(self):
         if self.controller:
             self.controller.pause()
+            self.update_control_buttons()
 
     def stop(self):
+        self.starting=False
         self.download_cancel.set()
+        self.update_control_buttons()
         self.config = replace(self.config, auto_run=False)
         self.config.save(self.config_path)
         if self.controller:
             self.controller.stop()
+            self.update_control_buttons()
             if self.busy:
                 self.stop_pending = True
                 return
@@ -413,6 +443,8 @@ class App(ManagementUI):
         self.llm_label.configure(foreground='#9aabb9')
         self.refresh_individual_list();self.refresh_saved_models()
         self.status.set("停止しました。経験と研究内容を保存しました。")
+        self.graph_stamp=None
+        self.refresh_text();self.render_mini_graph();self.update_control_buttons()
 
     def newborn(self):
         if self.busy:
@@ -428,81 +460,105 @@ class App(ManagementUI):
         except Exception as exc:
             messagebox.showerror('NEWBORN',error_message(exc),parent=self.window)
 
+    def update_control_buttons(self):
+        ctrl=self.controller
+        running=bool(ctrl and not ctrl.closed and not ctrl.stopped.is_set())
+        paused=bool(running and ctrl.paused.is_set())
+        stopping=bool(ctrl and ctrl.stopped.is_set() and not ctrl.closed)
+        selected='START' if self.starting else 'PAUSE' if paused else 'START' if running else 'STOP'
+        styles={'START':'Running.TButton','PAUSE':'Paused.TButton','STOP':'Stopped.TButton'}
+        for key in ('START','PAUSE','STOP'):
+            button=self.control_buttons[key]
+            button.configure(style='Working.TButton' if key=='START' and self.starting else styles[key] if key==selected else 'TButton')
+            disabled=(key=='START' and (self.busy or (running and not paused))) or (key=='PAUSE' and (not running or paused)) or (key=='STOP' and not ctrl and not self.starting)
+            button.state(['disabled'] if disabled else ['!disabled'])
+        diagnostic=self.control_buttons['診断ZIPをコピー']
+        diagnostic.configure(style='Working.TButton' if self.diagnostic_busy else 'Copied.TButton' if time.monotonic()<self.diagnostic_done_until else 'TButton',text='診断ZIPを作成中…' if self.diagnostic_busy else '診断ZIPをコピー')
+        diagnostic.state(['disabled'] if self.busy else ['!disabled'])
+        self.control_state.set('開始準備中' if self.starting else '停止・保存処理中' if stopping else 'ゲーム操作は一時停止中／研究は継続' if paused else '実行中' if running else '処理中／ゲーム操作は停止' if self.busy else '停止中／保存記録を閲覧できます')
+
     def export(self):
         if self.busy:return
         from .diagnostics import create_diagnostics,copy_file
+        from .inspection import IndividualView
         ctrl=self.controller
-        snapshot=ctrl.activity.snapshot() if ctrl else None
         config=self.config
-        gui={'tab':self.tabs.index(self.tabs.select()),'state':self.status.get()}
+        snapshot=ctrl.snapshot() if ctrl else None
+        gui={'tab':self.tabs.index(self.tabs.select()),'state':self.status.get(),'snapshot_kind':'live' if ctrl else 'saved','loaded_individual':config.agent_id}
+        self.diagnostic_busy=True;self.update_control_buttons()
         def generate():
-            store=ctrl.store if ctrl else None
-            owned=None
-            if store is None:
-                state=Path(config.root)/'host'/'experiment.json'
-                if state.is_file():
-                    metadata=json.loads(state.read_text(encoding='utf-8'))
-                    candidate=(Path(config.root)/'experiments'/metadata['id']).resolve()
-                    if candidate.is_relative_to((Path(config.root)/'experiments').resolve()):
-                        from .store import Store
-                        owned=Store(candidate,config.quota_bytes);owned.account_root=Path(config.root);store=owned
-            try:return create_diagnostics(Path(config.root),store=store,config=config,activity=snapshot,gui=gui)
-            finally:
-                if owned:owned.close()
+            with IndividualView(config,ctrl) as view:
+                cfg=replace(config,agent_id=view.identifier)
+                return create_diagnostics(Path(cfg.root),store=view.store,config=cfg,activity=snapshot if ctrl else view.activity(),gui={**gui,'loaded_individual':view.identifier})
         def copied(path):
+            self.diagnostic_busy=False
             try:
                 copy_file(path,self.window.winfo_id())
+                self.diagnostic_done_until=time.monotonic()+3
                 self.activity.set('診断ZIPを作成してコピーしました。添付欄へ貼り付けられます。')
             except OSError:
-                self.activity.set('診断ZIPを作成しましたが、クリップボードへのコピーに失敗しました。')
-            self.raw_text.insert('end',f'診断ZIP: {path}\n')
+                self.activity.set('診断ZIPは保存済みですが、コピーに失敗しました：'+str(path))
+            self.update_control_buttons()
         self.task(generate,copied)
+        self.update_control_buttons()
 
     def export_research(self):
-        if not self.controller or self.busy:return
+        if self.busy:return
+        from .inspection import IndividualView
         path=filedialog.asksaveasfilename(defaultextension='.zip',initialfile='研究記録.zip')
         if path:
-            store=self.controller.store
-            self.task(lambda:store.export_research(Path(path)),lambda _:self.activity.set('研究DBと世代情報を保存しました。提出用には診断ZIPをご利用ください。'))
+            config=self.config;ctrl=self.controller
+            def save():
+                with IndividualView(config,ctrl) as view:
+                    if not view.store:raise ValueError('この個体には保存された研究記録がありません。')
+                    view.store.export_research(Path(path))
+            self.task(save,lambda _:self.activity.set('ロード済み個体の研究記録を保存しました。提出用には診断ZIPをご利用ください。'))
 
     def refresh_text(self, _=None):
         if self.tabs.select()==str(self.individual_tab) and not self.busy:
             self.refresh_individual_sizes()
         if self.tabs.select()==str(self.llm_tab):
             self.refresh_saved_models()
-        if not self.controller:
-            return
-        if self.tabs.select() == str(self.book):
-            self.book_text.delete("1.0", "end")
-            category=self.note_category.get()
-            ctrl=self.controller
-            if category=='現在':
-                a=ctrl.activity.snapshot()
-                text=f'研究ノート — 現在\n\n現在の注目：{a.purpose}\n現在の研究：{a.experiment}\n最近の変化：{a.change:.3f}\n未確認：画面変化の意味と因果関係\n次の実験：{a.next}'
-                hypotheses=ctrl.store.note_rows('仮説',3)
-                text+='\n\n現在の仮説\n'+'\n'.join(prose(r['text']) for r in hypotheses)
-            elif category=='自己改善':text='\n\n'.join(prose(r['summary']) for r in ctrl.store.reports())
-            else:text='\n\n'.join(prose(r['text']) for r in ctrl.store.note_rows(category))
-            self.book_text.insert('1.0',text or 'まだ記録はありません。')
-        if self.tabs.select()==str(self.capabilities):
-            self.render_graph()
-        if self.tabs.select() == str(self.details):
-            self.raw_text.delete("1.0", "end")
-            self.raw_text.insert("1.0", self.controller.revisions.source() + "\n\n" + json.dumps(self.controller.store.reports(), ensure_ascii=False, indent=2))
-            path = self.controller.experiment / "host" / "host.log"
-            if path.exists():
-                with path.open("rb") as file:
-                    file.seek(max(0, path.stat().st_size - 65536))
-                    self.raw_text.insert("end", "\n" + file.read().decode(errors="replace"))
+        from .inspection import IndividualView
+        from .diagnostics import diagnostic_json
+        try:
+            with IndividualView(self.config,self.controller) as view:
+                name=view.repo.profile(view.identifier)['name'] if view.identifier else '未ロード'
+                live=bool(view.controller)
+                self.record_scope.set('個体：'+name+' ／ '+(view.activity().get('phase','実行中')+'の記録' if live else '保存済み記録（STARTせず閲覧できます）'))
+                if self.tabs.select()==str(self.book):
+                    category=self.note_category.get();store=view.store
+                    if category=='現在':
+                        a=view.activity()
+                        text='研究ノート — 現在'+('' if live else '（保存済み）')+'\n\n状態：'+a.get('phase','停止中')+'\n現在の注目：'+a.get('purpose','未記録')+'\n現在の研究：'+a.get('experiment','まだ研究記録はありません。')+'\n最近の変化：'+str(a.get('change','未記録'))+'\n未確認：画面変化の意味と因果関係\n次の実験：'+a.get('next','STARTで研究を開始します。')
+                        text+='\n\n現在の仮説\n'+'\n'.join(prose(r['text']) for r in store.note_rows('仮説',3)) if store else ''
+                    elif category=='自己改善':text='\n\n'.join(prose(r['summary']) for r in store.reports()) if store else ''
+                    else:text='\n\n'.join(prose(r['text']) for r in store.note_rows(category)) if store else ''
+                    self.set_record_text(self.book_text,text or 'まだ記録はありません。')
+                if self.tabs.select()==str(self.details):
+                    text=view.source() or 'まだAgent世代は作成されていません。'
+                    if view.store:
+                        text+='\n\n直近の評価（要約。全記録は保存できます）\n'+'\n'.join(diagnostic_json(r) for r in view.store.reports()[:5])
+                    path=view.root/'host'/'host.log' if view.root else None
+                    if path and path.is_file():
+                        with path.open('rb') as f:f.seek(max(0,path.stat().st_size-65536));text+='\n'+f.read().decode(errors='replace')
+                    if self.last_ui_error and self.last_ui_error[0]==self.config.agent_id:text+='\n\n直近の画面操作エラー\n'+self.last_ui_error[1]
+                    self.set_record_text(self.raw_text,text)
+            if self.tabs.select()==str(self.capabilities):self.render_graph()
+        except (OSError,ValueError,__import__('sqlite3').Error) as error:
+            self.record_scope.set('ロード済み個体の記録を取得できません：'+str(error))
+            self.set_record_text(self.book_text,'記録を取得できません。個体管理でロード中の個体をご確認ください。')
+            self.set_record_text(self.raw_text,str(error));self.graph.delete('all')
+
+    def set_record_text(self,widget,text):
+        if widget.get('1.0','end-1c')==text:return
+        position=widget.yview()[0]
+        widget.configure(state='normal');widget.delete('1.0','end');widget.insert('1.0',text);widget.configure(state='disabled')
+        widget.yview_moveto(position)
 
     def capability_graph(self):
-        path=self.controller.revisions.root/self.controller.agent_id/'capabilities.json'
-        data=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {'nodes': [], 'edges': []}
-        visual=getattr(self.controller,'visual',None)
-        if visual:
-            existing={n['id'] for n in data['nodes']}
-            data['nodes'] += [n for n in visual.analyzers.graph() if n['id'] not in existing]
-        return data
+        from .inspection import IndividualView
+        with IndividualView(self.config,self.controller) as view:return view.graph()
 
     def render_graph(self):
         self.graph.delete('all')
@@ -534,13 +590,13 @@ class App(ManagementUI):
 
     def render_mini_graph(self):
         canvas=self.mini_graph
-        path=self.controller.revisions.root/self.controller.agent_id/'capabilities.json'
+        path=str(self.config.agent_id)
         try:
             data=self.capability_graph()
             stamp=(str(path),json.dumps(data,sort_keys=True),canvas.winfo_width(),any(time.time()-at<20 for at in self.graph_new.values()))
             if stamp==getattr(self,'graph_stamp',None):return
             self.graph_stamp=stamp
-        except (OSError,ValueError):
+        except (OSError,ValueError,__import__('sqlite3').Error):
             canvas.delete('all');canvas.create_text(10,20,anchor='nw',fill='#91a5b3',text='Agentからの自己記述を待っています');return
         canvas.delete('all')
         if not data.get('nodes'):
@@ -574,8 +630,11 @@ class App(ManagementUI):
                         callback(value)
                 elif kind == "error":
                     self.busy = False
+                    self.diagnostic_busy=False
+                    self.starting=False
+                    self.last_ui_error=(self.config.agent_id,data[1])
                     self.status.set(data[0])
-                    self.raw_text.insert("end", data[1] + "\n")
+                    self.activity.set(data[0])
                 elif kind == "managed_ready":
                     self.refresh_saved_models()
                     self.fields["llm_url"].set("http://127.0.0.1:8766/v1")
@@ -594,6 +653,10 @@ class App(ManagementUI):
         elif not self.busy and self.stop_pending:
             self.stop_pending = False
             self.stop()
+        self.update_control_buttons()
+        if time.monotonic()-self.last_record_refresh>2:
+            self.last_record_refresh=time.monotonic()
+            if self.tabs.select() in (str(self.book),str(self.capabilities),str(self.details)):self.refresh_text()
         self.pc_performance.set(self.performance_monitor.text())
         info=self.llm.current_info
         if self.config.llm_url!='http://127.0.0.1:8766/v1':
@@ -612,6 +675,7 @@ class App(ManagementUI):
             for identifier,state in self.model_records.items():
                 if self.saved_models.exists(identifier):self.saved_models.set(identifier,'state',self.library.status(state,self.llm,bool(self.controller and not self.controller.stopped.is_set() and self.config.model_id==identifier and self.config.llm_url=='http://127.0.0.1:8766/v1')))
         ctrl = self.controller
+        if not ctrl:self.render_mini_graph()
         if ctrl:
             game=ctrl.game
             if game and getattr(game,'process',None) and getattr(game,'target_exe',''):
@@ -620,8 +684,9 @@ class App(ManagementUI):
                 if identity!=saved:
                     self.config=replace(self.config,target_pid=identity[0],target_created=identity[1],target_exe=identity[2],target_hwnd=identity[3])
                     self.config.save(self.config_path)
-            a=ctrl.activity.snapshot()
-            self.status.set(ctrl.status + f" ／ 稼働 {int(time.monotonic()-ctrl.started)}秒")
+            a=ctrl.snapshot()
+            display_status='停止・保存処理中' if ctrl.stopped.is_set() and not ctrl.closed else '一時停止中' if ctrl.paused.is_set() else ctrl.status
+            self.status.set(display_status + f" ／ 稼働 {int(time.monotonic()-ctrl.started)}秒")
             while not ctrl.messages.empty():self.activity.set(prose(ctrl.messages.get_nowait()))
             self.llm_status.set(('●' if a.llm=='推論中' else '○')+' LLM '+a.llm)
             self.llm_label.configure(foreground={'推論中':'#7fe0ae','評価中':'#e5bf72','復旧中':'#e5bf72','エラー':'#ee9191'}.get(a.llm,'#9aabb9'))

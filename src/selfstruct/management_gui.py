@@ -96,7 +96,13 @@ class ManagementUI:
         self.refresh_individual_list();self.refresh_saved_models();self.last_preview=None
         self.preview.delete('all');self.photo=None
         self.metrics.set('個体をロードしました。研究件数は個体管理で確認できます。')
-        self.book_text.delete('1.0','end');self.raw_text.delete('1.0','end');self.graph.delete('all');self.mini_graph.delete('all')
+        self.set_record_text(self.book_text,'');self.set_record_text(self.raw_text,'');self.graph.delete('all');self.mini_graph.delete('all')
+        self.graph_stamp=None
+        self.last_ui_error=None
+        self.preview.create_text(24,30,anchor='nw',fill='#91a5b3',text='保存記録は各タブで閲覧できます。ゲーム画面はSTART後に表示されます。')
+        self.render_mini_graph()
+        self.refresh_text()
+        self.update_control_buttons()
         self.input_log.configure(state='normal');self.input_log.delete('1.0','end');self.input_log.configure(state='disabled')
         self.live_trace.configure(state='normal');self.live_trace.delete('1.0','end');self.live_trace.configure(state='disabled')
         self.status.set('個体の設定を読み込みました。LLMを確認しています。')

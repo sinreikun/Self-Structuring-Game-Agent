@@ -44,7 +44,9 @@ def test_gui_start_pause_stop_newborn(tmp_path, monkeypatch):
         app.llm.current_info={"name":"Test/Model-GGUF","backend":"vulkan","gpu_layers":12,"total_layers":20,"status":"利用可能"}
         app.poll()
         assert "Test/Model-GGUF" in app.active_model.get() and "12/20層" in app.active_model.get()
+        assert app.control_buttons['START'].cget('style')=='Running.TButton'
         app.pause()
+        assert app.control_buttons['PAUSE'].cget('style')=='Paused.TButton'
         assert app.controller.paused.is_set()
         assert not app.controller.game.held
         event=app.controller.store.rows(1)[0]['id']
@@ -62,11 +64,16 @@ def test_gui_start_pause_stop_newborn(tmp_path, monkeypatch):
         if os.environ.get('SELFSTRUCT_SCREENSHOT'):
             from PIL import ImageGrab
             window.update()
+            app.tabs.select(app.home);window.update()
             ImageGrab.grab().save(os.environ['SELFSTRUCT_SCREENSHOT'])
         app.start()
         assert not app.controller.paused.is_set()
+        assert app.control_buttons['START'].cget('style')=='Running.TButton'
         app.stop()
         until(lambda: app.controller is None and not app.busy)
+        assert app.control_buttons['STOP'].cget('style')=='Stopped.TButton'
+        app.tabs.select(app.details);app.refresh_text()
+        assert '(module' in app.raw_text.get('1.0','end')
         previous_id=app.config.agent_id
         app.newborn()
         assert app.config.agent_id != previous_id and app.config.resume

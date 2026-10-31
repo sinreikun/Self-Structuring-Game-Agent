@@ -23,6 +23,21 @@ log = logging.getLogger(__name__)
 
 
 class Controller:
+    def snapshot(self):
+        from dataclasses import replace
+        value=self.activity.snapshot()
+        if self.stopped.is_set():return replace(value,phase='停止中',next='終了処理と保存を行っています。')
+        if self.paused.is_set():return replace(value,phase='一時停止中',next='STARTでゲーム操作を再開します。保存済みEvidenceの研究は継続します。')
+        return value
+
+    def halted_step(self,event=None):
+        if not (self.stopped.is_set() or self.paused.is_set() or self.cancel_input.is_set()):return False
+        if event is not None:
+            self.store.interrupt(event)
+            self.activity.record('INTERRUPT',f'event={event} completed evidence not recorded')
+        self.activity.update(phase='停止中' if self.stopped.is_set() else '一時停止中' if self.paused.is_set() else '入力中断')
+        return True
+
     def record_sent(self,eid,timestamp,key,duration):
         self.store.sent(eid,timestamp)
         self.activity.record('ACT',f'{key} hold={duration*1000:.0f}ms')
@@ -162,6 +177,7 @@ class Controller:
         if self.thread and self.thread.is_alive():
             self.cancel_input.clear()
             self.paused.clear()
+            self.status='再開中';self.activity.update(phase='再開中')
             return
         self.stopped.clear()
         self.scientist.start()
@@ -201,7 +217,7 @@ class Controller:
         from dataclasses import asdict
         try:
             self.store.reserve(8192)
-            write_json(self.store.root/'host'/'activity.json',asdict(self.activity.snapshot()))
+            write_json(self.store.root/'host'/'activity.json',asdict(self.snapshot()))
         except OSError:log.exception('Final activity snapshot could not be saved')
         self.checkpoint()
         from .individuals import Individuals
@@ -263,11 +279,13 @@ class Controller:
             while not self.stopped.is_set():
                 self.last_progress = time.monotonic()
                 if self.paused.is_set():
+                    self.status='一時停止中';self.activity.update(phase=self.status)
                     self.stopped.wait(.1)
                     continue
                 self.status = "画面と入力の関係を実験中"
                 try:
                     change = self.step()
+                    if self.paused.is_set() or self.stopped.is_set():continue
                     unchanged = unchanged + 1 if change <= .001 else 0
                     if unchanged >= self.config.restart_after:
                         self.recover_game("画面変化が長時間確認できないため、有限の復帰試行を行いました。",restart=True)
@@ -314,6 +332,8 @@ class Controller:
             self.status = "停止中"
             self.activity.update(phase=self.status,connection="切断")
             self.stopped.set()
+            self.scientist.stop_event.set()
+            self.scientist.wake.set()
 
     def recover_game(self, message: str, restart: bool=False):
         self.recovering.set()
@@ -360,6 +380,7 @@ class Controller:
         finally:self.recovering.clear()
 
     def step(self) -> float:
+        if self.halted_step():return 0
         started = time.perf_counter()
         if self.revisions.active != self.agent_id:
             self.agent = self.revisions.load()
@@ -368,6 +389,7 @@ class Controller:
             self.confirm_steps = 0
             self._restore_learning()
         before = self.game.capture()
+        if self.halted_step():return 0
         self.activity.record("OBS",f"frame={self.steps} region=full")
         feature, raw = features(before)
         self.agent.pixels(raw)
@@ -390,22 +412,24 @@ class Controller:
         if "research_due" in agent.exports:
             self.scientist.automatic = bool(agent.call("research_due", self.steps))
         index, duration, wait, pred = agent.action(feature, len(self.config.keys))
+        if self.halted_step():return 0
         self.activity.update(phase="入力中", action=self.config.keys[index],duration=duration,prediction=pred,
                              next="入力後の画面を観測します")
         self.activity.record("PRED",f"p(change)={pred:.4f}")
         before_hash = self.store.image(before,critical=time.time()<self.protect_until or bool(self.scientist.live) or self.revisions.state["trial"])
         eid = self.store.begin(self.session, before_hash, self.config.keys[index], duration,
                                self.game.generation, revision, feature, pred)
+        if self.halted_step(eid):return 0
         try:
             self.game.act(self.config.keys[index], duration, self.cancel_input, lambda timestamp: self.record_sent(eid,timestamp,self.config.keys[index],duration))
         except BaseException:
             self.store.interrupt(eid)
             raise
-        if self.stopped.is_set() or self.paused.is_set():
-            self.store.interrupt(eid)
-            return 0
+        if self.halted_step(eid):return 0
         self.cancel_input.wait(wait)
+        if self.halted_step(eid):return 0
         after_image = self.game.capture()
+        if self.halted_step(eid):return 0
         after, after_raw = features(after_image)
         after_hash = self.store.image(after_image,critical=time.time()<self.protect_until or bool(self.scientist.live) or self.revisions.state["trial"])
         change = difference(before, after_image)
