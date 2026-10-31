@@ -69,6 +69,8 @@ class App:
             self.tabs.add(frame, text=title)
         self._home()
         self._setup()
+        from .gui_lifecycle import bind_cleanup
+        bind_cleanup(self,window)
         launcher_status=default_root()/'runtime'/'launcher-status.json'
         if launcher_status.is_file():
             try:
@@ -273,6 +275,8 @@ class App:
     def task(self, operation, done=None):
         if self.busy:
             return
+        import gc
+        gc.collect()
         self.busy = True
         def worker():
             try:
@@ -506,8 +510,10 @@ class App:
         self.status.set('固定Launcherから起動すると、起動時に公式更新を確認します。経験とAgent世代は引き継ぎます。')
 
     def poll(self):
+        if self.closing:return
         try:
             while True:
+                if self.closing:return
                 kind, data = self.events.get_nowait()
                 if kind == "done":
                     self.busy = False
@@ -526,6 +532,7 @@ class App:
                     self.progress.set(data)
         except queue.Empty:
             pass
+        if self.closing:return
         if not self.busy and self.close_pending:
             self.close_pending = False
             self.close()

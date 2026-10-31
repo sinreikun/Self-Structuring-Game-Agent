@@ -33,13 +33,16 @@ class ProcessPicker:
         self.refresh_button=ttk.Button(buttons,text='一覧を更新',command=self.refresh)
         self.refresh_button.pack(side='left')
         ttk.Button(buttons,text='このプロセスに接続',command=self.select).pack(side='right')
+        from .gui_lifecycle import bind_cleanup
+        bind_cleanup(self,self.window)
         self.refresh()
 
     def refresh(self):
         self.refresh_button.configure(state='disabled')
+        results=self.results
         def scan():
-            try:self.results.put((discover_targets(),None))
-            except Exception as error:self.results.put(([],str(error)))
+            try:results.put((discover_targets(),None))
+            except Exception as error:results.put(([],str(error)))
         threading.Thread(target=scan,daemon=True).start()
         self.poll_id=self.window.after(100,self.poll)
 

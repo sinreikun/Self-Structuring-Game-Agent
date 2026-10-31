@@ -139,3 +139,27 @@ def test_inference_timeout_is_not_scientific_candidate_rejection(tmp_path):
         assert activity.snapshot().comparison=='待機'
         assert any(job['id']==jid for job in store.jobs())
     finally:scientist.close();store.close()
+
+
+@pytest.mark.skipif(__import__('os').name!='nt' and not __import__('os').environ.get('DISPLAY'),reason='Display required')
+def test_closing_browser_releases_gui_while_search_worker_is_pending(tmp_path,monkeypatch):
+    import tkinter as tk
+    import threading,gc,weakref
+    from selfstruct import gui
+    from selfstruct.model_browser import ModelBrowser
+    from selfstruct.config import Config
+    monkeypatch.setattr(gui,'default_root',lambda:tmp_path/'settings')
+    Config(root=str(tmp_path/'data')).save(tmp_path/'settings'/'host'/'settings.json')
+    started=threading.Event();release=threading.Event();finished=threading.Event()
+    def search(*a,**k):
+        started.set();release.wait(5);finished.set();return []
+    monkeypatch.setattr(ModelCatalog,'search',search)
+    window=tk.Tk();app=gui.App(window);browser=ModelBrowser(app);window.update()
+    try:
+        browser.search();assert started.wait(2)
+        reference=weakref.ref(browser)
+        browser.window.destroy();assert browser.tags=={} and browser.status is None
+        del browser;gc.collect()
+        assert reference() is None
+    finally:
+        release.set();finished.wait(2);window.destroy()

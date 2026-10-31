@@ -51,7 +51,9 @@ class ModelBrowser:
         self.install_button=ttk.Button(controls,text='選択した量子化を導入・推論試験',command=self.install)
         self.install_button.pack(anchor='e',pady=8)
         app.layout.pane('model-browser-panes',panes,default_fraction=.35)
-        self.window.after(100,self.poll)
+        self.poll_id=self.window.after(100,self.poll)
+        from .gui_lifecycle import bind_cleanup
+        bind_cleanup(self,self.window)
         if recommended:self.search()
 
     def tag_changed(self,group,label):
@@ -60,9 +62,10 @@ class ModelBrowser:
                 if other!=label:self.tags[other].set(False)
 
     def worker(self,kind,operation):
+        results=self.events
         def run():
-            try:self.events.put((kind,operation()))
-            except Exception as exc:self.events.put(('error',error_message(exc)))
+            try:results.put((kind,operation()))
+            except Exception as exc:results.put(('error',error_message(exc)))
         threading.Thread(target=run,name='model-browser',daemon=True).start()
 
     def search(self):
@@ -72,15 +75,17 @@ class ModelBrowser:
         query=self.query.get();tags={k for k,v in self.tags.items() if v.get()}
         # Multiword search on the API is literal, so recommend a family and filter purpose locally.
         if query.lower()=='qwen coder':query='qwen';tags.add('コード生成')
-        self.worker('search',lambda:self.catalog.search(query,tags,self.pc))
+        catalog=self.catalog;pc=self.pc
+        self.worker('search',lambda:catalog.search(query,tags,pc))
 
     def select(self,_=None):
         selected=self.tree.selection()
         if not selected or self.running:return
         self.selection+=1;generation=self.selection;self.current=None;self.ack.set(False);self.file.set('');self.file_choice['values']=()
         repo=self.rows[int(selected[0])]['id'];self.status.set('GGUFファイルとモデルカードを取得中…')
+        catalog=self.catalog
         def detail():
-            data=self.catalog.detail(repo)
+            data=catalog.detail(repo)
             # README is bounded and rendered as plain text, never HTML or executable content.
             from .resources import check_url,TRUSTED_HOSTS,SafeRedirect
             from urllib.request import Request,build_opener
@@ -95,7 +100,7 @@ class ModelBrowser:
         self.worker('detail',detail)
 
     def poll(self):
-        if not self.window.winfo_exists():return
+        if getattr(self,'closed',False) or not self.window.winfo_exists():return
         try:
             while True:
                 kind,value=self.events.get_nowait()
@@ -135,7 +140,7 @@ class ModelBrowser:
                         self.tree.set(selected[0],'quants',', '.join(sorted({x['quant'] for x in self.available})))
                         self.tree.set(selected[0],'size',f'{size/1024**3:.2f}GB');self.tree.set(selected[0],'fit',fit(size,self.pc)[0])
         except queue.Empty:pass
-        self.window.after(100,self.poll)
+        self.poll_id=self.window.after(100,self.poll)
 
     def file_selected(self,_=None):
         entry=getattr(self,'file_labels',{}).get(self.file.get())
