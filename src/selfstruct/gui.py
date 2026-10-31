@@ -246,7 +246,7 @@ class App(ManagementUI):
         self.fields['window_title'].set('')
         self.selected_process.set(f'{item.process.name} — {item.title}（プロセスID {item.process.pid}）。STOP後もゲームは終了しません。ゲーム終了時は設定した実行ファイルから自動再起動します。')
 
-    def read_settings(self) -> Config:
+    def read_settings(self, *, allow_root_change=False) -> Config:
         from .windows import parse_arguments
         args = parse_arguments(self.fields["game_args"].get())
         result = replace(self.config, root=self.fields["root"].get(), game_exe=self.fields["game_exe"].get(),
@@ -258,13 +258,16 @@ class App(ManagementUI):
                          llm_context=int(self.fields["llm_context"].get()),llm_threads=int(self.fields["llm_threads"].get()),
                          llm_backend=self.llm_backend.get(),research_every=int(self.fields["research_every"].get()))
         result.validate(require_game=False)
+        if not allow_root_change and Path(result.root).resolve()!=Path(self.config.root).resolve():
+            raise ValueError('共通保存先を変更した場合は、先に設定を保存してください。')
         return result
 
     def save_settings(self):
         try:
+            if self.busy:raise ValueError("処理中です。完了またはSTOP後に設定を保存してください。")
             if self.controller:
                 raise ValueError("設定を変える前にSTOPしてください。")
-            config=self.read_settings()
+            config=self.read_settings(allow_root_change=True)
             if Path(config.root).resolve()!=Path(self.config.root).resolve():
                 self.llm.stop()
                 from .individuals import Individuals
@@ -340,8 +343,10 @@ class App(ManagementUI):
                 self.llm.stop()
                 self.llm = ManagedLLM(Path(config.root), config.quota_bytes)
             if config.llm_url == "http://127.0.0.1:8766/v1":
-                if config.model_id:
-                    self.library.prepare(self.llm,config,self.download_cancel)
+                if config.model_id or self.llm.state_path.is_file():
+                    identifier=self.library.prepare(self.llm,config,self.download_cancel)
+                    info=self.library.get(identifier).get('model_info',{})
+                    config=replace(config,model_id=identifier,model_name=info.get('name',''),model_quant=info.get('quant','未記録'))
                 else:
                     self.llm.start(cancel=self.download_cancel)
             from .research import LocalLLM

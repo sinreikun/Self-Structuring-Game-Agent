@@ -93,6 +93,16 @@ class ModelLibrary:
             except Exception as error:
                 self.register({**state,'last_error':str(error)[:1000]})
                 raise
+        try:
+            if not state.get('validation',{}).get('minimal_inference'):
+                from .research import LocalLLM
+                probe=LocalLLM(MANAGED_URL,'local')
+                response=probe.complete('日本語で短く挨拶してください。',max_tokens=128,allow_partial=True,cancel=cancel)
+                if not response.strip():raise ValueError('最小推論試験の応答が空です。')
+                state['validation']={**state.get('validation',{}),'startup':True,'minimal_inference':True,'checked_at':time.time(),'japanese_quality':'未評価','json':'未試験','code':'未試験'}
+                if llm.active_state:llm.active_state['validation']=state['validation']
+        except Exception as error:
+            llm.stop();self.register({**state,'last_error':str(error)[:1000]});raise
         state.pop('last_error',None)
         if llm.active_state:llm.active_state.pop('last_error',None)
         write_json(llm.state_path,llm.active_state or state)
