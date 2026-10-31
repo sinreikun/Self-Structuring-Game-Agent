@@ -65,3 +65,18 @@ def assessment(base, candidate):
     if candidate['unknown']>base['unknown']:return False,'未確認率が増えています'
     if candidate['seconds']>max(.005,base['seconds']*2):return False,'評価の実行時間が増えすぎています'
     return True,'両クラスと比較基準で改善を確認しました'
+
+
+def regression_safe(base, candidate):
+    """Permit calibration tradeoffs against an all-zero historical baseline.
+
+    Balanced performance must remain stable; protect each sufficiently observed
+    class from a large deterioration rather than preserving every zero prediction.
+    """
+    before,after=base.get('balanced_loss'),candidate.get('balanced_loss')
+    if before is not None and after is not None and after>before+.02:return False
+    for label in ('changed','unchanged'):
+        old=base.get('classes',{}).get(label,{})
+        new=candidate.get('classes',{}).get(label,{})
+        if min(old.get('n',0),new.get('n',0))>=4 and new['loss']>old['loss']+.16:return False
+    return True

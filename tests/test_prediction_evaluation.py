@@ -105,3 +105,14 @@ def test_repaired_candidate_uses_only_experiences_after_generation(tmp_path,monk
         scientist.study([dict(id=1,action='A',feature=7,change=0)],jid)
         assert cutoffs==[200]
     finally:store.close()
+
+
+def test_historical_zero_baseline_does_not_block_useful_calibration():
+    from selfstruct.evaluation import regression_safe
+    labels=[0,0,1,1]*16
+    old=measures(labels,[0]*64)
+    useful=measures(labels,[.2 if y==0 else .9 for y in labels])
+    assert useful['classes']['unchanged']['loss']>.02
+    assert regression_safe(old,useful)
+    broken=measures(labels,[.9 if y==0 else .1 for y in labels])
+    assert not regression_safe(old,broken)

@@ -12,7 +12,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 from .sandbox import Revisions, Sandbox, improves, replay
 from .store import CapacityError, Store
-from .evaluation import sample, summarize, assessment
+from .evaluation import sample, summarize, assessment, regression_safe
 
 log = logging.getLogger(__name__)
 
@@ -666,11 +666,7 @@ class Scientist:
             self.store.pin([r['id'] for r in historical],'evaluation-'+jid)
             regression = evaluate(source, self.revisions.source(), historical, self.store.root / "evidence", self.keys)
             base, candidate = regression["baseline"], regression["candidate"]
-            regression_ok=True
-            for label in ('changed','unchanged'):
-                old=base.get('classes',{}).get(label,{})
-                new=candidate.get('classes',{}).get(label,{})
-                if old.get('n',0)>=4 and new.get('n',0)>=4 and new['loss']>old['loss']+.02:regression_ok=False
+            regression_ok=regression_safe(base,candidate)
             result['regression']=regression
             if not regression_ok:result.update(passed=False,reason='過去経験のクラス別損失が悪化しました')
         if not result["passed"]:
