@@ -95,7 +95,7 @@ class App(ManagementUI):
         for frame in (self.book,self.capabilities,self.details):
             ttk.Label(frame,textvariable=self.record_scope,foreground='#a8c9dd').pack(anchor='w',pady=(0,8))
         self.note_category=tk.StringVar(value='現在')
-        categories=ttk.Combobox(self.book,textvariable=self.note_category,values=['現在','研究履歴','実験','発見','仮説','検証中','支持','反証','判定不能','自己改善'],state='readonly')
+        categories=ttk.Combobox(self.book,textvariable=self.note_category,values=['現在','研究結果','研究メモ','研究履歴','実験','発見','仮説','検証中','支持','反証','判定不能','自己改善'],state='readonly')
         categories.pack(anchor='w',pady=(0,10));categories.bind('<<ComboboxSelected>>',self.refresh_text)
         self.book_text = tk.Text(self.book, wrap="word", font=(UI_FONT, 11),background='#111920',foreground='#dce5ed',insertbackground='#dce5ed')
         self.book_text.pack(fill="both", expand=True)
@@ -533,6 +533,7 @@ class App(ManagementUI):
                         a=view.activity()
                         text='研究ノート — 現在'+('' if live else '（保存済み）')+'\n\n状態：'+a.get('phase','停止中')+'\n現在の注目：'+a.get('purpose','未記録')+'\n現在の研究：'+a.get('experiment','まだ研究記録はありません。')+'\n最近の変化：'+str(a.get('change','未記録'))+'\n未確認：画面変化の意味と因果関係\n次の実験：'+a.get('next','STARTで研究を開始します。')
                         text+='\n\n現在の仮説\n'+'\n'.join(prose(r['text']) for r in store.note_rows('仮説',3)) if store else ''
+                        if store:text+='\n\nLLMの研究メモ\n'+'\n'.join(prose(r['text']) for r in store.note_rows('研究メモ',2))
                     elif category=='研究履歴':
                         from .diagnostics import diagnostic_job_payload
                         text='\n\n'.join('Job '+r['id']+' ／ '+r['state']+'\n'+json.dumps(json.loads(diagnostic_job_payload(r['payload'])),ensure_ascii=False,indent=2) for r in store.research_history()) if store else ''

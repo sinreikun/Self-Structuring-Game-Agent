@@ -19,6 +19,10 @@ HYPOTHESIS={'anyOf':[integer(1),{**string(40),'minLength':1}]}
 CONDITION_FIELDS={**{k:QUERY[k] for k in ('box','size','mode','operations')},'mean_min':{'type':'number','minimum':0,'maximum':255},'mean_max':{'type':'number','minimum':0,'maximum':255},'max_wait_steps':integer(1,128)}
 CONDITION={'anyOf':[obj(CONDITION_FIELDS,['mean_min']),obj(CONDITION_FIELDS,['mean_max'])]}
 ACTION_FIELDS={
+ 'research_report':({'title':{**string(120),'minLength':1},'target_goal':string(600),'goal_status':{'type':'string','enum':['unknown','hypothesis','observed']},'goal_evidence':array(integer(1),0,16),'findings':array(obj({'text':string(600),'status':{'type':'string','enum':['observation','hypothesis']},'evidence':array(integer(1),1,16)},['text','status','evidence']),0,8),'unknowns':array(string(300),0,8),'next_steps':array(string(300),0,8)},['title','target_goal','goal_status','goal_evidence','findings','unknowns','next_steps']),
+ 'memory_search':({'collection':{'type':'string','enum':['experience','knowledge','experiment','visual','research','note','report']},'query':string(160),'ref':string(128),'cursor':integer(),'watermark':integer(),'limit':integer(1,8)},['collection']),
+ 'memory_read':({'collection':{'type':'string','enum':['experience','knowledge','experiment','visual','research','note','report']},'ref':string(128),'revision':string(64),'offset':integer(),'limit':integer(1,1600)},['collection','ref','revision']),
+ 'memory_note':({'ref':string(128),'revision':string(64),'title':{**string(120),'minLength':1},'body':{**string(2000),'minLength':1},'evidence':array(integer(1),0,16)},['title','body']),
  'observe':(QUERY,[]),'compare':(QUERY,['compare']),'analyze':(QUERY,[]),
  'experiment':({'hypothesis':HYPOTHESIS,'action':integer(),'duration':integer(10,500),'wait':integer(10,2000),'repeat':integer(1,8),'condition':CONDITION},['action','hypothesis']),
  'evaluate':({'hypothesis':HYPOTHESIS,'change_probability':{'type':'number','minimum':0,'maximum':1}},['hypothesis','change_probability']),

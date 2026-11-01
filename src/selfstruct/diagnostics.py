@@ -54,7 +54,7 @@ def redact(value):
 
 def research_request_summary(request,depth=0):
     if not isinstance(request,dict) or depth>2:return {}
-    fields=('op','event','phase','observation','box','size','mode','output','offset','limit','id','action','duration','wait','repeat','hypothesis','change_probability','evidence','mean_min','mean_max','max_wait_steps')
+    fields=('op','event','phase','observation','box','size','mode','output','offset','limit','id','action','duration','wait','repeat','hypothesis','change_probability','evidence','mean_min','mean_max','max_wait_steps','collection','ref','revision','query','cursor','watermark','title')
     result={}
     for key in fields:
         value=request.get(key)
@@ -76,7 +76,7 @@ def diagnostic_job_payload(value):
     if not isinstance(payload,dict):return "[prompt/source omitted]"
     keys=("outcome","implementation_verified","repair_failures","same_error_failures","repair_error",
           "repair_history","repair_kind","behavior_repairs","visual_rounds","initial_visual_evidence","visual_budget_exhausted",
-          "research_job","research_started","research_steps","research_calls","research_phase","research_limit","context_compactions","context_budget","progress","hypotheses","hypothesis_context","experiment_context","new_hypothesis_ids","candidate_sha256",
+          "mission","memory_mode","memory_index","memory_evidence","research_job","research_started","research_steps","research_calls","research_phase","research_limit","context_compactions","context_budget","progress","hypotheses","hypothesis_context","experiment_context","new_hypothesis_ids","candidate_sha256",
           "stagnation_detected","stalled","duplicate_requests","duplicate_only_rounds","duplicate_redirects","image_bytes","redirected")
     result={k:payload[k] for k in keys if k in payload}
     history=payload.get("visual_history",[])
@@ -97,7 +97,7 @@ def diagnostic_job_payload(value):
         request=entry.get('request',{})
         safe['request']=research_request_summary(request)
         raw=entry.get('result',{})
-        safe['result']={k:raw[k] for k in ('error','detail','duplicate','original_step','experiment','job','hypothesis','state','completed','events','evidence','box','size','mode','coordinates','status','n','observed_probability','expected_probability','interval95','pre_registered','required_samples','reasons','registered_target','phase','id','retained') if k in raw}
+        safe['result']={k:raw[k] for k in ('error','detail','duplicate','original_step','experiment','job','hypothesis','state','completed','events','evidence','box','size','mode','coordinates','status','n','observed_probability','expected_probability','interval95','pre_registered','required_samples','reasons','registered_target','phase','id','retained','collection','ref','revision','records','watermark','next_cursor','offset','next_offset','total','format','content_sha256','source_revision','source_changed') if k in raw}
         result['action_history'].append(safe)
     result["omitted"]="prompt/source/arrays"
     return json.dumps(redact(result),ensure_ascii=False)
@@ -138,7 +138,7 @@ def create_diagnostics(root: Path, store=None, config=None, activity=None, gui=N
                 with store.lock, tempfile.TemporaryDirectory() as temp:
                     db=sqlite3.connect(Path(temp)/'diagnostics.sqlite3')
                     try:
-                        for table,order,limit in [('events','id',512),('knowledge','id',256),('reports','id',100),('gc_history','id',200),('compacted','last',256),('jobs','updated',40),('visual_analyzers','created',32),('visual_library_requests','created',32),('research_experiments','created',32)]:
+                        for table,order,limit in [('events','id',512),('knowledge','id',256),('reports','id',100),('gc_history','id',200),('compacted','last',256),('jobs','updated',40),('visual_analyzers','created',32),('visual_library_requests','created',32),('research_experiments','created',32),('research_notes','updated',64),('research_reports','updated',32),('research_memory_snapshots','created',32)]:
                             columns=[r[1] for r in store.db.execute(f'PRAGMA table_info({table})')]
                             if not columns:continue
                             # All values are bound; never execute user content.
@@ -147,6 +147,7 @@ def create_diagnostics(root: Path, store=None, config=None, activity=None, gui=N
                                 values=[]
                                 for value in row:
                                     if table=='jobs' and columns[len(values)]=='payload':value=diagnostic_job_payload(value)
+                                    if table=='research_memory_snapshots' and columns[len(values)]=='content' and row[columns.index('collection')]=='visual':value='[visual snapshot payload omitted]'
                                     if isinstance(value,str) and not (table=='jobs' and columns[len(values)]=='payload'):
                                         try: value=diagnostic_json(json.loads(value))
                                         except (ValueError,TypeError): value=redact(value)
@@ -158,6 +159,10 @@ def create_diagnostics(root: Path, store=None, config=None, activity=None, gui=N
                     finally:
                         db.close()
                 put('研究ノート.md','\n'.join(redact(r['text']) for r in store.note_rows('現在',64)))
+                put('研究メモ.md','\n\n'.join(redact(r['text']) for r in store.note_rows('研究メモ',32)))
+                put('研究結果.md','\n\n'.join(redact(r['text']) for r in store.note_rows('研究結果',16)))
+                from .research_mission import identity
+                put('experiment/research-mission.json',json.dumps(identity(),ensure_ascii=False))
                 hashes=[]
                 for row in store.rows(12):
                     hashes.extend([row['before_hash'],row['after_hash']])

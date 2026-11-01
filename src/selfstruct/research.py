@@ -329,11 +329,11 @@ op=research,prompt=研究指示で非同期LLM作業を依頼し、返されたj
 """
 
 
-def research_prompt(source,rows,keys,reports):
+def research_prompt(source,rows,keys,reports,*,pull=False):
     summaries=[{'id':r['id'],'a':keys.index(r['action']),'f':r['feature'],
-                'd':round(r['change'],4)} for r in rows[-16:]]
+                'd':round(r['change'],4)} for r in rows[-3 if pull else -16:]]
     history=[]
-    for report in reports[:2]:
+    for report in ([] if pull else reports[:2]):
         entry={'summary':report['summary'][:180]}
         metrics=report.get('metrics',{})
         if isinstance(metrics,str):
@@ -351,13 +351,15 @@ def research_prompt(source,rows,keys,reports):
                     for key in ('balanced_loss','classes','references','prediction_range'):
                         if key in measured:entry[name+'_'+key]=measured[key]
         history.append(entry)
-    prompt='画面Evidenceを調べ、分かったこととunknownを区別してください。初期Before/Afterは低解像度の概観です。情報不足ならactions（旧visual_requestsも可）で領域・解像度・処理・比較・実験を選び、取得結果を見て続行してください。WATは任意の最終手段で、必要な場合はcandidateで実装計画を要求してください。採用評価では変化あり・なしを独立比較し、定数0/0.5/1・過去頻度・現行Agentの基準を維持します。\n'
+    prompt=('索引を起点に、自分で現在の不明点と必要な情報を選ぶ研究です。memory_search/readで保存記録を必要時に取得し、画面はobserve/compareで自分が選んだときだけ見ます。短い課題・計画はmemory_noteへ外部保存できます。\n' if pull else '')+'画面Evidenceを調べ、分かったこととunknownを区別してください。Before/Afterは必要に応じて取得する視覚Evidenceです。情報不足ならactions（旧visual_requestsも可）で領域・解像度・処理・比較・実験を選び、取得結果を見て続行してください。WATは任意の最終手段で、必要な場合はcandidateで実装計画を要求してください。採用評価では変化あり・なしを独立比較し、定数0/0.5/1・過去頻度・現行Agentの基準を維持します。\n'
     prompt+='ゲーム名や攻略を補完せず、分からない意味はunknownです。\n'
     prompt+='経験の略記：a=入力番号、f=画像特徴、d=画面変化。\n'
     prompt+='許可入力（0始まり。キー名は識別子で、ゲーム内の意味は未確認）：'+json.dumps(dict(enumerate(keys)),ensure_ascii=False,separators=(',',':'))+'\n'
     prompt+='過去評価：'+json.dumps(history,ensure_ascii=False,separators=(',',':'))+'\n'
     # World research does not request a full program; implementation has its own phase.
     from .research_actions import INSTRUCTIONS
+    from .research_mission import MISSION
+    prompt=MISSION+'\n'+prompt
     prompt+=INSTRUCTIONS+'\n経験:\n'+json.dumps(summaries,separators=(',',':'))
     # UTF-8 byte budget is conservative for the 8192-token managed context.
     # Never silently cut an Agent program or invent an answer to fit the budget.
@@ -701,6 +703,7 @@ class Scientist:
                 if job_state!='running' or self.live:self.current_job=None
 
     def agent_request(self,jid,payload):
+        payload.setdefault('memory_mode','pull')
         prompt=payload['prompt']
         draft=payload.get('repair_response') or payload.get('stream_draft')
         if draft:prompt+='\n前回の途中経過は保存されています。内容を引き継いで完全な応答を返してください。\n'+draft[:6000]
@@ -775,13 +778,18 @@ class Scientist:
             write_json(self.store.root/"host"/"model-capabilities.json", self.client.capabilities)
         from .research_actions import (MAX_CALLS,MAX_SECONDS,MAX_IMAGE_BYTES,INSTRUCTIONS,
             record_findings,run_actions,needs_followup,history_context,progress,allowed_evidence,context_entry,hypothesis_context,experiment_context)
+        from .research_mission import identity
+        payload['mission']=identity()
         payload.setdefault('research_started',time.time());payload['research_job']=jid
         if payload.get('pending_actions'):
             run_actions(self,jid,payload,payload['pending_actions']);payload.pop('pending_actions',None)
-        self.initial_visual_evidence(jid,payload)
+        if payload.get('memory_mode')!='pull':self.initial_visual_evidence(jid,payload)
         for _ in range(MAX_CALLS+1):
             payload['experiment_context']=experiment_context(self,jid)
             payload['hypothesis_context']=hypothesis_context(self,payload)
+            if payload.get('memory_mode')=='pull':
+                from .research_memory import overview
+                payload['memory_index']=overview(self,jid,payload)
             if payload.get('research_calls',0)>=MAX_CALLS or time.time()-payload['research_started']>=MAX_SECONDS or payload.get('research_limit'):
                 payload.setdefault('research_limit','calls' if payload.get('research_calls',0)>=MAX_CALLS else 'time')
                 self.activity.record('RESEARCH',f'limit job={jid} reason={payload["research_limit"]}')
@@ -794,7 +802,9 @@ class Scientist:
             # again by exact ID. Keep current context focused on the latest turn.
             visible = []
             if len(history)>8:payload['context_compactions']=payload.get('context_compactions',0)+1
-            for i, entry in enumerate(history[-8:],start=max(0,len(history)-8)):
+            history_count=max(2,sum(e.get('step')==payload.get('research_calls',0) for e in history[-4:])) if payload.get('memory_mode')=='pull' else 8
+            for i, entry in enumerate(history[-history_count:],start=max(0,len(history)-history_count)):
+                if payload.get('memory_mode')=='pull' and entry.get('kind')=='initial_evidence':continue
                 item=context_entry(entry,older=i<len(history)-4)
                 item.pop("native", None)
                 if entry.get("native") and i >= len(history)-4 and getattr(self.client,"vision",False):
@@ -806,6 +816,14 @@ class Scientist:
                     except (ValueError, OSError):
                         item["attachment_error"] = "Source image unavailable"
                 visible.append(item)
+            if payload.get('memory_mode')=='pull':
+                # These are records explicitly requested by the model, not a dump.
+                for item in payload.get('memory_results',[]):
+                    if item.get('step')!=payload.get('research_calls',0):continue
+                    view=context_entry(item);view['request'].pop('body',None)
+                    if view['request'].get('op')=='research_report':view['request']={k:v for k,v in view['request'].items() if k in ('op','title')}
+                    visible.append(view)
+                visible.sort(key=lambda item:item.get('step',0))
             rounds = payload.get("visual_rounds", 0)
             issued_step=payload.get('research_calls',0)+1
             new_ids=[f'r{issued_step}_{i}' for i in range(1,9) if f'r{issued_step}_{i}' not in payload.get('hypotheses',{})]
@@ -819,8 +837,10 @@ class Scientist:
                 visible=[];images=[]
             elif payload.get('repair_response'):
                 prefix+='\n研究JSONの形式修正。WAT生成・ABI修正へ移行しないでください。操作名はopの列挙値だけ、パラメータは別のJSONフィールドです。\n検査：'+payload.get('repair_error','')+'\n不完全な応答：'+payload['repair_response'][:3000]
+            from .research_mission import MISSION
+            if MISSION not in prefix:prefix=MISSION+'\n'+prefix
             prefix+='\n根拠IDはExperience IDのみ。observation IDは観測参照用で、findings.evidenceへ混ぜません。許可Evidence IDs：'+json.dumps(sorted(allowed_evidence(payload)))
-            prefix+='\n参照中の仮説（保存された主張と事前登録。変更は別IDへ）：'+json.dumps(payload['hypothesis_context'],ensure_ascii=False,separators=(',',':'))
+            prefix+='\n参照中の仮説（保存された主張と事前登録。変更は別IDへ）：'+json.dumps(payload['hypothesis_context'][-2:] if payload.get('memory_mode')=='pull' else payload['hypothesis_context'],ensure_ascii=False,separators=(',',':'))
             prefix+='\n今回の新規findings.id候補：'+json.dumps(new_ids)+'。既存仮説を使うだけならfindingsを空にしてactions.hypothesisへ既存の別名／IDを指定する。主張・事前登録を変更するなら新規IDで別仮説を定義する。'
             compact_history=False
             omitted_visual_results=0
@@ -900,7 +920,7 @@ class Scientist:
             payload['image_bytes']=payload.get('image_bytes',0)+image_bytes
             payload['research_calls']=payload.get('research_calls',0)+1
             step={'step':payload['research_calls'],'phase':('repair' if implementation_repair else 'protocol_repair') if payload.get('repair_response') else payload.get('research_phase','observation'),
-                  'started_at':time.time(),'consumed_actions':[r['action_id'] for r in payload.get('action_history',[]) if r['state'] in ('done','duplicate','error')], 'image_count':len(images)}
+                  'started_at':time.time(),'consumed_actions':[r['action_id'] for r in payload.get('action_history',[]) if r['state'] in ('done','duplicate','error')], 'image_count':len(images),'delivered_memory_actions':[{'action_id':item['action_id'],**{k:v for k,v in item.get('result',{}).items() if k in ('collection','ref','revision','offset','next_offset','content_sha256','status','source_revision','source_changed')}} for item in visible if 'action_id' in item]}
             payload.setdefault('research_steps',[]).append(step)
             self.store.set_job(jid,'running',payload)
             self.activity.update(experiment=f'研究Job {jid[:8]}：取得結果を再分析（step {payload["research_calls"]}）' if payload.get('action_history') else f'研究Job {jid[:8]}：観測・仮説を分析（step {payload["research_calls"]}）',next='必要な観測・実験をLLMが選択します')
@@ -931,6 +951,7 @@ class Scientist:
             if not requests:
                 payload['experiment_context']=experiment_context(self,jid)
                 payload['hypothesis_context']=hypothesis_context(self,payload)
+                if payload.get('memory_mode')=='pull':payload['memory_index']=overview(self,jid,payload)
                 if value.get('wat'):
                     progress(payload)['candidates']+=1
                     payload['candidate_sha256']=hashlib.sha256(value['wat'].encode()).hexdigest()
@@ -990,7 +1011,8 @@ class Scientist:
             payload['research_rows']=rows
             self.store.set_job(jid,'running',payload)
             self.store.pin([r['id'] for r in rows],'research-job-'+jid)
-        prompt=research_prompt(self.revisions.source(),rows,self.keys,self.store.reports()[:2])
+        payload.setdefault('memory_mode','pull')
+        prompt=research_prompt(self.revisions.source(),rows,self.keys,self.store.reports()[:2],pull=True)
         if payload.get('stream_draft') and not payload.get('repair_response'):
             payload['repair_response']=payload['stream_draft'];payload['repair_error']='保存された途中出力を完全なJSONに修正してください。'
         if payload.get('repair_response') and repair_kind(payload)=='implementation':prompt='修正フェーズ'

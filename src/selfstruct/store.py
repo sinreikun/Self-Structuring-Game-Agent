@@ -73,6 +73,8 @@ class Store:
         """)
         from .experiments import setup
         setup(self.db)
+        from .research_memory import setup as setup_memory
+        setup_memory(self.db)
         with self.db:
             self.db.execute("UPDATE events SET state='interrupted' WHERE state IN ('pending','sent')")
             self.db.execute("UPDATE jobs SET state='pending' WHERE state='running'")
@@ -358,6 +360,20 @@ class Store:
             return result
 
     def note_rows(self, category: str, limit: int = 80) -> list[dict]:
+        if category=='研究結果':
+            with self.lock:
+                if not self.db.execute("SELECT 1 FROM sqlite_master WHERE name='research_reports'").fetchone():return []
+                from .research_memory import render_report
+                result=[]
+                for r in self.db.execute('SELECT * FROM research_reports ORDER BY updated DESC LIMIT ?',(limit,)):
+                    doc=dict(r)
+                    for key in ('goal_evidence','findings','unknowns','next_steps'):doc[key]=json.loads(doc[key])
+                    result.append({'id':r['id'],'text':render_report(doc),'validation':'unknown','created':r['updated']})
+                return result
+        if category=='研究メモ':
+            with self.lock:
+                if not self.db.execute("SELECT 1 FROM sqlite_master WHERE name='research_notes'").fetchone():return []
+                return [{'id':r['id'],'kind':'research_note','text':r['title']+'\n'+r['body']+'\n（LLMの研究メモ・未検証）','validation':'unknown','evidence':r['evidence'],'created':r['updated']} for r in self.db.execute('SELECT * FROM research_notes ORDER BY updated DESC LIMIT ?',(limit,))]
         clauses={"実験":"kind='experiment'", "検証中":"validation='testing'", "判定不能":"validation='inconclusive'", "発見":"kind='observation'", "仮説":"kind='hypothesis'", "支持":"validation IN ('supported','reproduced')", "反証":"validation='refuted'"}
         with self.lock:
             return [dict(r) for r in self.db.execute("SELECT * FROM knowledge WHERE "+clauses.get(category,'1')+" ORDER BY id DESC LIMIT ?",(limit,))]

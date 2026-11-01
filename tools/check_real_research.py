@@ -24,15 +24,21 @@ def protocol_probe(controller):
         schema=deepcopy(options['schema']);schema['required']=list(dict.fromkeys([*schema['required'],'actions']))
         schema['properties']['wat']={'type':'string','enum':['']}
         schema['properties']['findings']['maxItems']=0
-        if not calls:
-            variant=schema['properties']['actions']['items']['anyOf'][0]
-            variant['properties']={k:v for k,v in variant['properties'].items() if k in ('op','event','phase','size','mode','output','limit')}
-            variant['properties']['event']={'type':'integer','enum':[rows[-1]['id']]}
-            variant['properties']['size']={'type':'array','items':{'type':'integer','minimum':1,'maximum':32},'minItems':2,'maxItems':2}
-            variant['properties']['output']={'type':'string','enum':['pixels','statistics']}
-            variant['required']=['op','event','phase','size','mode','output']
+        step=len(calls)
+        if step<3:
+            op=('memory_search','memory_read','observe')[step]
+            variant=next(v for v in schema['properties']['actions']['items']['anyOf'] if v['properties']['op']['enum']==[op])
+            if step==0:
+                values={'collection':'experience','ref':str(rows[-1]['id'])}
+            elif step==1:
+                record=json.loads(controller.store.get_job(jid)['payload'])['memory_results'][-1]['result']['records'][0]
+                values={'collection':'experience','ref':record['ref'],'revision':record['revision'],'limit':256}
+            else:values={'event':rows[-1]['id'],'phase':'before','size':[16,16],'mode':'RGB','output':'pixels','limit':64}
+            variant['properties']={k:v for k,v in variant['properties'].items() if k in ('op',*values)}
+            for key,value in values.items():variant['properties'][key]={'enum':[value],**({'type':'integer'} if type(value)==int else {'type':'string'} if isinstance(value,str) else {})}
+            variant['required']=['op',*values]
             schema['properties']['actions'].update(items=variant,minItems=1,maxItems=1)
-            prompt+='\nこれは観測APIの接続検証です。提示されたExperienceに対しobserveを1件だけ要求してください。opは名前だけ、他のパラメータは独立フィールドで指定してください。WATは不要です。'
+            prompt+='\nこれは取得式メモリと観測APIの接続検証です。指定schemaどおり'+op+'を1件だけ要求してください。WATは不要です。'
         else:
             schema['properties']['actions'].update(minItems=0,maxItems=0)
             prompt+='\n接続検証の取得結果を受け取りました。追加要求はせず、この結果で分かることを短く返してください。WATは不要です。'
@@ -45,9 +51,10 @@ def protocol_probe(controller):
     scientist.study(rows,jid)
     row=controller.store.get_job(jid);payload=json.loads(row['payload'])
     done=[a for a in payload.get('action_history',[]) if a['state']=='done' and a.get('result',{}).get('evidence')]
-    assert row['state']=='complete' and done and len(calls)>=2, 'Real model typed-action/result round trip failed'
+    assert row['state']=='complete' and done and len(calls)>=4, 'Real model typed-action/result round trip failed'
     assert any(s.get('consumed_actions') for s in payload['research_steps'][1:]), 'Real model did not consume tool results in same Job'
-    return {'status':'passed','directed':True,'autonomous_choice_verified':False,'same_job':True,'research_calls':len(calls),'executed_observations':len(done)}
+    assert payload['progress']['memory_reads']==1 and payload['progress']['memory_searches']==1
+    return {'memory_reads':1,'memory_searches':1,'status':'passed','directed':True,'autonomous_choice_verified':False,'same_job':True,'research_calls':len(calls),'executed_observations':len(done)}
 
 
 def main():
@@ -80,8 +87,8 @@ def main():
                     break
             time.sleep(.05)
         assert proposals>=1 and terminal, 'Real research did not complete within its budget'
-        observed=[entry for entry in payload.get('visual_history',[]) if entry.get('kind')=='initial_evidence' and entry.get('result',{}).get('evidence')]
-        assert payload.get('initial_visual_evidence') and len(observed)==2, 'Real research did not inspect its primary screen evidence'
+        observed=[entry for entry in payload.get('visual_history',[]) if entry.get('result',{}).get('evidence')]
+        assert payload.get('memory_mode')=='pull' and not payload.get('initial_visual_evidence'), 'Research must start from an index without automatic image injection'
         with controller.store.lock:
             response=controller.store.db.execute('SELECT response FROM proposals ORDER BY id DESC LIMIT 1').fetchone()['response']
         proposal=json.loads(response)
@@ -94,7 +101,7 @@ def main():
             data=json.loads(args.report.read_text(encoding='utf-8'))
             data['checks'].append('real research prompt completed with structured proposal')
             data['directed_protocol_probe']=probe
-            data['research']={'status':'passed','synthetic_only':True,'valid_structured_proposal':True,'adoption_required':False,'job_preserved':True,'initial_visual_evidence':True,'visual_observations':len(observed),'repair_failures':payload.get('repair_failures',0),'job_outcome':payload.get('outcome','evaluated'),'adoption_verified':False,'research_calls':payload.get('research_calls',0),'research_progress':payload.get('progress',{}),'executed_actions':sum(e.get('state')=='done' for e in payload.get('action_history',[])),'stalled':payload.get('stalled',False),'limit':payload.get('research_limit'),'same_job_reinference':any(e.get('consumed_actions') for e in payload.get('research_steps',[]))}
+            data['research']={'status':'passed','synthetic_only':True,'valid_structured_proposal':True,'adoption_required':False,'job_preserved':True,'memory_mode':'pull','initial_visual_evidence':False,'visual_observations':len(observed),'repair_failures':payload.get('repair_failures',0),'job_outcome':payload.get('outcome','evaluated'),'adoption_verified':False,'research_calls':payload.get('research_calls',0),'research_progress':payload.get('progress',{}),'executed_actions':sum(e.get('state')=='done' for e in payload.get('action_history',[])),'stalled':payload.get('stalled',False),'limit':payload.get('research_limit'),'same_job_reinference':any(e.get('consumed_actions') for e in payload.get('research_steps',[]))}
             from selfstruct.config import write_json
             write_json(args.report,data)
         print('PASS: real model research response archived; observations:',len(controller.store.knowledge_rows()),

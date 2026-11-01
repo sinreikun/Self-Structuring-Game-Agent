@@ -140,3 +140,15 @@ experiment_contextには、そのJob内の実験ID・対象仮説・状態・要
 Jobのexperiment_contextは詳細を保持し、モデルにはexperiment_prompt_contextで重複を省いた台帳を返します。入力枠が不足する場合、最近のアクション履歴と別名を圧縮し、古い視覚配列・結果を省略します。現在Jobで実験した仮説の主張と事前登録、入力別内訳と評価条件を保持します。最新の実画素／画像を優先し、最新画素を64値へ制限する場合は元の値と次offsetを明示します。保存済みvisual_historyとaction_historyは変更しません。
 
 context_budgetにはモデルtokenizerのinput_count、context、reserved_output、output_budget、image_count、compact_history、omitted_visual_results、omitted_attachmentsを保存し、診断ZIPへ含めます。出力目標は可能なら2048、最新Vision画像を保持しても最低512の出力枠が確保できるなら画像を残します。不可約の入力も収まらない場合は既存のinput_budget_exceededで有限に保存終了します。
+
+### 0.7.0: 主目的・副目的と取得式の外部記憶
+
+主目的は研究対象の仕組みと目的を理解し、その目的に沿って操作することです。副目的は人間向け研究結果の作成です。画面変化や予測損失を目的そのものへ代入しません。`research_mission.MISSION`が情報源・手段・権限・役割を説明し、Jobと診断に方針の版を保存します。
+
+初回は3件の経験メタデータと小さい索引を渡し、ScientistによるBefore/Afterの自動先読みを行いません。元のGame/Playerの経験収集は継続します。`memory_search(collection,query/ref,cursor,watermark)`で索引を調べ、`memory_read(collection,ref,revision,offset,limit)`で本文を取得します。limitは最大1600文字です。正本の版と選択版を照合し、検索した版のスナップショットを同じJob内で最大32件・各64KiBまで保持します。本文ページは選択版で返し、正本が更新されればsource_changed/source_revisionで明示します。保持されていない旧版の要求はstaleと現在の版を返します。完了Jobの読取スナップショットは次回保存時に解放します。検索watermarkは挿入の上限を固定するもので、全記録の更新を凍結するスナップショットではありません。本文ページは必ず同じ版で取得してください。
+
+保存領域はexperience/knowledge/experiment/visual/research/note/reportです。各領域は個体内の既存正本または専用テーブルを使い、任意ファイルやSQLを実行しません。取得した完了経験は同じJobの根拠IDとして登録・保護します。削除済みの記録はunavailableとし、内容を補完しません。
+
+`memory_note`は短い課題・計画・不明点を保存します。既存メモの更新にはrefとrevisionを使い、古い版での更新を拒否します。`research_report`は対象の目的、goal_status、根拠、観測記述・仮説、未確認事項、次の方針を保存し、GUI「研究結果」と診断内の研究結果.mdから読めます。メモ・報告は仮説の支持・反証や候補採用を自動変更しません。
+
+実機確認では、(1)初回のLLMが索引から何を検索・取得したか、(2)実際に要求した目・領域・解像度、(3)結果が同じJobへ返ったか、(4)対象の目的を何と考え根拠をどう記したか、(5)目的に沿う操作・実験へ進んだか、(6)研究結果と未確認事項を人間向けに残したかを確認します。memory_*のref/revision/offset/content_sha256、研究stepsのconsumed_actions、実験イベント、mission、context_budget、研究メモ・研究結果を診断ZIPで追跡できます。レポート未提出や目的不明もそのまま記録し、達成扱いしません。

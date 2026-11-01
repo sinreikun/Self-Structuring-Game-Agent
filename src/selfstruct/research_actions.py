@@ -12,23 +12,19 @@ MAX_ACTIONS=24
 MAX_SECONDS=600
 MAX_IMAGE_BYTES=4*1024*1024
 
-INSTRUCTIONS='''研究フェーズではWAT生成は必須ではありません。情報不足なら推測で完了せずactionsを要求してください。
-形式: {"findings":[{"id":"h1","text":"仮説","evidence":[ID]}],"actions":[],"problem":"","reason":"","wat":""}
-入力番号は0始まり、現在個体の許可入力だけです。次を見たい・試したい場合は文章だけで終わらず具体的actionsへ進んでください。
-actionsは最大4件。opには操作名だけを入れ、event等は別のJSONプロパティへ入れる。opの中にJSONやカンマ区切りコマンドを書くことは禁止。
-正しい追加観測例: {"op":"observe","event":10582,"phase":"before","box":[1040,0,1600,320],"size":[128,64],"mode":"RGB","output":"pixels","limit":64}
-正しい比較例: {"op":"compare","event":10582,"phase":"before","compare":{"event":10582,"phase":"after"},"size":[64,32],"output":"statistics"}
-正しい実験例: {"op":"experiment","hypothesis":"h1","action":4,"duration":60,"wait":100,"repeat":3}
-例のID・入力は説明用。必ず今回提示されたID・許可入力へ置き換える。
-各opのフィールド:
-observe: event,phase=before/after/diff,box=[左,上,右,下],size=[幅,高さ],mode=RGB/L,output=pixels/statistics/histogram/components/image,operations,offset,limit。event省略は現在画面。
-compare: observeと同じ指定にcompare={event,phase,box}を追加。2つのEvidenceの同一領域を比較。
-analyze: observeと同じ指定にoperations=[{op:edge/threshold/grayscale/blur/invert,...}]を追加。解析器APIもactionsから直接利用可。
-experiment: hypothesis=h1または既存仮説ID（必須。先にfindingsへid/text/evidenceを定義）,action=入力番号,duration=10..500ミリ秒,wait=10..2000ミリ秒,repeat=1..8。最大4計画/32入力。condition={box,size,mode,operations,mean_min:0..255,mean_max:0..255,max_wait_steps:1..128}で画素平均範囲を満たす状態を待てる。意味ラベルは禁止。conditionは実行状態の選別条件で、観測フォーマット指定ではない。指定時はmean_min/mean_maxの少なくとも1つが必須。無条件ならcondition自体を省略する。入力結果は別observe/compareで確認する。experiment_context.hypothesesのevaluation_requirementsには事前登録の有無・同じ登録入力の標本数・不足数・判定不能の理由がある。単なるcompleted合計を統計標本数と混同しない。未登録の結果へ後から確率を付けて支持・反証してはいけない。PAUSE中は入力しない。STOP/中断は再送しない。
-evaluate: hypothesis=既存の別名またはID,change_probability=0..1。画面変化確率を検証する場合は実験より先にfindings.actionとchange_probabilityを登録する。未登録や事後に変更した確率は判定不能。実験の独立した完了経験16件以上で画面変化確率のみ統計比較。少数・異なる入力混在・意味推測は判定不能。
-candidate: problem, evidence=[取得済みIDを2件以上], behavior, evaluationを指定すると実装フェーズへ。根拠・必要挙動・評価条件を揃えてから要求。
-findingsにactionとchange_probabilityを仮説作成時に指定すると事前登録となる（無条件の指定入力後の画面変化確率のみ）。条件付き仮説の意味・因果は未確認のまま。新規findingsのidはその推論ステップで提示された未使用ID候補から選び、experiment/evaluateで参照する。同じidを別の仮説や変更した主張に再割当しない。新しい仮説にはh2/h3等の新しいidを使う。各結果は同じJobへ返され、次の推論で使える。新しい根拠、仮説、検証、解析器、候補は進展として記録する。観測・仮説だけの完了も正当。ただし次の行動が必要なら実行せず完了としない。
-同一の過去Evidence・領域・解像度・処理を繰り返しても新情報にはならない。1 Job最大10推論/24要求/600秒/画像合計4MiB。上限時は成果と未確認事項を保存して終了。'''
+INSTRUCTIONS='''研究応答JSON: {"findings":[{"id":"供給された新規ID","text":"主張","evidence":[ID]}],"actions":[],"problem":"","reason":"","wat":""}。WATは任意。actionsは最大4件、opは操作名だけで引数は別フィールド。
+例 {"op":"observe","event":1,"phase":"before","size":[32,32],"mode":"RGB","output":"pixels","limit":64}。例のIDは今回の索引・許可入力へ置換する。
+最初は索引のみ。保存全履歴や原画像を入力へ集積せず、自分で必要な情報を要求する。各操作の型・詳細な引数は生成用schemaと以下の視覚API説明に従う。
+memory_search: collection=experience/knowledge/experiment/visual/research/note/report,query（文字列検索）またはref（既知ID）,limit=1..8,cursor,watermark。索引にref/revisionを返す。
+memory_read: collection,ref,revision,offset,limit=1..1600文字。本文JSONを取得。next_offsetで続き、選択版は同じJobに最大32件保持。source_changedは正本の更新を示す。最新が必要なら再検索。staleなら新しいrevisionでoffset=0へ。異なる版を結合しない。unavailableは内容不明。
+memory_note: title,body,evidenceで短い課題・計画・不明点を外部保存。更新はref/revision必須。別Jobや再起動後も検索可。メモは未検証。
+research_report: title,target_goal,goal_status=unknown/hypothesis/observed,goal_evidence,findings=[{text,status:observation/hypothesis,evidence}],unknowns,next_steps。日本語の人間向け副目的。報告だけを量産しない。
+observe/compare/analyze: eventまたはobservation,phase,box=[左,上,右,下],size,mode,output,operations,offset,limit。必要な場所・方法は自分で選ぶ。compareに第2参照を指定。詳細は視覚API説明。
+experiment: hypothesis（既存ID/別名、必須）,action（0始まり許可入力）,duration=10..500ms,wait=10..2000ms,repeat=1..8。最大4計画/32入力。conditionは画素mean_min/mean_maxによる状態選別。無条件は省略。意味ラベルではない。完了Experienceを返す。PAUSE中は入力せずSTOP後は再送しない。
+evaluate: hypothesis,change_probability=0..1。画像変化率を検証するなら実験前にfindings.actionとchange_probabilityを登録する。未登録・事後変更・条件選別・異なる入力混在・16件未満は判定不能。意味や目標達成は検証しない。
+candidate: problem,evidence（取得済みID2件以上）,behavior,evaluationで持続する挙動の実装へ。根拠と評価条件を揃える。
+新規findings.idは毎回提示された候補から選ぶ。同じidへ別の主張や確率を再割当しない。既存仮説を使うだけならfindings=[]でactions.hypothesisへ既存ID/別名を指定する。目的・意味が未確認ならそのまま記録する。
+取得結果は同じJobへ返る。同じ過去Evidence/処理を再要求しても新情報ではない。1 Job最大10推論/24要求/600秒/画像4MiB。必要なら具体的actionsで続行、不要なら根拠・未確認事項を残して終了。'''
 
 
 def allowed_evidence(payload):
@@ -37,6 +33,7 @@ def allowed_evidence(payload):
     for h in payload.get('action_history',[]):
         for row in h.get('result',{}).get('events',[]):
             if row.get('state')=='complete':ids.add(row['id'])
+    ids.update(payload.get('memory_evidence',[]))
     return ids
 
 
@@ -102,6 +99,19 @@ def execute(scientist,jid,payload,request,token):
     from .research_schema import action_schema,validate
     validate(action_schema(len(scientist.keys)),request)
     op=request.get('op','observe');p=progress(payload)
+    if op in ('memory_search','memory_read','memory_note','research_report'):
+        from .research_memory import search,read,note,report
+        result={'memory_search':search,'memory_read':read,'memory_note':note,'research_report':report}[op](scientist,jid,payload,request)
+        payload['research_phase']={'memory_note':'planning','research_report':'reporting'}.get(op,'retrieval')
+        label={'memory_search':'記録を検索','memory_read':'必要な記録を取得','memory_note':'課題・計画を保存','research_report':'人間向け研究結果を保存'}[op]
+        scientist.activity.update(experiment=f'研究Job {jid[:8]}：{label}',next='研究対象の目的に沿う記録・観測・操作をLLMが選びます')
+        if op=='memory_note' and result.get('status')=='saved':scientist.activity.update(purpose=request['title'])
+        scientist.activity.record('MEMORY',f'job={jid} op={op} collection={request.get("collection","note")} ref={request.get("ref","")} state={result.get("status","index")}')
+        counter={'memory_read':'memory_reads','memory_search':'memory_searches','memory_note':'notes','research_report':'reports'}[op]
+        p[counter]=p.get(counter,0)+1
+        if 'content' in result:result['content_sha256']=hashlib.sha256(result['content'].encode()).hexdigest()
+        payload['memory_results']=payload.get('memory_results',[])+[{'action_id':token,'step':payload.get('research_calls',0),'request':request,'result':result}]
+        return result,None,None
     payload['research_phase']={'experiment':'experiment','evaluate':'evaluation','analyzer_create':'analyzer_creation','analyzer_evaluate':'evaluation','analyze':'analysis'}.get(op,'observation')
     if op=='experiment':
         if not getattr(scientist,'experiments',None):raise ValueError('Player experiment executor unavailable')
@@ -174,7 +184,7 @@ def run_actions(scientist,jid,payload,requests):
         old=next((r for r in ledger if r['fingerprint']==fingerprint and r['state']=='done'),None)
         record={'action_id':token,'fingerprint':fingerprint,'request':request,'state':'running','at':time.time(),'step':payload.get('research_calls',0)}
         ledger.append(record);scientist.store.set_job(jid,'running',payload)
-        if old and not request.get('fresh') and request.get('op')!='experiment':
+        if old and not request.get('fresh') and request.get('op') not in ('experiment','memory_search','memory_read','memory_note','research_report'):
             record.update(state='duplicate',result={'duplicate':True,'original_step':old['step'],'result':old['result']})
             payload['duplicate_requests']=payload.get('duplicate_requests',0)+1
             scientist.activity.record('RESEARCH',f'duplicate job={jid} step={record["step"]} op={request.get("op","observe")}')
@@ -217,6 +227,16 @@ def experiment_prompt_context(summary):
 
 
 def history_context(payload,compact=False):
+    if payload.get('memory_mode')=='pull':
+        recent=[]
+        for entry in payload.get('action_history',[])[-2:]:
+            result=entry.get('result',{});request={k:v for k,v in entry.get('request',{}).items() if k!='body' and (entry.get('request',{}).get('op')!='research_report' or k in ('op','title'))}
+            view={k:v for k,v in result.items() if k in ('state','error','detail','completed','hypothesis','status','n','interval95','pre_registered','reasons','registered_target','records','collection','ref','revision','next_offset','experiment')}
+            if 'events' in result:
+                view['event_ids']=[r['id'] for r in result['events']]
+                if not compact:view['events']=[{k:v for k,v in r.items() if k in ('id','action','change','state')} for r in result['events']]
+            recent.append({'action_id':entry['action_id'],'request':request,'state':entry['state'],'result':view})
+        return json.dumps({'job':payload.get('research_job'),'step':payload.get('research_calls',0),'phase':payload.get('research_phase'),'index':payload.get('memory_index',{}),'actions':recent,'redirect':payload.get('redirect','')},ensure_ascii=False,separators=(',',':'))
     history=[]
     count=2 if compact else 4
     for entry in payload.get('action_history',[])[-count:]:

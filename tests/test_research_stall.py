@@ -115,20 +115,24 @@ def test_legacy_62_failure_job_is_retired_without_repeating_inference(research_w
     finally:scientist.close()
 
 
-def test_text_scientist_receives_actual_rgb_before_after_before_first_inference(research_world):
+def test_text_scientist_pulls_actual_rgb_before_after_on_its_own_request(research_world):
     store,revisions,event=research_world
     class Client:
+        calls=0
         def complete(self,prompt,**kwargs):
-            assert '"pixels":[18,27,36' in prompt and '"pixels":[54,63,72' in prompt
-            assert '"phase":"before"' in prompt and '"phase":"after"' in prompt
-            assert '"mode":"RGB"' in prompt and 'visual_requests' in prompt
+            self.calls+=1
             assert 'images' not in kwargs
+            if self.calls==1:
+                assert '\"pixels\":[18,27,36' not in prompt and 'memory_search' in prompt
+                return json.dumps({'actions':[{'op':'observe','event':event,'phase':phase,'mode':'RGB','size':[8,8],'output':'pixels','limit':192} for phase in ('before','after')]})
+            assert '\"pixels\":[18,27,36' in prompt and '\"pixels\":[54,63,72' in prompt
+            assert '\"phase\":\"before\"' in prompt and '\"phase\":\"after\"' in prompt
             return '{"findings":[],"wat":""}'
-    scientist=Scientist(store,revisions,Client(),['A'],10000,lambda _:None)
-    job=store.job('research',{})
-    scientist.study(store.rows(),job)
+    client=Client();scientist=Scientist(store,revisions,client,['A'],10000,lambda _:None)
+    job=store.job('research',{});scientist.study(store.rows(),job)
     payload=json.loads(store.get_job(job)['payload'])
-    assert payload['initial_visual_evidence'] and len(payload['visual_history'])==2
+    assert client.calls==2 and payload['memory_mode']=='pull' and not payload.get('initial_visual_evidence')
+    assert len(payload['visual_history'])==2
     assert all(entry['result']['evidence']['event']==event for entry in payload['visual_history'])
     assert store.get_job(job)['state']=='complete'
 
@@ -174,7 +178,7 @@ def test_legacy_failure_yields_to_fresh_visual_research_without_resetting_indivi
         def complete(self,prompt,**kw):
             self.calls+=1
             assert 'old invalid draft' not in prompt
-            assert '"kind":"initial_evidence"' in prompt
+            assert 'memory_search' in prompt and '"kind":"initial_evidence"' not in prompt
             return '{"findings":[],"wat":""}'
     client=Client();scientist=Scientist(store,revisions,client,['A'],48,lambda _:None)
     active=revisions.active;scientist.start()
@@ -192,7 +196,7 @@ def test_legacy_failure_yields_to_fresh_visual_research_without_resetting_indivi
             time.sleep(.01)
         assert len(fresh)==1 and client.calls==1
         payload=json.loads(fresh[0]['payload'])
-        assert payload['visual_history'][0]['result']['evidence']['event']==new_ids[-1]
+        assert not payload.get('visual_history') and payload['memory_index']['seed_experience_ids'][-1]==new_ids[-1]
         assert payload['outcome']=='observations_only' and not payload['implementation_verified']
         assert revisions.active==active and store.counts()['improvements']==0
     finally:scientist.close()

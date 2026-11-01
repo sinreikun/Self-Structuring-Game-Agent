@@ -38,8 +38,8 @@ def test_same_job_crop_compare_experiment_evaluate_analyzer_loop(tmp_path,vision
                 assert '許可入力' in prompt and '"0":"A"' in prompt and '"1":"B"' in prompt
                 return json.dumps({'actions':[{'op':'observe','event':last,'phase':'before','box':[80,0,160,48],'size':[128,64],'mode':'RGB','output':'image' if vision else 'pixels','limit':64}]})
             assert f'"job":"{job}"' in prompt and '追加観測結果' in prompt
-            if vision:assert options.get('images') and all(i.startswith('data:image/png;base64,') for i in options['images'])
-            else:assert 'images' not in options and ('pixels' in prompt or 'mean' in prompt)
+            if vision and n<=6:assert options.get('images') and all(i.startswith('data:image/png;base64,') for i in options['images'])
+            elif not vision:assert 'images' not in options and ('pixels' in prompt or 'mean' in prompt)
             if n==2:
                 assert '"box":[80,0,160,48]' in prompt and '"size":[128,64]' in prompt
                 return json.dumps({'actions':[{'op':'compare','event':last,'phase':'before','compare':{'event':older,'phase':'after'},'box':[80,0,160,48],'size':[64,32],'output':'statistics'}]})
@@ -221,7 +221,7 @@ def test_each_research_budget_saves_truthful_terminal_outcome(tmp_path,monkeypat
         calls=0
         def complete(self,prompt,**options):
             self.calls+=1
-            return json.dumps({'actions':[{'op':'observe','event':eid,'size':[n,n],'output':'statistics'} for n in (32,64)]})
+            return json.dumps({'actions':[{'op':'observe','event':eid,'size':[n,n],'output':'image' if budget=='images' else 'statistics'} for n in (32,64)]})
     client=Client();c.scientist.client=client;job=c.store.job('research',{})
     if budget=='time':monkeypatch.setattr(research_actions,'MAX_SECONDS',-1)
     elif budget=='images':monkeypatch.setattr(research_actions,'MAX_IMAGE_BYTES',1)
@@ -230,8 +230,8 @@ def test_each_research_budget_saves_truthful_terminal_outcome(tmp_path,monkeypat
         c.scientist.study(c.store.rows(),job);p=json.loads(c.store.get_job(job)['payload'])
         assert c.store.get_job(job)['state']=='complete' and p['outcome']=='research_limit'
         assert p['research_limit']=={'time':'time','images':'image_bytes','actions':'actions'}[budget]
-        assert client.calls==(1 if budget=='actions' else 0)
-        assert len(p.get('action_history',[]))==(1 if budget=='actions' else 0)
+        assert client.calls==(0 if budget=='time' else 1)
+        assert len(p.get('action_history',[]))=={'time':0,'actions':1,'images':2}[budget]
     finally:c.close()
 
 
@@ -392,7 +392,7 @@ def test_managed_context_compacts_old_results_without_mutating_the_job_journal(t
         result,_=c.visual.handle(req)
         history.append({'request':req,'result':result,'native':False})
     original=json.dumps(history,sort_keys=True)
-    job=c.store.job('research',{'research_rows':c.store.rows(),'initial_visual_evidence':True,'visual_history':history,'research_calls':6})
+    job=c.store.job('research',{'memory_mode':'legacy','research_rows':c.store.rows(),'initial_visual_evidence':True,'visual_history':history,'research_calls':6})
     try:
         c.scientist.study(c.store.rows(),job);p=json.loads(c.store.get_job(job)['payload'])
         assert len(calls)==1 and c.store.get_job(job)['state']=='complete' and p['context_compactions']>=1
@@ -560,7 +560,7 @@ def test_managed_context_with_four_experiments_preserves_targets_and_repair(tmp_
     from selfstruct.research import LocalLLM
     from selfstruct.research_actions import record_findings
     c=Controller(Config(root=str(tmp_path),keys=['A','B'],research_every=100000),UnlabelledDynamics());c.step();eid=c.last_eid
-    job=c.store.job('research',{});p={'research_rows':c.store.rows(),'research_calls':6,'initial_visual_evidence':True}
+    job=c.store.job('research',{});p={'memory_mode':'legacy','research_rows':c.store.rows(),'research_calls':6,'initial_visual_evidence':True}
     findings=[{'id':f'r{i}_1','text':f'実験対象{i}：'+('画像変化の再現性はまだ不明。'*14),'evidence':[eid]} for i in range(1,5)]
     record_findings(c.scientist,job,p,{'findings':findings})
     for i in range(1,5):
