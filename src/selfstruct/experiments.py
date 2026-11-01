@@ -125,7 +125,7 @@ class Experiments:
             if not hypothesis_row:raise ValueError('Unknown hypothesis')
             ids=[];conditional=False
             for r in self.store.db.execute('SELECT events,request FROM research_experiments WHERE hypothesis=?',(hypothesis,)):
-                ids+=json.loads(r[0]);conditional=conditional or bool(json.loads(r[1]).get('condition'))
+                ids+=json.loads(r[0]);condition=json.loads(r[1]).get('condition') or {};conditional=conditional or condition.get('mean_min',0)>0 or condition.get('mean_max',255)<255
             ids=sorted(set(ids))
             rows=[dict(r) for r in self.store.db.execute('SELECT id,change,action FROM events WHERE state=\'complete\' AND id IN ('+','.join('?' for _ in ids)+')',ids)] if ids else []
             # A small experiment cannot prove support. Different inputs must not be pooled.

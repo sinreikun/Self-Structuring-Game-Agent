@@ -23,6 +23,7 @@ def protocol_probe(controller):
     def directed(prompt,**options):
         schema=deepcopy(options['schema']);schema['required']=list(dict.fromkeys([*schema['required'],'actions']))
         schema['properties']['wat']={'type':'string','enum':['']}
+        schema['properties']['findings']['maxItems']=0
         if not calls:
             variant=schema['properties']['actions']['items']['anyOf'][0]
             variant['properties']={k:v for k,v in variant['properties'].items() if k in ('op','event','phase','size','mode','output','limit')}

@@ -774,7 +774,7 @@ class Scientist:
             from .config import write_json
             write_json(self.store.root/"host"/"model-capabilities.json", self.client.capabilities)
         from .research_actions import (MAX_CALLS,MAX_SECONDS,MAX_IMAGE_BYTES,INSTRUCTIONS,
-            record_findings,run_actions,needs_followup,history_context,progress,allowed_evidence)
+            record_findings,run_actions,needs_followup,history_context,progress,allowed_evidence,context_entry)
         payload.setdefault('research_started',time.time());payload['research_job']=jid
         if payload.get('pending_actions'):
             run_actions(self,jid,payload,payload['pending_actions']);payload.pop('pending_actions',None)
@@ -791,13 +791,9 @@ class Scientist:
             # Earlier numeric payloads stay durably journaled and can be requested
             # again by exact ID. Keep current context focused on the latest turn.
             visible = []
-            for i, entry in enumerate(history):
-                item = json.loads(json.dumps(entry))
-                if i < len(history)-4 and "result" in item:
-                    for key in ("pixels", "gray", "histogram", "components"):
-                        if key in item["result"]:
-                            item["result"].pop(key)
-                            item["payload_omitted"] = "Older array retained in job journal; request the same observation/offset to inspect again"
+            if len(history)>8:payload['context_compactions']=payload.get('context_compactions',0)+1
+            for i, entry in enumerate(history[-8:],start=max(0,len(history)-8)):
+                item=context_entry(entry,older=i<len(history)-4)
                 item.pop("native", None)
                 if entry.get("native") and i >= len(history)-4 and getattr(self.client,"vision",False):
                     try:
@@ -821,7 +817,7 @@ class Scientist:
             prefix+='\n根拠IDはExperience IDのみ。observation IDは観測参照用で、findings.evidenceへ混ぜません。許可Evidence IDs：'+json.dumps(sorted(allowed_evidence(payload)))
             prefix+='\n研究履歴：'+history_context(payload)
             def render():
-                return prefix+"\n追加観測結果（attachment_indexは画像添付の0始まり番号）:"+json.dumps(visible, ensure_ascii=False, separators=(",", ":"))
+                return prefix+"\n追加観測結果（attachment_indexは画像添付の0始まり番号。古い結果はJob履歴へ保持し必要なら再要求）:"+json.dumps(visible, ensure_ascii=False, separators=(",", ":"))
             text = render()
             # Context pressure must be recoverable, never cause an endless retry
             # with the same oversized pixels. Expose exact replayable references.

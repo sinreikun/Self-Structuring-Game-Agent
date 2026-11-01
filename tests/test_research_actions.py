@@ -341,3 +341,59 @@ def test_protocol_repair_keeps_observations_and_can_request_tools_without_wat(tm
         assert p['progress']['candidates']==0 and p['research_steps'][1]['phase']=='protocol_repair'
         assert 'repair_response' not in p
     finally:c.close()
+
+
+def test_research_schema_requires_testable_condition_and_linked_hypothesis():
+    from selfstruct.research_schema import action_schema,validate
+    schema=action_schema(15)
+    with pytest.raises(ValueError):validate(schema,{'op':'experiment','action':6,'hypothesis':'h1','condition':{'size':[8,8],'mode':'RGB'}})
+    with pytest.raises(ValueError):validate(schema,{'op':'experiment','action':6})
+    validate(schema,{'op':'experiment','action':6,'hypothesis':'h1'})
+    validate(schema,{'op':'experiment','action':6,'hypothesis':'h1','condition':{'mean_min':1.5}})
+    with pytest.raises(ValueError):validate(schema,{'op':'observe','event':27701,'observation':2})
+    with pytest.raises(ValueError):validate(schema,{'op':'observe','event':27701,'fresh':True})
+    with pytest.raises(ValueError):validate(schema,{'op':'compare','event':27701,'compare':{'event':27701,'observation':2}})
+    validate(schema,{'op':'observe','observation':2,'phase':'before'})
+    validate(schema,{'op':'observe','fresh':True})
+
+
+def test_full_pixel_range_is_unconditional_for_preregistered_evaluation(tmp_path):
+    c=Controller(Config(root=str(tmp_path),keys=['A','B']),UnlabelledDynamics());c.step()
+    try:
+        kid=c.store.knowledge('hypothesis','無条件の画像差分の確率','inferred','hypothesis',[c.last_eid]);c.store.claim(kid,'B',1,c.last_eid)
+        job=c.store.job('research',{})
+        for token in ('s1','s2'):
+            c.experiments.submit(job,token,{'action':1,'repeat':8,'duration':10,'wait':10,'condition':{'mean_min':0,'mean_max':255}},kid)
+            for _ in range(8):c.step()
+        assert c.experiments.evaluate(kid,1)['status']=='supported'
+        # A genuinely selective condition must not prove an unconditional claim.
+        c.experiments.submit(job,'s3',{'action':1,'condition':{'mean_min':254}},kid)
+        assert c.experiments.evaluate(kid,1)['status']=='inconclusive'
+    finally:c.close()
+
+
+def test_managed_context_compacts_old_results_without_mutating_the_job_journal(tmp_path,monkeypatch):
+    from selfstruct.research import LocalLLM
+    c=Controller(Config(root=str(tmp_path),keys=['A','B']),UnlabelledDynamics());c.step();eid=c.last_eid
+    client=LocalLLM('http://127.0.0.1:8766/v1','fixture');client.context=8192
+    monkeypatch.setattr(client,'health',lambda:None);monkeypatch.setattr(client,'count_tokens',lambda prompt:len(prompt)//2)
+    calls=[]
+    def complete(prompt,**options):
+        calls.append(prompt)
+        assert 'hashes' not in prompt and 'Older full result retained' in prompt
+        assert options['max_tokens']>=512
+        return '{"findings":[],"actions":[],"problem":"","reason":"","wat":""}'
+    monkeypatch.setattr(client,'complete',complete);c.scientist.client=client
+    history=[]
+    for i in range(24):
+        req={'op':'observe','event':eid,'phase':'before','box':[i,0,128,96],'size':[32,32],'mode':'RGB','output':'pixels','limit':128}
+        result,_=c.visual.handle(req)
+        history.append({'request':req,'result':result,'native':False})
+    original=json.dumps(history,sort_keys=True)
+    job=c.store.job('research',{'research_rows':c.store.rows(),'initial_visual_evidence':True,'visual_history':history,'research_calls':6})
+    try:
+        c.scientist.study(c.store.rows(),job);p=json.loads(c.store.get_job(job)['payload'])
+        assert len(calls)==1 and c.store.get_job(job)['state']=='complete' and p['context_compactions']>=1
+        assert json.dumps(p['visual_history'],sort_keys=True)==original
+        assert len(p['visual_history'])==24 and 'pixels' in p['visual_history'][0]['result']
+    finally:c.close()

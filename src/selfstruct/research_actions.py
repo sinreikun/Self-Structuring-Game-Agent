@@ -24,10 +24,10 @@ actionsは最大4件。opには操作名だけを入れ、event等は別のJSON�
 observe: event,phase=before/after/diff,box=[左,上,右,下],size=[幅,高さ],mode=RGB/L,output=pixels/statistics/histogram/components/image,operations,offset,limit。event省略は現在画面。
 compare: observeと同じ指定にcompare={event,phase,box}を追加。2つのEvidenceの同一領域を比較。
 analyze: observeと同じ指定にoperations=[{op:edge/threshold/grayscale/blur/invert,...}]を追加。解析器APIもactionsから直接利用可。
-experiment: hypothesis=h1または既存仮説ID,action=入力番号,duration=10..500ミリ秒,wait=10..2000ミリ秒,repeat=1..8。最大4計画/32入力。condition={box,size,mode,operations,mean_min:0..255,mean_max:0..255,max_wait_steps:1..128}で画素平均範囲を満たす状態を待てる。意味ラベルは禁止。省略は現在状態で実行。PAUSE中は入力しない。STOP/中断は再送しない。
+experiment: hypothesis=h1または既存仮説ID（必須。先にfindingsへid/text/evidenceを定義）,action=入力番号,duration=10..500ミリ秒,wait=10..2000ミリ秒,repeat=1..8。最大4計画/32入力。condition={box,size,mode,operations,mean_min:0..255,mean_max:0..255,max_wait_steps:1..128}で画素平均範囲を満たす状態を待てる。意味ラベルは禁止。conditionは実行状態の選別条件で、観測フォーマット指定ではない。指定時はmean_min/mean_maxの少なくとも1つが必須。無条件ならcondition自体を省略する。入力結果は別observe/compareで確認する。PAUSE中は入力しない。STOP/中断は再送しない。
 evaluate: hypothesis=h1またはID,change_probability=0..1。実験の独立した完了経験16件以上で画面変化確率のみ統計比較。少数・異なる入力混在・意味推測は判定不能。
 candidate: problem, evidence=[取得済みIDを2件以上], behavior, evaluationを指定すると実装フェーズへ。根拠・必要挙動・評価条件を揃えてから要求。
-findingsにactionとchange_probabilityを仮説作成時に指定すると事前登録となる（無条件の指定入力後の画面変化確率のみ）。条件付き仮説の意味・因果は未確認のまま。findingsのidをexperiment/evaluateで参照可能。各結果は同じJobへ返され、次の推論で使える。新しい根拠、仮説、検証、解析器、候補は進展として記録する。観測・仮説だけの完了も正当。ただし次の行動が必要なら実行せず完了としない。
+findingsにactionとchange_probabilityを仮説作成時に指定すると事前登録となる（無条件の指定入力後の画面変化確率のみ）。条件付き仮説の意味・因果は未確認のまま。findingsには必ず空でないidを付け、experiment/evaluateで参照する。同じidを別の仮説や変更した主張に再割当しない。新しい仮説にはh2/h3等の新しいidを使う。各結果は同じJobへ返され、次の推論で使える。新しい根拠、仮説、検証、解析器、候補は進展として記録する。観測・仮説だけの完了も正当。ただし次の行動が必要なら実行せず完了としない。
 同一の過去Evidence・領域・解像度・処理を繰り返しても新情報にはならない。1 Job最大10推論/24要求/600秒/画像合計4MiB。上限時は成果と未確認事項を保存して終了。'''
 
 
@@ -83,7 +83,9 @@ def execute(scientist,jid,payload,request,token):
     payload['research_phase']={'experiment':'experiment','evaluate':'evaluation','analyzer_create':'analyzer_creation','analyzer_evaluate':'evaluation','analyze':'analysis'}.get(op,'observation')
     if op=='experiment':
         if not getattr(scientist,'experiments',None):raise ValueError('Player experiment executor unavailable')
-        identifier=scientist.experiments.submit(jid,token,request,hypothesis_id(payload,request))
+        hypothesis=hypothesis_id(payload,request)
+        if hypothesis is None:raise ValueError('Experiment requires an explicit hypothesis ID or findings.id reference; Host will not infer one')
+        identifier=scientist.experiments.submit(jid,token,request,hypothesis)
         scientist.activity.update(experiment=f'研究Job {jid[:8]}：Experiment {identifier[:8]} の結果待ち',next='Playerで許可入力を試し、同じ研究へ結果を返します')
         while not scientist.stop_event.wait(.05):
             row=scientist.experiments.get(identifier)
@@ -181,14 +183,28 @@ def needs_followup(value):
 
 def history_context(payload):
     history=[]
-    for entry in payload.get('action_history',[])[-8:]:
+    for entry in payload.get('action_history',[])[-4:]:
         result=entry.get('result',{})
         safe={k:v for k,v in result.items() if k in ('state','error','detail','duplicate','completed','hypothesis','status','n','observed_probability','expected_probability','interval95','id','events','phase','original_step','pre_registered')}
         if isinstance(safe.get('events'),list):safe['events']=[{k:v for k,v in row.items() if k in ('id','action','change','state')} for row in safe['events']]
         history.append({k:entry[k] for k in ('action_id','step','state','request') if k in entry}|{'result':safe})
-    return json.dumps({'job':payload.get('research_job'),'step':payload.get('research_calls',0),'phase':payload.get('research_phase','observation'),'hypotheses':payload.get('hypotheses',{}),'progress':progress(payload),'actions':history,'redirect':payload.get('redirect','')},ensure_ascii=False,separators=(',',':'))
+    return json.dumps({'job':payload.get('research_job'),'step':payload.get('research_calls',0),'phase':payload.get('research_phase','observation'),'hypotheses':payload.get('hypotheses',{}),'progress':progress(payload),'actions':history,'older_actions_omitted':max(0,len(payload.get('action_history',[]))-4),'redirect':payload.get('redirect','')},ensure_ascii=False,separators=(',',':'))
 
 
 def made_progress(payload):
     p=progress(payload)
     return any((p.get(k) or 0)>0 for k in ('new_evidence','hypotheses_evaluated','experiments','analysis_methods','candidates'))
+
+
+def context_entry(entry,older=False):
+    """Omit replayable payloads, never fabricate summaries or alter the journal."""
+    def without_hashes(value):
+        if isinstance(value,dict):return {k:without_hashes(v) for k,v in value.items() if k not in ('hash','hashes')}
+        if isinstance(value,list):return [without_hashes(v) for v in value]
+        return value
+    item=without_hashes(entry)
+    if older and isinstance(item.get('result'),dict):
+        item['result']={k:v for k,v in item['result'].items() if k in ('evidence','box','size','mode','id','status')}
+        item['request']={k:v for k,v in item.get('request',{}).items() if k in ('op','event','observation','phase','box','size','mode','output','offset','limit','id')}
+        item['payload_omitted']='Older full result retained in this Job journal. Request exact Evidence/offset again to inspect cached results.'
+    return item
