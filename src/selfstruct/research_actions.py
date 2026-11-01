@@ -203,14 +203,29 @@ def needs_followup(value):
     return bool(re.search(r'したい|次の実験|高解像度.{0,16}(?:必要|確認|調べ|見|不足)|情報不足|判断できない|確認が必要|need.*(?:observe|inspect|compar|sample)|want to',prose,re.I))
 
 
-def history_context(payload):
+def experiment_prompt_context(summary):
+    """One factual model view; full per-plan and per-hypothesis ledgers stay stored."""
+    result={k:v for k,v in summary.items() if k not in ('hypotheses','experiments','note')}
+    result['experiments']=[{k:v for k,v in row.items() if k in ('id','hypothesis','state','action','requested','completed')} for row in summary.get('experiments',[])]
+    result['hypotheses']=[]
+    for group in summary.get('hypotheses',[]):
+        item={k:v for k,v in group.items() if k in ('hypothesis','evidence','by_action')}
+        item['evaluation_requirements']={k:v for k,v in group.get('evaluation_requirements',{}).items() if k!='note'}
+        result['hypotheses'].append(item)
+    result['note']='現在Jobのみ。入力別観測数は支持・反証ではない。未登録結果の事後転用禁止。evaluateは全Jobを再検査。'
+    return result
+
+
+def history_context(payload,compact=False):
     history=[]
-    for entry in payload.get('action_history',[])[-4:]:
+    count=2 if compact else 4
+    for entry in payload.get('action_history',[])[-count:]:
         result=entry.get('result',{})
         safe={k:v for k,v in result.items() if k in ('state','error','detail','duplicate','completed','hypothesis','status','n','observed_probability','expected_probability','interval95','id','events','phase','original_step','pre_registered','required_samples','reasons','registered_target')}
-        if isinstance(safe.get('events'),list):safe['events']=[{k:v for k,v in row.items() if k in ('id','action','change','state')} for row in safe['events']]
+        if compact:safe.pop('events',None)
+        elif isinstance(safe.get('events'),list):safe['events']=[{k:v for k,v in row.items() if k in ('id','action','change','state')} for row in safe['events']]
         history.append({k:entry[k] for k in ('action_id','step','state','request') if k in entry}|{'result':safe})
-    return json.dumps({'job':payload.get('research_job'),'step':payload.get('research_calls',0),'phase':payload.get('research_phase','observation'),'hypotheses':payload.get('hypotheses',{}),'progress':progress(payload),'actions':history,'experiment_context':payload.get('experiment_context',{}),'older_actions_omitted':max(0,len(payload.get('action_history',[]))-4),'redirect':payload.get('redirect','')},ensure_ascii=False,separators=(',',':'))
+    return json.dumps({'job':payload.get('research_job'),'step':payload.get('research_calls',0),'phase':payload.get('research_phase','observation'),'hypotheses':({k:v for k,v in payload.get('hypotheses',{}).items() if v in {h['id'] for h in payload.get('hypothesis_context',[])}} if compact else payload.get('hypotheses',{})),'progress':progress(payload),'actions':history,'experiment_context':experiment_prompt_context(payload.get('experiment_context',{})),'older_actions_omitted':max(0,len(payload.get('action_history',[]))-count),'redirect':payload.get('redirect','')},ensure_ascii=False,separators=(',',':'))
 
 
 def made_progress(payload):

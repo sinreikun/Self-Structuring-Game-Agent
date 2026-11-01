@@ -822,40 +822,71 @@ class Scientist:
             prefix+='\n根拠IDはExperience IDのみ。observation IDは観測参照用で、findings.evidenceへ混ぜません。許可Evidence IDs：'+json.dumps(sorted(allowed_evidence(payload)))
             prefix+='\n参照中の仮説（保存された主張と事前登録。変更は別IDへ）：'+json.dumps(payload['hypothesis_context'],ensure_ascii=False,separators=(',',':'))
             prefix+='\n今回の新規findings.id候補：'+json.dumps(new_ids)+'。既存仮説を使うだけならfindingsを空にしてactions.hypothesisへ既存の別名／IDを指定する。主張・事前登録を変更するなら新規IDで別仮説を定義する。'
-            prefix+='\n研究履歴：'+history_context(payload)
+            compact_history=False
+            omitted_visual_results=0
+            omitted_attachments=0
             def render():
-                return prefix+"\n追加観測結果（attachment_indexは画像添付の0始まり番号。古い結果はJob履歴へ保持し必要なら再要求）:"+json.dumps(visible, ensure_ascii=False, separators=(",", ":"))
+                return prefix+'\n研究履歴：'+history_context(payload,compact=compact_history)+"\n追加観測結果（attachment_indexは画像添付の0始まり番号。古い結果はJob履歴へ保持し必要なら再要求）:"+json.dumps(visible, ensure_ascii=False, separators=(",", ":"))+"\n省略情報："+json.dumps({"older_results_omitted":omitted_visual_results,"attachment_omitted":omitted_attachments})
             text = render()
             # Context pressure must be recoverable, never cause an endless retry
             # with the same oversized pixels. Expose exact replayable references.
             if isinstance(self.client, LocalLLM) and self.client.managed:
-                available = getattr(self.client, "context", 8192)-1024-256-len(images)*1024
-                for item in visible:
-                    if self.client.count_tokens(text) <= available:
-                        break
-                    if "result" in item:
-                        removed = False
-                        for key in ("pixels", "gray", "histogram", "components"):
-                            if key in item["result"]:
-                                item["result"].pop(key); removed = True
-                        if removed:
-                            item["payload_omitted"] = "Array exceeds current context; request same source with pixels limit<=64, or statistics/crop"
-                            text = render()
-                while images and self.client.count_tokens(text)+len(images)*1024+256+512 > getattr(self.client,"context",8192):
-                    images.pop(0)
+                reserved_output=min(budget,2048)
+                def fits():
+                    return self.client.count_tokens(text)<=getattr(self.client,"context",8192)-reserved_output-256-len(images)*1024
+                def remove_image(index):
+                    nonlocal omitted_attachments
+                    images.pop(index);omitted_attachments+=1
                     for item in visible:
-                        if "attachment_index" not in item:
-                            continue
-                        if item["attachment_index"] == 0:
-                            item.pop("attachment_index")
-                            item["attachment_omitted"] = "Image exceeds available context; request fewer images or a smaller crop"
-                        else:
-                            item["attachment_index"] -= 1
-                    text = render()
+                        attachment=item.get('attachment_index')
+                        if attachment==index:
+                            item.pop('attachment_index')
+                            item['attachment_omitted']='Image exceeds current context; exact source remains in Job journal'
+                        elif attachment is not None and attachment>index:item['attachment_index']-=1
+                # Compact duplicate metadata first. Keep the newest actual visual
+                # evidence, not just references that would fail identically on replay.
+                if not fits():compact_history=True;text=render()
+                for item in visible[:-1]:
+                    if fits():break
+                    if "result" in item:
+                        removed=False
+                        for key in ("pixels","gray","histogram","components"):
+                            if key in item['result']:item['result'].pop(key);removed=True
+                        if removed:
+                            item['payload_omitted']='Older array retained in Job journal; request exact source/offset to inspect'
+                            text=render()
+                while len(visible)>1 and not fits():
+                    removed=visible.pop(0);omitted_visual_results+=1
+                    if 'attachment_index' in removed:remove_image(removed['attachment_index'])
+                    text=render()
+                while images and not fits():
+                    # Keep the newest image when a valid response still fits;
+                    # the 2K output target is a preference, not a reason to blind vision.
+                    if len(images)==1 and self.client.count_tokens(text)+1024+256+512<=getattr(self.client,"context",8192):break
+                    remove_image(0);text=render()
+                if visible and not fits():
+                    item=visible[-1];result=item.get('result',{})
+                    if isinstance(result.get('pixels'),list) and len(result['pixels'])>64:
+                        result['pixels']=result['pixels'][:64]
+                        if 'gray' in result:result['gray']=result['pixels']
+                        result['next_offset']=result.get('offset',0)+64
+                        item['payload_omitted']='Only first 64 exact values in this view; full returned chunk retained in Job journal'
+                    for key in ('histogram','components'):
+                        if key in result:
+                            result.pop(key)
+                            item['payload_omitted']='Array retained in Job journal; request smaller crop/result'
+                    text=render()
+                payload['context_budget']={'context':getattr(self.client,"context",8192),
+                    'input_count':self.client.count_tokens(text),'reserved_output':reserved_output,
+                    'image_count':len(images),'compact_history':compact_history,
+                    'omitted_visual_results':omitted_visual_results,'omitted_attachments':omitted_attachments}
+                if compact_history or omitted_visual_results:
+                    payload['context_compactions']=payload.get('context_compactions',0)+1
 
             output_budget = budget
             if isinstance(self.client, LocalLLM) and self.client.managed:
                 output_budget = min(budget, getattr(self.client, "context", 8192)-self.client.count_tokens(text)-256-len(images)*1024)
+                payload['context_budget']['output_budget']=output_budget
                 if output_budget < 512:
                     raise ResearchInputLimit("追加視覚観測がモデルの入力枠を超えました。保存済み結果を保持します。")
             if len(text.encode()) > 100000:

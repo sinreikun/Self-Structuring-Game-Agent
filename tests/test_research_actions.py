@@ -553,3 +553,51 @@ def test_last_call_experiment_is_in_final_diagnostic_context(tmp_path,monkeypatc
         assert p['progress']['hypotheses_evaluated']==0
         assert c.store.db.execute('SELECT validation FROM knowledge WHERE id=?',(kid,)).fetchone()[0]=='inconclusive'
     finally:c.close();thread.join(2)
+
+
+@pytest.mark.parametrize('vision',[False,True])
+def test_managed_context_with_four_experiments_preserves_targets_and_repair(tmp_path,monkeypatch,vision):
+    from selfstruct.research import LocalLLM
+    from selfstruct.research_actions import record_findings
+    c=Controller(Config(root=str(tmp_path),keys=['A','B'],research_every=100000),UnlabelledDynamics());c.step();eid=c.last_eid
+    job=c.store.job('research',{});p={'research_rows':c.store.rows(),'research_calls':6,'initial_visual_evidence':True}
+    findings=[{'id':f'r{i}_1','text':f'実験対象{i}：'+('画像変化の再現性はまだ不明。'*14),'evidence':[eid]} for i in range(1,5)]
+    record_findings(c.scientist,job,p,{'findings':findings})
+    for i in range(1,5):
+        c.experiments.submit(job,str(i),{'action':1,'repeat':1,'duration':10,'wait':10},p['hypotheses'][f'r{i}_1']);c.step()
+    # Old observation arrays, multiple experimental targets and a partial response
+    # coexist in the submitted diagnostic that exceeded the 8K model input.
+    history=[]
+    for i in range(12):
+        request={'op':'observe','event':eid,'phase':'before','box':[i,0,128,96],'size':[32,32],'mode':'RGB','output':'pixels','limit':128}
+        result,_=c.visual.handle(request)
+        history.append({'request':request,'result':result,'native':vision})
+    p['visual_history']=history
+    p['repair_response']='{"findings":['+'x'*2900;p['repair_kind']='protocol';p['repair_error']='途中応答を保存しました。'
+    c.store.set_job(job,'running',p)
+    original=json.dumps(history,sort_keys=True)
+    client=LocalLLM('http://127.0.0.1:8766/v1','fixture');client.context=8192;client.vision=vision
+    monkeypatch.setattr(client,'health',lambda:None);monkeypatch.setattr(client,'count_tokens',lambda prompt:len(prompt)//2)
+    calls=[]
+    def complete(prompt,**options):
+        calls.append(prompt)
+        assert '研究JSONの形式修正' in prompt and 'not_preregistered' in prompt
+        for finding in findings:assert finding['text'][:240] in prompt
+        assert options['max_tokens']>=1024
+        assert '"pixels":[7,181,213' in prompt or options.get('images')
+        assert len(prompt)//2+options['max_tokens']+256+1024*len(options.get('images',[]))<=8192
+        return '{"findings":[],"actions":[],"wat":""}'
+    monkeypatch.setattr(client,'complete',complete);c.scientist.client=client
+    try:
+        c.scientist.study(c.store.rows(),job);final=json.loads(c.store.get_job(job)['payload'])
+        assert len(calls)==1 and c.store.get_job(job)['state']=='complete'
+        assert final['outcome']!='input_budget_exceeded' and final['research_calls']==7
+        assert final['experiment_context']['plans_used']==4
+        assert final['context_budget']['compact_history'] and final['context_budget']['omitted_visual_results']>0
+        assert len(final['hypothesis_context'])==4
+        from selfstruct.diagnostics import diagnostic_job_payload
+        assert json.loads(diagnostic_job_payload(json.dumps(final)))['context_budget']==final['context_budget']
+        assert json.dumps(final['visual_history'],sort_keys=True)==original
+        assert len(final['experiment_context']['experiments'])==4
+        assert all(g['evaluation_requirements']['blocking_reasons']==['not_preregistered','insufficient_samples'] for g in final['experiment_context']['hypotheses'])
+    finally:c.close()
