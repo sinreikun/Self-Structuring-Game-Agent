@@ -25,9 +25,9 @@ observe: event,phase=before/after/diff,box=[左,上,右,下],size=[幅,高さ],m
 compare: observeと同じ指定にcompare={event,phase,box}を追加。2つのEvidenceの同一領域を比較。
 analyze: observeと同じ指定にoperations=[{op:edge/threshold/grayscale/blur/invert,...}]を追加。解析器APIもactionsから直接利用可。
 experiment: hypothesis=h1または既存仮説ID（必須。先にfindingsへid/text/evidenceを定義）,action=入力番号,duration=10..500ミリ秒,wait=10..2000ミリ秒,repeat=1..8。最大4計画/32入力。condition={box,size,mode,operations,mean_min:0..255,mean_max:0..255,max_wait_steps:1..128}で画素平均範囲を満たす状態を待てる。意味ラベルは禁止。conditionは実行状態の選別条件で、観測フォーマット指定ではない。指定時はmean_min/mean_maxの少なくとも1つが必須。無条件ならcondition自体を省略する。入力結果は別observe/compareで確認する。PAUSE中は入力しない。STOP/中断は再送しない。
-evaluate: hypothesis=h1またはID,change_probability=0..1。実験の独立した完了経験16件以上で画面変化確率のみ統計比較。少数・異なる入力混在・意味推測は判定不能。
+evaluate: hypothesis=既存の別名またはID,change_probability=0..1。画面変化確率を検証する場合は実験より先にfindings.actionとchange_probabilityを登録する。未登録や事後に変更した確率は判定不能。実験の独立した完了経験16件以上で画面変化確率のみ統計比較。少数・異なる入力混在・意味推測は判定不能。
 candidate: problem, evidence=[取得済みIDを2件以上], behavior, evaluationを指定すると実装フェーズへ。根拠・必要挙動・評価条件を揃えてから要求。
-findingsにactionとchange_probabilityを仮説作成時に指定すると事前登録となる（無条件の指定入力後の画面変化確率のみ）。条件付き仮説の意味・因果は未確認のまま。findingsには必ず空でないidを付け、experiment/evaluateで参照する。同じidを別の仮説や変更した主張に再割当しない。新しい仮説にはh2/h3等の新しいidを使う。各結果は同じJobへ返され、次の推論で使える。新しい根拠、仮説、検証、解析器、候補は進展として記録する。観測・仮説だけの完了も正当。ただし次の行動が必要なら実行せず完了としない。
+findingsにactionとchange_probabilityを仮説作成時に指定すると事前登録となる（無条件の指定入力後の画面変化確率のみ）。条件付き仮説の意味・因果は未確認のまま。新規findingsのidはその推論ステップで提示された未使用ID候補から選び、experiment/evaluateで参照する。同じidを別の仮説や変更した主張に再割当しない。新しい仮説にはh2/h3等の新しいidを使う。各結果は同じJobへ返され、次の推論で使える。新しい根拠、仮説、検証、解析器、候補は進展として記録する。観測・仮説だけの完了も正当。ただし次の行動が必要なら実行せず完了としない。
 同一の過去Evidence・領域・解像度・処理を繰り返しても新情報にはならない。1 Job最大10推論/24要求/600秒/画像合計4MiB。上限時は成果と未確認事項を保存して終了。'''
 
 
@@ -48,20 +48,42 @@ def record_findings(scientist,jid,payload,value):
     from .research import parse_proposal
     proposal=parse_proposal(json.dumps(value,ensure_ascii=False),allowed_evidence(payload),scientist.keys)
     mappings=payload.setdefault('hypotheses',{})
-    for finding in proposal['findings']:
-        ids=sorted(set(finding['evidence']))
-        with scientist.store.lock:
-            old=scientist.store.db.execute("SELECT id FROM knowledge WHERE kind='hypothesis' AND text=? AND evidence=?",(finding['text'],json.dumps(ids))).fetchone()
-        kid=old[0] if old else scientist.store.knowledge('hypothesis',finding['text'],'inferred','hypothesis',ids)
-        if not old:
-            progress(payload)['new_hypotheses']+=1
-            action,probability=finding.get('action'),finding.get('change_probability')
-            if type(action)==int and type(probability) in (float,int):scientist.store.claim(kid,scientist.keys[action],probability,max(ids))
-            scientist.activity.record('HYPOTHESIS',f'job={jid} id={kid} pending evidence={ids}')
-        ref=finding.get('id')
-        if isinstance(ref,str) and 1<=len(ref)<=40:
-            if ref in mappings and mappings[ref]!=kid:raise ValueError('Hypothesis reference cannot be rebound')
-            mappings[ref]=kid
+    plan=[];batch={}
+    with scientist.store.lock:
+        def matching_target(kid,finding):
+            claim=scientist.store.db.execute('SELECT action,probability FROM claims WHERE knowledge=?',(kid,)).fetchone()
+            if 'action' in finding and 'change_probability' in finding:
+                return bool(claim and claim['action']==scientist.keys[finding['action']] and claim['probability']==finding['change_probability'])
+            return not claim or (('action' not in finding or claim['action']==scientist.keys[finding['action']]) and ('change_probability' not in finding or claim['probability']==finding['change_probability']))
+        # Validate every reserved alias before writing any new Knowledge or claim.
+        for finding in proposal['findings']:
+            ids=sorted(set(finding['evidence']));ref=finding.get('id');existing=None
+            if ref in batch:
+                if batch[ref]!=finding:raise ValueError('Hypothesis reference cannot be rebound; choose a supplied new findings.id')
+                continue
+            if ref:batch[ref]=finding
+            if ref in mappings:
+                old=scientist.store.db.execute("SELECT id,text FROM knowledge WHERE id=? AND kind='hypothesis'",(mappings[ref],)).fetchone()
+                if not old or old['text']!=finding['text'] or not matching_target(old['id'],finding):
+                    raise ValueError('Hypothesis reference cannot be rebound; keep existing claims unchanged and use a supplied new findings.id')
+                existing=old['id']
+            else:
+                for old in scientist.store.db.execute("SELECT id FROM knowledge WHERE kind='hypothesis' AND text=? AND evidence=?",(finding['text'],json.dumps(ids))):
+                    if matching_target(old['id'],finding):existing=old['id'];break
+            plan.append((finding,ids,ref,existing))
+        for finding,ids,ref,existing in plan:
+            kid=existing if existing is not None else scientist.store.knowledge('hypothesis',finding['text'],'inferred','hypothesis',ids)
+            if existing is None:
+                progress(payload)['new_hypotheses']+=1
+                action,probability=finding.get('action'),finding.get('change_probability')
+                if type(action)==int and type(probability) in (float,int):
+                    latest=scientist.store.db.execute('SELECT coalesce(max(id),0) FROM events').fetchone()[0]
+                    scientist.store.claim(kid,scientist.keys[action],probability,max(max(ids),latest))
+                scientist.activity.record('HYPOTHESIS',f'job={jid} id={kid} pending evidence={ids}')
+            else:
+                evidence=json.loads(scientist.store.db.execute('SELECT evidence FROM knowledge WHERE id=?',(kid,)).fetchone()[0])
+                with scientist.store.db:scientist.store.db.execute('UPDATE knowledge SET evidence=? WHERE id=?',(json.dumps(sorted(set(evidence+ids))),kid))
+            if isinstance(ref,str) and 1<=len(ref)<=40:mappings[ref]=kid
     scientist.store.set_job(jid,'running',payload)
 
 
@@ -185,7 +207,7 @@ def history_context(payload):
     history=[]
     for entry in payload.get('action_history',[])[-4:]:
         result=entry.get('result',{})
-        safe={k:v for k,v in result.items() if k in ('state','error','detail','duplicate','completed','hypothesis','status','n','observed_probability','expected_probability','interval95','id','events','phase','original_step','pre_registered')}
+        safe={k:v for k,v in result.items() if k in ('state','error','detail','duplicate','completed','hypothesis','status','n','observed_probability','expected_probability','interval95','id','events','phase','original_step','pre_registered','required_samples','reasons','registered_target')}
         if isinstance(safe.get('events'),list):safe['events']=[{k:v for k,v in row.items() if k in ('id','action','change','state')} for row in safe['events']]
         history.append({k:entry[k] for k in ('action_id','step','state','request') if k in entry}|{'result':safe})
     return json.dumps({'job':payload.get('research_job'),'step':payload.get('research_calls',0),'phase':payload.get('research_phase','observation'),'hypotheses':payload.get('hypotheses',{}),'progress':progress(payload),'actions':history,'older_actions_omitted':max(0,len(payload.get('action_history',[]))-4),'redirect':payload.get('redirect','')},ensure_ascii=False,separators=(',',':'))
@@ -223,9 +245,9 @@ def hypothesis_context(scientist,payload):
         for kid in ids:
             row=scientist.store.db.execute("SELECT id,text,validation,evidence FROM knowledge WHERE id=? AND kind='hypothesis'",(kid,)).fetchone()
             if not row:continue
-            claim=scientist.store.db.execute('SELECT action,probability FROM claims WHERE knowledge=?',(kid,)).fetchone()
+            claim=scientist.store.db.execute('SELECT action,probability,after_id FROM claims WHERE knowledge=?',(kid,)).fetchone()
             item={'id':kid,'aliases':[k for k,v in aliases.items() if v==kid],'text':row['text'][:240],
                   'text_truncated':len(row['text'])>240,'validation':row['validation'],'evidence':json.loads(row['evidence'])[-16:]}
-            if claim:item['preregistered']={'action':scientist.keys.index(claim['action']),'change_probability':claim['probability']}
+            if claim:item['preregistered']={'action':scientist.keys.index(claim['action']),'change_probability':claim['probability'],'after_id':claim['after_id']}
             result.append(item)
     return result

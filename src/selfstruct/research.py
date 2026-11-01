@@ -805,6 +805,9 @@ class Scientist:
                         item["attachment_error"] = "Source image unavailable"
                 visible.append(item)
             rounds = payload.get("visual_rounds", 0)
+            issued_step=payload.get('research_calls',0)+1
+            new_ids=[f'r{issued_step}_{i}' for i in range(1,9) if f'r{issued_step}_{i}' not in payload.get('hypotheses',{})]
+            payload['new_hypothesis_ids']=new_ids
             prefix = prompt+"\n"+VISUAL_INSTRUCTIONS+("" if INSTRUCTIONS in prompt else "\n"+INSTRUCTIONS)+"\nモデル画像入力: "+str(bool(getattr(self.client,"vision",False)))
             if payload.get('research_phase')=='implementation':
                 prefix='実装フェーズ。根拠と必要挙動を満たす完全な候補だけを作成してください。新しい世界仮説は不要。\n計画：'+json.dumps(payload['implementation_plan'],ensure_ascii=False)+'\n'+PROMPT[PROMPT.index('Agent ABI:'):].format(source=self.revisions.source(),rows='[]')
@@ -817,6 +820,7 @@ class Scientist:
             prefix+='\n根拠IDはExperience IDのみ。observation IDは観測参照用で、findings.evidenceへ混ぜません。許可Evidence IDs：'+json.dumps(sorted(allowed_evidence(payload)))
             payload['hypothesis_context']=hypothesis_context(self,payload)
             prefix+='\n参照中の仮説（保存された主張と事前登録。変更は別IDへ）：'+json.dumps(payload['hypothesis_context'],ensure_ascii=False,separators=(',',':'))
+            prefix+='\n今回の新規findings.id候補：'+json.dumps(new_ids)+'。既存仮説を使うだけならfindingsを空にしてactions.hypothesisへ既存の別名／IDを指定する。主張・事前登録を変更するなら新規IDで別仮説を定義する。'
             prefix+='\n研究履歴：'+history_context(payload)
             def render():
                 return prefix+"\n追加観測結果（attachment_indexは画像添付の0始まり番号。古い結果はJob履歴へ保持し必要なら再要求）:"+json.dumps(visible, ensure_ascii=False, separators=(",", ":"))
@@ -855,7 +859,7 @@ class Scientist:
                     raise ResearchInputLimit("追加視覚観測がモデルの入力枠を超えました。保存済み結果を保持します。")
             if len(text.encode()) > 100000:
                 raise ResearchInputLimit("視覚研究の入力予算を超えました。")
-            options = {"max_tokens": output_budget, "json_mode": True, "schema": response_schema(PROPOSAL_SCHEMA,self.keys,allowed_evidence(payload)), "on_progress": journal}
+            options = {"max_tokens": output_budget, "json_mode": True, "schema": response_schema(PROPOSAL_SCHEMA,self.keys,allowed_evidence(payload),new_ids,payload.get('hypotheses',{})), "on_progress": journal}
             if images:
                 options["images"] = images
             image_bytes=sum(len(i.encode()) for i in images)
@@ -920,6 +924,12 @@ class Scientist:
             payload['pending_actions']=requests
             self.store.set_job(jid,'running',payload)
             run_actions(self,jid,payload,requests)
+            turn=[entry for entry in payload.get('action_history',[]) if entry.get('step')==payload['research_calls']]
+            payload['duplicate_only_rounds']=payload.get('duplicate_only_rounds',0)+1 if turn and all(entry['state']=='duplicate' for entry in turn) else 0
+            if payload['duplicate_only_rounds']>=2:
+                payload['duplicate_redirects']=payload.get('duplicate_redirects',0)+1
+                payload['redirect']='同一の結果は既に返却済みです。同じpixelsの再要求だけでは追加範囲を取得できません。next_offsetがあるならoffsetで別の区間を要求できます。必要なら別Evidence・領域・解像度・解析を選ぶか、今の根拠と未確認事項を保存して完了してください。Hostは観測先や入力を決定しません。'
+                self.activity.record('RESEARCH',f'redirect job={jid} reason=repeated_cached_results')
             payload.pop('pending_actions',None)
             payload['visual_rounds']=rounds+1
             payload.pop('stream_draft',None)
@@ -986,16 +996,6 @@ class Scientist:
             payload['repair_response']=response;payload['repair_kind']='protocol';payload['repair_error']=str(error)[:500]
             self.store.set_job(jid,'pending',payload)
             raise ResearchRepairNeeded(str(error)) from error
-        for finding in proposal.get("findings", [])[:8]:
-            evidence = sorted(set(finding["evidence"]))
-            if evidence and set(evidence) <= allowed:
-                with self.store.lock:
-                    existing=self.store.db.execute("SELECT id FROM knowledge WHERE kind='hypothesis' AND text=? AND evidence=?",(finding['text'],json.dumps(evidence))).fetchone()
-                if existing:continue
-                kid = self.store.knowledge("hypothesis", finding["text"], "inferred", "hypothesis", evidence)
-                action, probability = finding.get("action"), finding.get("change_probability")
-                if isinstance(action, int) and 0 <= action < len(self.keys) and isinstance(probability, (int, float)) and 0 <= probability <= 1:
-                    self.store.claim(kid, self.keys[action], probability, rows[-1]["id"])
         source = proposal.get("wat", "")
         if not source:
             from .research_actions import made_progress

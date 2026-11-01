@@ -49,7 +49,7 @@ def test_same_job_crop_compare_experiment_evaluate_analyzer_loop(tmp_path,vision
                     'actions':[{'op':'experiment','hypothesis':'h1','action':1,'duration':10,'wait':10,'repeat':8}]})
             if n==4:
                 assert '同じ許可入力後に画像差分が再現するかを検証する' in prompt
-                assert '"preregistered":{"action":1,"change_probability":1.0}' in prompt
+                assert '"preregistered":{"action":1,"change_probability":1.0,"after_id":' in prompt
                 assert '"completed":8' in prompt
                 return json.dumps({'actions':[{'op':'experiment','hypothesis':'h1','action':1,'duration':10,'wait':10,'repeat':8}]})
             if n==5:
@@ -398,4 +398,86 @@ def test_managed_context_compacts_old_results_without_mutating_the_job_journal(t
         assert len(calls)==1 and c.store.get_job(job)['state']=='complete' and p['context_compactions']>=1
         assert json.dumps(p['visual_history'],sort_keys=True)==original
         assert len(p['visual_history'])==24 and 'pixels' in p['visual_history'][0]['result']
+    finally:c.close()
+
+
+def test_alias_conflict_preflight_creates_no_orphan_claims_or_rows(tmp_path):
+    from selfstruct.research_actions import record_findings
+    c=Controller(Config(root=str(tmp_path),keys=['A','B']),UnlabelledDynamics());c.step();eid=c.last_eid
+    job=c.store.job('research',{});p={'research_rows':c.store.rows()}
+    original={'id':'h1','text':'最初の主張','evidence':[eid],'action':1,'change_probability':1.0}
+    try:
+        record_findings(c.scientist,job,p,{'findings':[original]})
+        kid=p['hypotheses']['h1'];before=c.store.db.execute('SELECT count(*) FROM knowledge').fetchone()[0]
+        with pytest.raises(ValueError,match='cannot be rebound'):
+            record_findings(c.scientist,job,p,{'findings':[{'id':'h2','text':'先に保存してはいけない主張','evidence':[eid]},dict(original,text='変更した主張',change_probability=0.0)]})
+        assert c.store.db.execute('SELECT count(*) FROM knowledge').fetchone()[0]==before
+        assert p['hypotheses']=={'h1':kid}
+        assert c.store.db.execute('SELECT probability FROM claims WHERE knowledge=?',(kid,)).fetchone()[0]==1.0
+        c.step();p['research_rows']=c.store.rows()
+        record_findings(c.scientist,job,p,{'findings':[dict(original,evidence=[eid,c.last_eid])]})
+        assert p['hypotheses']['h1']==kid and c.store.db.execute('SELECT count(*) FROM knowledge').fetchone()[0]==before
+    finally:c.close()
+
+
+def test_new_probability_is_a_new_claim_and_cannot_validate_against_existing_events(tmp_path):
+    from selfstruct.research_actions import record_findings
+    c=Controller(Config(root=str(tmp_path),keys=['A','B']),UnlabelledDynamics());c.step();eid=c.last_eid
+    job=c.store.job('research',{});p={'research_rows':c.store.rows()}
+    def finding(ref,prob):return {'id':ref,'text':'同一文章でも登録する確率は別の主張','evidence':[eid],'action':1,'change_probability':prob}
+    try:
+        record_findings(c.scientist,job,p,{'findings':[finding('r1_1',1)]})
+        for _ in range(20):c.step()
+        record_findings(c.scientist,job,p,{'findings':[finding('r2_1',0)]})
+        a,b=p['hypotheses']['r1_1'],p['hypotheses']['r2_1']
+        assert a!=b
+        claim=c.store.db.execute('SELECT * FROM claims WHERE knowledge=?',(b,)).fetchone()
+        assert claim['probability']==0 and claim['after_id']==c.last_eid
+        c.store.validate_claims()
+        assert c.store.db.execute('SELECT validation FROM knowledge WHERE id=?',(b,)).fetchone()[0]=='hypothesis'
+    finally:c.close()
+
+
+def test_generation_schema_issues_new_names_per_turn_and_keeps_old_references():
+    from selfstruct.research_schema import response_schema,validate
+    from selfstruct.research import PROPOSAL_SCHEMA
+    schema=response_schema(PROPOSAL_SCHEMA,['A','B'],{1},['r2_1','r2_2'],{'h1':12})
+    base={'findings':[],'actions':[],'problem':'','reason':'','wat':''}
+    validate(schema,{**base,'findings':[{'id':'r2_1','text':'新しい主張','evidence':[1]}],'actions':[{'op':'experiment','hypothesis':'h1','action':1}]})
+    with pytest.raises(ValueError):validate(schema,{**base,'findings':[{'id':'h1','text':'上書きする主張','evidence':[1]}]})
+    with pytest.raises(ValueError):validate(schema,{**base,'actions':[{'op':'evaluate','hypothesis':'unissued','change_probability':.5}]})
+
+
+def test_repeated_cached_observation_redirects_to_explicit_paging_without_choosing_for_llm(tmp_path):
+    c=Controller(Config(root=str(tmp_path),keys=['A','B']),UnlabelledDynamics());c.step();eid=c.last_eid
+    req={'op':'observe','event':eid,'size':[32,32],'mode':'RGB','output':'pixels','limit':64}
+    class Client:
+        calls=0
+        def complete(self,prompt,**options):
+            self.calls+=1
+            if self.calls<=3:return json.dumps({'actions':[req]})
+            if self.calls==4:
+                assert 'next_offset' in prompt and '同一の結果は既に返却済み' in prompt
+                return json.dumps({'actions':[{**req,'offset':64}]})
+            return '{"findings":[],"actions":[],"wat":""}'
+    c.scientist.client=Client();job=c.store.job('research',{})
+    try:
+        c.scientist.study(c.store.rows(),job);p=json.loads(c.store.get_job(job)['payload'])
+        assert p['duplicate_redirects']==1 and p['duplicate_requests']==2
+        assert [a['state'] for a in p['action_history']]==['done','duplicate','duplicate','done']
+        assert p['action_history'][-1]['request']['offset']==64
+    finally:c.close()
+
+
+def test_inconclusive_evaluation_explains_missing_registration_and_sample_size(tmp_path):
+    c=Controller(Config(root=str(tmp_path),keys=['A','B']),UnlabelledDynamics());c.step()
+    try:
+        kid=c.store.knowledge('hypothesis','まだ確率を登録していない仮説','inferred','hypothesis',[c.last_eid])
+        job=c.store.job('research',{});c.experiments.submit(job,'s1',{'action':1,'repeat':1,'duration':10,'wait':10},kid);c.step()
+        result=c.experiments.evaluate(kid,.5)
+        assert result['status']=='inconclusive' and result['n']==1 and result['required_samples']==16
+        assert {r['code'] for r in result['reasons']}=={'not_preregistered','insufficient_samples'}
+        from selfstruct.research_actions import history_context
+        context=history_context({'action_history':[{'action_id':'1:0','step':1,'state':'done','request':{'op':'evaluate','hypothesis':kid},'result':result}]})
+        assert 'not_preregistered' in context and 'insufficient_samples' in context
     finally:c.close()

@@ -131,7 +131,13 @@ class Experiments:
             # A small experiment cannot prove support. Different inputs must not be pooled.
             n=len(rows);p=sum(r['change']>.01 for r in rows)/n if n else None
             status='inconclusive';interval=None
-            claim=self.store.db.execute('SELECT action,probability FROM claims WHERE knowledge=?',(hypothesis,)).fetchone()
+            claim=self.store.db.execute('SELECT action,probability,after_id FROM claims WHERE knowledge=?',(hypothesis,)).fetchone()
+            reasons=[]
+            if not claim:reasons.append({'code':'not_preregistered','detail':'新しい仮説IDのfindingsにactionとchange_probabilityを先に登録し、その後に新しい実験を実行してください。既存結果へ事後登録はできません。'})
+            elif claim['probability']!=probability:reasons.append({'code':'target_mismatch','detail':'評価対象の確率が事前登録と異なります。主張を変える場合は新しい仮説IDと新しい実験が必要です。'})
+            if conditional:reasons.append({'code':'conditional_selection','detail':'選別した条件下の結果から無条件の入力確率を判定しません。'})
+            if n<16:reasons.append({'code':'insufficient_samples','detail':f'完了経験は{n}件です。同じ登録済み仮説と入力で16件以上が必要です。'})
+            if claim and any(r['action']!=claim['action'] for r in rows):reasons.append({'code':'action_mismatch','detail':'実験入力が登録された入力と一致しません。異なる入力を混ぜて判定しません。'})
             registered=bool(not conditional and claim and claim['probability']==probability and all(r['action']==claim['action'] for r in rows))
             if registered and n>=16 and len({r['action'] for r in rows})==1:
                 z=1.96;center=(p+z*z/(2*n))/(1+z*z/n);radius=z*math.sqrt(p*(1-p)/n+z*z/(4*n*n))/(1+z*z/n)
@@ -139,6 +145,6 @@ class Experiments:
                 status='supported' if interval[0]<=probability<=interval[1] else 'refuted'
             evidence=list(dict.fromkeys(json.loads(hypothesis_row['evidence'])+[r['id'] for r in rows]))
             self.store.db.execute('UPDATE knowledge SET validation=?,evidence=? WHERE id=?',(status,json.dumps(evidence),hypothesis))
-        result={'hypothesis':hypothesis,'status':status,'n':n,'observed_probability':p,'expected_probability':probability,'interval95':interval,'pre_registered':registered,'evidence':[r['id'] for r in rows],'limitation':'Image change reproducibility only; game meaning/causality unverified'}
+        result={'hypothesis':hypothesis,'status':status,'n':n,'observed_probability':p,'expected_probability':probability,'interval95':interval,'pre_registered':registered,'required_samples':16,'reasons':reasons,'registered_target':{'action':self.keys.index(claim['action']),'change_probability':claim['probability'],'after_id':claim['after_id']} if claim else None,'evidence':[r['id'] for r in rows],'limitation':'Image change reproducibility only; game meaning/causality unverified'}
         self.activity.record('EVAL',f'hypothesis={hypothesis} {status} n={n}')
         return result

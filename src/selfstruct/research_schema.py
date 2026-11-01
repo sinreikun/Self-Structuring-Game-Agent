@@ -75,13 +75,20 @@ def validate(schema,value,path='action'):
         if not schema.get('minimum',-math.inf)<=value<=schema.get('maximum',math.inf):raise ValueError(path+': number out of range')
 
 
-def response_schema(base,keys,allowed):
+def response_schema(base,keys,allowed,new_ids=None,aliases=None):
     schema=deepcopy(base)
     schema['properties']['actions']['items']=action_schema(len(keys))
     schema['properties']['visual_requests']['items']=action_schema(len(keys),legacy=True)
     schema['properties']['findings']['items']['required']=['id','text','evidence']
     finding=schema['properties']['findings']['items']['properties']
     finding['id']['minLength']=1
+    if new_ids is not None:
+        finding['id']['enum']=new_ids
+        references={'anyOf':[{'type':'string','enum':list(dict.fromkeys([*(aliases or {}),*new_ids]))}]}
+        if aliases:references['anyOf'].append({'type':'integer','enum':sorted(set(aliases.values()))})
+        for name in ('actions','visual_requests'):
+            for variant in schema['properties'][name]['items']['anyOf']:
+                if 'hypothesis' in variant['properties']:variant['properties']['hypothesis']=deepcopy(references)
     finding['action']['maximum']=len(keys)-1
     if allowed:finding['evidence']['items']={'type':'integer','enum':sorted(allowed)}
     else:schema['properties']['findings']['maxItems']=0

@@ -76,8 +76,8 @@ def diagnostic_job_payload(value):
     if not isinstance(payload,dict):return "[prompt/source omitted]"
     keys=("outcome","implementation_verified","repair_failures","same_error_failures","repair_error",
           "repair_history","repair_kind","behavior_repairs","visual_rounds","initial_visual_evidence","visual_budget_exhausted",
-          "research_job","research_started","research_steps","research_calls","research_phase","research_limit","context_compactions","progress","hypotheses","hypothesis_context","candidate_sha256",
-          "stagnation_detected","stalled","duplicate_requests","image_bytes","redirected")
+          "research_job","research_started","research_steps","research_calls","research_phase","research_limit","context_compactions","progress","hypotheses","hypothesis_context","new_hypothesis_ids","candidate_sha256",
+          "stagnation_detected","stalled","duplicate_requests","duplicate_only_rounds","duplicate_redirects","image_bytes","redirected")
     result={k:payload[k] for k in keys if k in payload}
     history=payload.get("visual_history",[])
     result["visual_request_count"]=len(history) if isinstance(history,list) else 0
@@ -97,7 +97,7 @@ def diagnostic_job_payload(value):
         request=entry.get('request',{})
         safe['request']=research_request_summary(request)
         raw=entry.get('result',{})
-        safe['result']={k:raw[k] for k in ('error','detail','duplicate','original_step','experiment','job','hypothesis','state','completed','events','evidence','box','size','mode','coordinates','status','n','observed_probability','expected_probability','interval95','pre_registered','phase','id','retained') if k in raw}
+        safe['result']={k:raw[k] for k in ('error','detail','duplicate','original_step','experiment','job','hypothesis','state','completed','events','evidence','box','size','mode','coordinates','status','n','observed_probability','expected_probability','interval95','pre_registered','required_samples','reasons','registered_target','phase','id','retained') if k in raw}
         result['action_history'].append(safe)
     result["omitted"]="prompt/source/arrays"
     return json.dumps(redact(result),ensure_ascii=False)
