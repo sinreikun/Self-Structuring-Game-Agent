@@ -295,3 +295,49 @@ def test_recorded_input_count_is_authoritative_even_if_plan_still_running(tmp_pa
         row=c.experiments.get(plan)
         assert row['state']=='complete' and len(json.loads(row['events']))==1
     finally:c.close()
+
+
+def test_typed_schema_rejects_real_diagnostic_command_strings_and_constrains_ids():
+    from selfstruct.research_schema import action_schema,validate,response_schema
+    from selfstruct.research import PROPOSAL_SCHEMA
+    malformed=['observe,event=25847,phase=diff,box=[100,100,300,300],size=[200,200],mode=RGB,output=pixels',
+               'observe","event":26187,"phase":"before","box":[0,0,960,540],"size":"native","mode":"RGB","output":"image"},{',
+               'compare:observe,phase=before,box=[0,0,1600,900]']
+    for op in malformed:
+        with pytest.raises(ValueError):validate(action_schema(2),{'op':op})
+    validate(action_schema(2),{'op':'observe','event':25847,'phase':'diff','box':[100,100,300,300],'size':[200,200],'mode':'RGB','output':'pixels'})
+    schema=response_schema(PROPOSAL_SCHEMA,['A','B'],{25847,26187})
+    assert schema['properties']['findings']['items']['properties']['evidence']['items']['enum']==[25847,26187]
+    with pytest.raises(ValueError):validate(schema,{'findings':[{'text':'仮説','evidence':[2]}],'problem':'','reason':'','wat':'','actions':[]})
+    with pytest.raises(ValueError):validate(action_schema(2),{'op':'experiment','action':2})
+
+
+@pytest.mark.parametrize('incomplete',[False,True])
+def test_protocol_repair_keeps_observations_and_can_request_tools_without_wat(tmp_path,incomplete):
+    from selfstruct.research import IncompleteInference,ResearchRepairNeeded
+    c=Controller(Config(root=str(tmp_path),keys=['A','B']),UnlabelledDynamics());c.step();eid=c.last_eid
+    class Client:
+        calls=0
+        last_response=''
+        def complete(self,prompt,**options):
+            self.calls+=1
+            if self.calls==1:
+                self.last_response='{"findings":[' if incomplete else json.dumps({'findings':[{'text':'不正な参照','evidence':[999999]}],'wat':''})
+                if incomplete:raise IncompleteInference('partial')
+                return self.last_response
+            if self.calls==2:
+                assert '研究JSONの形式修正' in prompt and 'Agent ABI:' not in prompt and '完全なモジュール' not in prompt
+                assert f'"event":{eid}' in prompt and '追加観測結果' in prompt
+                return json.dumps({'actions':[{'op':'observe','event':eid,'phase':'diff','size':[64,32],'output':'statistics'}]})
+            assert '研究JSONの形式修正' not in prompt and 'mean' in prompt
+            return '{"findings":[],"actions":[],"wat":""}'
+    c.scientist.client=Client();job=c.store.job('research',{})
+    try:
+        with pytest.raises(ResearchRepairNeeded):c.scientist.study(c.store.rows(),job)
+        p=json.loads(c.store.get_job(job)['payload']);assert p['repair_kind']=='protocol'
+        c.scientist.study(c.store.rows(),job)
+        p=json.loads(c.store.get_job(job)['payload'])
+        assert c.store.get_job(job)['state']=='complete' and p['progress']['new_evidence']==1
+        assert p['progress']['candidates']==0 and p['research_steps'][1]['phase']=='protocol_repair'
+        assert 'repair_response' not in p
+    finally:c.close()

@@ -75,7 +75,7 @@ def diagnostic_job_payload(value):
     except (ValueError,TypeError):return "[prompt/source omitted]"
     if not isinstance(payload,dict):return "[prompt/source omitted]"
     keys=("outcome","implementation_verified","repair_failures","same_error_failures","repair_error",
-          "repair_history","behavior_repairs","visual_rounds","initial_visual_evidence","visual_budget_exhausted",
+          "repair_history","repair_kind","behavior_repairs","visual_rounds","initial_visual_evidence","visual_budget_exhausted",
           "research_job","research_started","research_steps","research_calls","research_phase","research_limit","progress","hypotheses","candidate_sha256",
           "stagnation_detected","stalled","duplicate_requests","image_bytes","redirected")
     result={k:payload[k] for k in keys if k in payload}

@@ -15,7 +15,12 @@ MAX_IMAGE_BYTES=4*1024*1024
 INSTRUCTIONS='''研究フェーズではWAT生成は必須ではありません。情報不足なら推測で完了せずactionsを要求してください。
 形式: {"findings":[{"id":"h1","text":"仮説","evidence":[ID]}],"actions":[],"problem":"","reason":"","wat":""}
 入力番号は0始まり、現在個体の許可入力だけです。次を見たい・試したい場合は文章だけで終わらず具体的actionsへ進んでください。
-actionsは最大4件、opを指定:
+actionsは最大4件。opには操作名だけを入れ、event等は別のJSONプロパティへ入れる。opの中にJSONやカンマ区切りコマンドを書くことは禁止。
+正しい追加観測例: {"op":"observe","event":10582,"phase":"before","box":[1040,0,1600,320],"size":[128,64],"mode":"RGB","output":"pixels","limit":64}
+正しい比較例: {"op":"compare","event":10582,"phase":"before","compare":{"event":10582,"phase":"after"},"size":[64,32],"output":"statistics"}
+正しい実験例: {"op":"experiment","hypothesis":"h1","action":4,"duration":60,"wait":100,"repeat":3}
+例のID・入力は説明用。必ず今回提示されたID・許可入力へ置き換える。
+各opのフィールド:
 observe: event,phase=before/after/diff,box=[左,上,右,下],size=[幅,高さ],mode=RGB/L,output=pixels/statistics/histogram/components/image,operations,offset,limit。event省略は現在画面。
 compare: observeと同じ指定にcompare={event,phase,box}を追加。2つのEvidenceの同一領域を比較。
 analyze: observeと同じ指定にoperations=[{op:edge/threshold/grayscale/blur/invert,...}]を追加。解析器APIもactionsから直接利用可。
@@ -72,6 +77,8 @@ def hypothesis_id(payload,request):
 def execute(scientist,jid,payload,request,token):
     if not isinstance(request,dict):raise ValueError('Research action must be an object')
     if len(json.dumps(request).encode())>12000:raise ValueError('Research action too large')
+    from .research_schema import action_schema,validate
+    validate(action_schema(len(scientist.keys)),request)
     op=request.get('op','observe');p=progress(payload)
     payload['research_phase']={'experiment':'experiment','evaluate':'evaluation','analyzer_create':'analyzer_creation','analyzer_evaluate':'evaluation','analyze':'analysis'}.get(op,'observation')
     if op=='experiment':

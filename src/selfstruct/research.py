@@ -41,19 +41,23 @@ MAX_IDENTICAL_FAILURES = 2
 
 PROPOSAL_SCHEMA={
     'type':'object','additionalProperties':False,
-    'required':['findings','problem','reason','wat'],
+    'required':['findings','actions','problem','reason','wat'],
     'properties':{
         'findings':{'type':'array','maxItems':8,'items':{'type':'object','additionalProperties':False,
             'required':['text','evidence'],'properties':{
                 'id':{'type':'string','maxLength':40},
                 'text':{'type':'string','maxLength':2000},
-                'evidence':{'type':'array','maxItems':64,'items':{'type':'integer'}},
+                'evidence':{'type':'array','minItems':1,'maxItems':64,'items':{'type':'integer'}},
                 'action':{'type':'integer','minimum':0},
                 'change_probability':{'type':'number','minimum':0,'maximum':1}}}},
-        'actions':{'type':'array','maxItems':4,'items':{'type':'object','required':['op'],'properties':{'op':{'type':'string'}}}},
+        'actions':{'type':'array','maxItems':4,'items':{'type':'object'}},
         'visual_requests':{'type':'array','maxItems':4,'items':{'type':'object'}},
         'problem':{'type':'string'},'reason':{'type':'string'},'wat':{'type':'string'}}}
 
+
+from .research_schema import action_schema, response_schema, repair_kind
+PROPOSAL_SCHEMA['properties']['actions']['items']=action_schema()
+PROPOSAL_SCHEMA['properties']['visual_requests']['items']=action_schema(legacy=True)
 
 def parse_proposal(response,allowed,keys):
     text=response.strip()
@@ -476,7 +480,7 @@ class Scientist:
                 source=self.revisions.source(live['revision'])
                 payload.pop('source',None)
                 payload.update(behavior_repairs=payload.get('behavior_repairs',0)+1,
-                               repair_response=json.dumps({'findings':[],'wat':source},ensure_ascii=False),
+                               repair_kind='implementation',repair_response=json.dumps({'findings':[],'wat':source},ensure_ascii=False),
                                repair_error='実機比較の結果：'+reason,after=row['id'],outcome='behavior_repair')
                 state='pending'
             self.store.set_job(live['job'],state,payload)
@@ -506,7 +510,7 @@ class Scientist:
                 payload=json.loads(self.store.get_job(self.live['job'])['payload'])
                 source=(self.revisions.root/self.live['revision']/'agent.wat').read_text(encoding='utf-8')
                 payload.pop('source',None)
-                payload.update(repair_response=json.dumps({'findings':[],'wat':source}),repair_error=reason,retained_live=self.live['metrics'])
+                payload.update(repair_kind='implementation',repair_response=json.dumps({'findings':[],'wat':source}),repair_error=reason,retained_live=self.live['metrics'])
                 self.store.set_job(self.live['job'],'pending',payload)
                 self.live = None
                 self.store.unpin('live-trial')
@@ -576,9 +580,11 @@ class Scientist:
         payload=json.loads(self.store.get_job(jid)["payload"])
         source=payload.pop("source",None)
         if source is not None:
+            payload["repair_kind"]="implementation"
             payload["repair_response"]=json.dumps({"findings":[],"wat":source},ensure_ascii=False)
         elif not payload.get("repair_response") and payload.get("stream_draft"):
             payload["repair_response"]=payload["stream_draft"]
+        payload.setdefault("repair_kind",repair_kind(payload))
         text=str(error)[:4000]
         fingerprint=hashlib.sha256(text.encode()).hexdigest()
         payload["same_error_failures"]=payload.get("same_error_failures",0)+1 if payload.get("last_repair_fingerprint")==fingerprint else 1
@@ -768,7 +774,7 @@ class Scientist:
             from .config import write_json
             write_json(self.store.root/"host"/"model-capabilities.json", self.client.capabilities)
         from .research_actions import (MAX_CALLS,MAX_SECONDS,MAX_IMAGE_BYTES,INSTRUCTIONS,
-            record_findings,run_actions,needs_followup,history_context,progress)
+            record_findings,run_actions,needs_followup,history_context,progress,allowed_evidence)
         payload.setdefault('research_started',time.time());payload['research_job']=jid
         if payload.get('pending_actions'):
             run_actions(self,jid,payload,payload['pending_actions']);payload.pop('pending_actions',None)
@@ -806,9 +812,13 @@ class Scientist:
             prefix = prompt+"\n"+VISUAL_INSTRUCTIONS+("" if INSTRUCTIONS in prompt else "\n"+INSTRUCTIONS)+"\nモデル画像入力: "+str(bool(getattr(self.client,"vision",False)))
             if payload.get('research_phase')=='implementation':
                 prefix='実装フェーズ。根拠と必要挙動を満たす完全な候補だけを作成してください。新しい世界仮説は不要。\n計画：'+json.dumps(payload['implementation_plan'],ensure_ascii=False)+'\n'+PROMPT[PROMPT.index('Agent ABI:'):].format(source=self.revisions.source(),rows='[]')
-            if payload.get('repair_response'):
+            implementation_repair=bool(payload.get('repair_response') and repair_kind(payload)=='implementation')
+            if implementation_repair:
                 prefix='修正フェーズ。新しい世界理解・仮説・追加実験は不要。保存された候補の構文・ABI・評価エラーだけを修正してください。\n検査：'+payload.get('repair_error','')+'\n候補：'+payload['repair_response'][:12000]+'\n'+PROMPT[PROMPT.index('Agent ABI:'):PROMPT.index('featureは')]+ '\nJSON形式 {"findings":[],"actions":[],"wat":"完全なモジュール"}'
                 visible=[];images=[]
+            elif payload.get('repair_response'):
+                prefix+='\n研究JSONの形式修正。WAT生成・ABI修正へ移行しないでください。操作名はopの列挙値だけ、パラメータは別のJSONフィールドです。\n検査：'+payload.get('repair_error','')+'\n不完全な応答：'+payload['repair_response'][:3000]
+            prefix+='\n根拠IDはExperience IDのみ。observation IDは観測参照用で、findings.evidenceへ混ぜません。許可Evidence IDs：'+json.dumps(sorted(allowed_evidence(payload)))
             prefix+='\n研究履歴：'+history_context(payload)
             def render():
                 return prefix+"\n追加観測結果（attachment_indexは画像添付の0始まり番号）:"+json.dumps(visible, ensure_ascii=False, separators=(",", ":"))
@@ -847,7 +857,7 @@ class Scientist:
                     raise ResearchInputLimit("追加視覚観測がモデルの入力枠を超えました。保存済み結果を保持します。")
             if len(text.encode()) > 100000:
                 raise ResearchInputLimit("視覚研究の入力予算を超えました。")
-            options = {"max_tokens": output_budget, "json_mode": True, "schema": PROPOSAL_SCHEMA, "on_progress": journal}
+            options = {"max_tokens": output_budget, "json_mode": True, "schema": response_schema(PROPOSAL_SCHEMA,self.keys,allowed_evidence(payload)), "on_progress": journal}
             if images:
                 options["images"] = images
             image_bytes=sum(len(i.encode()) for i in images)
@@ -855,7 +865,7 @@ class Scientist:
                 payload['research_limit']='image_bytes';continue
             payload['image_bytes']=payload.get('image_bytes',0)+image_bytes
             payload['research_calls']=payload.get('research_calls',0)+1
-            step={'step':payload['research_calls'],'phase':'repair' if payload.get('repair_response') else payload.get('research_phase','observation'),
+            step={'step':payload['research_calls'],'phase':('repair' if implementation_repair else 'protocol_repair') if payload.get('repair_response') else payload.get('research_phase','observation'),
                   'started_at':time.time(),'consumed_actions':[r['action_id'] for r in payload.get('action_history',[]) if r['state'] in ('done','duplicate','error')], 'image_count':len(images)}
             payload.setdefault('research_steps',[]).append(step)
             self.store.set_job(jid,'running',payload)
@@ -871,10 +881,13 @@ class Scientist:
             if not isinstance(value,dict):return response
             try:record_findings(self,jid,payload,value)
             except (ValueError,TypeError,KeyError,ResearchRepairNeeded) as error:
-                payload['repair_response']=response;payload['repair_error']=str(error)[:500]
+                payload['repair_response']=response;payload['repair_kind']='protocol';payload['repair_error']=str(error)[:500]
                 self.store.proposal(jid,response)
                 self.store.set_job(jid,'pending',payload)
                 raise ResearchRepairNeeded(str(error)) from error
+            if not implementation_repair:
+                payload.pop('repair_response',None);payload.pop('repair_error',None);payload.pop('repair_kind',None)
+            payload.pop('stream_draft',None)
             payload['last_research_response']=value
             actions=value.get('actions',[]);legacy=value.get('visual_requests',[])
             if isinstance(actions,list) and any(not isinstance(a,dict) or not isinstance(a.get('op'),str) for a in actions):
@@ -904,7 +917,7 @@ class Scientist:
                 payload['stalled']=bool((payload.get('stagnation_detected') or payload.get('action_history')) and not made_progress(payload))
                 self.store.set_job(jid,'running',payload)
                 return response
-            if payload.get('repair_response'):raise ResearchRepairNeeded('修正フェーズではactionsを空にし、保存候補だけを修正してください。')
+            if implementation_repair:raise ResearchRepairNeeded('修正フェーズではactionsを空にし、保存候補だけを修正してください。')
             self.store.proposal(jid,response)
             payload['pending_actions']=requests
             self.store.set_job(jid,'running',payload)
@@ -938,7 +951,7 @@ class Scientist:
         prompt=research_prompt(self.revisions.source(),rows,self.keys,self.store.reports()[:2])
         if payload.get('stream_draft') and not payload.get('repair_response'):
             payload['repair_response']=payload['stream_draft'];payload['repair_error']='保存された途中出力を完全なJSONに修正してください。'
-        if payload.get('repair_response'):prompt='修正フェーズ'
+        if payload.get('repair_response') and repair_kind(payload)=='implementation':prompt='修正フェーズ'
         budget=4096
         if isinstance(self.client,LocalLLM) and self.client.managed:
             count=self.client.count_tokens(prompt)
@@ -955,14 +968,14 @@ class Scientist:
         except IncompleteInference:
             response=getattr(self.client,'last_response','')
             self.store.proposal(jid,response)
-            payload['repair_response']=response;payload['repair_error']='出力上限で途切れています。説明は短くし、実行可能な完全な候補を返してください。'
+            payload['repair_response']=response;payload.setdefault('repair_kind',repair_kind(payload));payload['repair_error']='出力上限で途切れています。説明は短くし、実行可能な完全な候補を返してください。'
             self.store.set_job(jid,'pending',payload)
             raise ResearchRepairNeeded('途中応答を保存しました。') from None
         except (InferenceUnavailable,InterruptedError):
             draft=getattr(self.client,'last_response','') or payload.get('stream_draft','')
             if draft:
                 self.store.proposal(jid,draft)
-                payload['repair_response']=draft;payload['repair_error']='接続または停止操作で途中までになりました。保存した内容から完全な応答へ修正してください。'
+                payload['repair_response']=draft;payload.setdefault('repair_kind',repair_kind(payload));payload['repair_error']='接続または停止操作で途中までになりました。保存した内容から完全な応答へ修正してください。'
             self.store.set_job(jid,'pending',payload)
             raise
         self.store.proposal(jid,response)
@@ -972,7 +985,7 @@ class Scientist:
             allowed.update(evidence_ids(entry.get('result', {}).get('evidence', {})))
         try:proposal=parse_proposal(response,allowed,self.keys)
         except (ValueError,TypeError,KeyError,ResearchRepairNeeded) as error:
-            payload['repair_response']=response;payload['repair_error']=str(error)[:500]
+            payload['repair_response']=response;payload['repair_kind']='protocol';payload['repair_error']=str(error)[:500]
             self.store.set_job(jid,'pending',payload)
             raise ResearchRepairNeeded(str(error)) from error
         for finding in proposal.get("findings", [])[:8]:
@@ -1046,7 +1059,7 @@ class Scientist:
                 self.activity.emit('llm_saved')
             elif attempts<2:
                 payload.pop('source',None)
-                payload.update(behavior_repairs=attempts+1,repair_response=json.dumps({'findings':[],'wat':source},ensure_ascii=False),repair_error='動作比較の結果：'+reason,after=future[-1]['id'],outcome='behavior_repair',implementation_verified=False)
+                payload.update(behavior_repairs=attempts+1,repair_kind='implementation',repair_response=json.dumps({'findings':[],'wat':source},ensure_ascii=False),repair_error='動作比較の結果：'+reason,after=future[-1]['id'],outcome='behavior_repair',implementation_verified=False)
                 self.store.set_job(jid,'pending',payload)
                 self.activity.update(llm='待機',comparison='動作の改善を修正待ち')
                 self.activity.emit('llm_saved')
