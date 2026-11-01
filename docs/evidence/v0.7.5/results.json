@@ -1,0 +1,196 @@
+{
+  "diagnostic": {
+    "version": "0.7.4",
+    "sha256": "4bdc42980598231d5bec8a9deee60a788508467e777187ca3cb26ee7940e4a83",
+    "runtime_input": "vision",
+    "backend": "vulkan",
+    "gpu_layers": 49,
+    "total_layers": 49,
+    "jobs": 4,
+    "research_calls": 40,
+    "limit": "actions",
+    "actions_per_job": 24,
+    "image_requests": 0,
+    "image_attachments": 0,
+    "observations": {
+      "done": 29,
+      "error": 24,
+      "duplicate": 32
+    },
+    "comparisons": {
+      "done": 6,
+      "duplicate": 1
+    },
+    "experiments": 0,
+    "reports": 0,
+    "notes": 4,
+    "hypotheses_unverified": 46
+  },
+  "candidate": {
+    "source_commit": "8f1400f259f0e3b27bbeaa0e85f02da3b9e985b7",
+    "source_files_sha256": {
+      "src/selfstruct/research.py": "cfa37a4e101bcd84093f0dca9504734a67ea00ddcd23e2c1f51998785771c22e",
+      "src/selfstruct/research_actions.py": "b2971bc713405c9916549d56a23cfd981fd73e7e726ea6ff59c8e14b66ae3b00",
+      "src/selfstruct/vision.py": "8708513db017459e1b97bade1bab65e7d08e86732f1f255871ede694e09234ea",
+      "src/selfstruct/research_schema.py": "83d555ca2de8462a44d2e7e8298d79d7e321225208f347e7a856e042f8a17a54",
+      "src/selfstruct/research_mission.py": "82e2a07a8e7e035ffa55577fa3c974f577d98f706e71221c071ceaf7426aee1b",
+      "src/selfstruct/research_memory.py": "be89b93727f6137db6199e92a03c79a9423e7564395475fee65acd2a71636893"
+    },
+    "model_sha256": "0a270ec9fe6b34f4a0d33992b6135117b484ebc4766ab76b51d4ae8c457e4c42",
+    "platform": "Linux CPU",
+    "context": 8192,
+    "forced_tool_sequence": false,
+    "request_override": false,
+    "first_response": {
+      "findings": [
+        {
+          "id": "r1_1",
+          "text": "現在の目的はunknownである。",
+          "evidence": [
+            1
+          ]
+        }
+      ],
+      "actions": [
+        {
+          "op": "observe",
+          "event": 1,
+          "phase": "after",
+          "size": [
+            320,
+            144
+          ],
+          "mode": "RGB",
+          "output": "image"
+        },
+        {
+          "op": "observe",
+          "event": 1,
+          "phase": "before",
+          "size": [
+            320,
+            144
+          ],
+          "mode": "RGB",
+          "output": "image"
+        }
+      ],
+      "problem": "現在の画面の状態、UIの構成、および操作によって何が変化するのかという基本構造が不明である。",
+      "reason": "経験ID:1のデータのみでは、画面の視覚的特徴や目的を特定するには情報が不足している。まず現在の画面全体を把握し、UI要素や動的な変化の有無を特定する必要がある。",
+      "wat": ""
+    },
+    "delivered_steps": [
+      {
+        "step": 1,
+        "image_count": 0,
+        "evidence": []
+      },
+      {
+        "step": 2,
+        "image_count": 2,
+        "evidence": [
+          {
+            "size": [
+              320,
+              144
+            ],
+            "mode": "RGB",
+            "evidence": {
+              "event": 1,
+              "phase": "after"
+            },
+            "box": [
+              0,
+              0,
+              320,
+              144
+            ],
+            "image_attached": true,
+            "payload_fields": []
+          },
+          {
+            "size": [
+              320,
+              144
+            ],
+            "mode": "RGB",
+            "evidence": {
+              "event": 1,
+              "phase": "before"
+            },
+            "box": [
+              0,
+              0,
+              320,
+              144
+            ],
+            "image_attached": true,
+            "payload_fields": []
+          }
+        ]
+      }
+    ],
+    "last_context_budget": {
+      "context": 8192,
+      "input_count": 3550,
+      "reserved_output": 2048,
+      "image_count": 2,
+      "compact_history": false,
+      "omitted_visual_results": 0,
+      "omitted_attachments": 0,
+      "output_budget": 2338
+    },
+    "raw_result": {
+      "status": "inconclusive_runtime_budget",
+      "first_unmet": "hypothesis_linked_input_executed",
+      "gates": {
+        "observation_requested": true,
+        "spatial_evidence_delivered": true,
+        "hypothesis_linked_input_executed": false,
+        "same_job_result_reinference": false,
+        "post_input_explanation_candidate": false,
+        "environment_goal_reached": false,
+        "human_readable_report_saved": false
+      },
+      "semantic_understanding_verified": false,
+      "error": "Harness deadline reached; InterruptedError: 推論を中断しました。",
+      "seed": 271828,
+      "job": "5a65cc82177544ed824388801acaa45a",
+      "job_state": "pending",
+      "job_outcome": null,
+      "research_calls": 2,
+      "oracle": {
+        "direction_for_A": -1,
+        "target": 5,
+        "initial_distance": 5,
+        "final_distance": 5,
+        "bootstrap_inputs": 1,
+        "llm_transitions": []
+      },
+      "reports": []
+    },
+    "projector_sha256": "91f086971e56d7a7d8d39e271873fccdb49541bd259d6e02c401a4f1cb7a219e",
+    "runtime_capabilities": {
+      "input": "vision",
+      "status": "runtime_reported",
+      "model": "local",
+      "checked_at": 1793574825.3794856
+    }
+  },
+  "interpretation": {
+    "verified": "The real model selected two native image observations and they were delivered into the same Job’s next inference input.",
+    "unconfirmed": [
+      "goal understanding",
+      "hypothesis-linked operation",
+      "completed result-driven reinference",
+      "human-readable research result",
+      "usefulness in the real game"
+    ],
+    "limitations": [
+      "One synthetic case; no held-out or real-game candidate run.",
+      "Linux CPU differs from user Windows GPU.",
+      "Second inference was interrupted by the 660-second Harness limit.",
+      "No automatic images, forced actions or game-specific goal/key hints were added to the production prompt."
+    ]
+  }
+}
