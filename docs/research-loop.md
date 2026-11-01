@@ -166,3 +166,9 @@ pixel_coverageは、この応答に含む値の範囲です。位置は変換後
 memory_index.continuationは最近2件の作業メモと直前の完了研究Jobへの参照です。title/ref/revisionなどの小さいメタデータだけを返し、本文はmemory_readでLLMが必要時に取得します。現在のJobやAgent依頼の別種Jobを前の完了研究として選びません。元の記録やメモの検証状態は変更しません。
 
 実機では、新しいJobが継続索引からメモ・前の研究を取得したか、同じ初期計画を毎回作り直す動きが減ったかを、memory_index/continuation、memory_read、delivered_memory_actions、memory_notesの版で確認してください。索引を渡したことはモデルが活用したことの証明ではありません。
+
+## Runtimeに合う視覚手段の案内（0.7.5）
+
+VisionをRuntimeで確認した場合、研究用の取得例と説明を `observe output=image` へ切り替える。画面の文字・UI・配置を読むための画像入力と、数値計算のためのpixels/statisticsを区別して案内する。これは選択可能な手段の説明で、観測命令の自動生成・画像の無条件添付・LLMのpixels要求の上書きではない。最初は引き続き索引のみ。Text-onlyは既存の画素・解析器による経路を利用する。
+
+診断ではRuntimeのVision申告だけでなく、LLMの実際の要求がimageか、次の推論に画像添付があるかを確認する。その上で、対象の目的を根拠付きで説明し、Experimentと結果に基づく理解更新へ進むかを別々に判定する。

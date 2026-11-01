@@ -27,6 +27,15 @@ candidate: problem,evidence（取得済みID2件以上）,behavior,evaluationで
 取得結果は同じJobへ返る。同じ過去Evidence/処理を再要求しても新情報ではない。1 Job最大10推論/24要求/600秒/画像4MiB。必要なら具体的actionsで続行、不要なら根拠・未確認事項を残して終了。'''
 
 
+
+def model_instructions(vision):
+    """Describe the representation this runtime can actually deliver, without forcing actions."""
+    if not vision:return INSTRUCTIONS
+    example='例 {"op":"observe","event":1,"phase":"before","size":[32,32],"mode":"RGB","output":"pixels","limit":64}。例のIDは今回の索引・許可入力へ置換する。'
+    native='このRuntimeは画像を直接見られます。画面の文字・UI・配置や目的を読むにはobserveのoutput="image"で画像を要求できます。pixelsは画素値の数列、statisticsは要約であり、画面そのものの画像入力ではありません。見る方法・領域・解像度は自分で選びます。\n例 {"op":"observe","event":1,"phase":"before","size":[512,512],"mode":"RGB","output":"image"}。例のID・解像度は今回の索引と目的に合わせて選ぶ。sizeの積は262144以下。'
+    return INSTRUCTIONS.replace(example,native)
+
+
 def allowed_evidence(payload):
     ids={r['id'] for r in payload.get('research_rows',[])}
     for h in payload.get('visual_history',[]):ids.update(evidence_ids(h.get('result',{}).get('evidence',{})))

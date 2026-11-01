@@ -604,3 +604,37 @@ def test_managed_context_with_four_experiments_preserves_targets_and_repair(tmp_
         assert len(final['experiment_context']['experiments'])==4
         assert all(g['evaluation_requirements']['blocking_reasons']==['not_preregistered','insufficient_samples'] for g in final['experiment_context']['hypotheses'])
     finally:c.close()
+
+
+@pytest.mark.parametrize('vision,output',[(True,'image'),(True,'pixels'),(False,'pixels')])
+def test_runtime_visual_tools_are_advertised_without_overriding_model_choice(tmp_path,vision,output):
+    c=Controller(Config(root=str(tmp_path),keys=['A','B'],research_every=100000),UnlabelledDynamics())
+    c.step();eid=c.last_eid
+    class Client:
+        calls=0
+        def complete(self,prompt,**options):
+            self.calls+=1
+            if vision:
+                assert 'このRuntimeは画像を直接見られます' in prompt
+                assert '"output":"image"' in prompt
+                assert '例 {"op":"observe","event":1,"phase":"before","size":[32,32]' not in prompt
+            else:
+                assert 'このRuntimeは画像を直接見られます' not in prompt
+                assert '"output":"pixels","limit":64' in prompt
+            variants=options['schema']['properties']['actions']['items']['anyOf']
+            observe=next(v for v in variants if v['properties']['op']['enum']==['observe'])
+            assert set(observe['properties']['output']['enum'])=={'pixels','pixel','statistics','histogram','components','image'}
+            if self.calls==1:
+                assert not options.get('images')
+                return json.dumps({'actions':[{'op':'observe','event':eid,'size':[16,16],'mode':'RGB','output':output,'limit':64}]})
+            assert bool(options.get('images'))==(vision and output=='image')
+            return '{"findings":[],"actions":[],"wat":""}'
+    client=Client();client.vision=vision;c.scientist.client=client
+    jid=c.store.job('research',{})
+    try:
+        c.scientist.study(c.store.rows(),jid)
+        p=json.loads(c.store.get_job(jid)['payload'])
+        assert client.calls==2 and p['action_history'][0]['request']['output']==output
+        assert p['research_steps'][-1]['image_count']==int(vision and output=='image')
+        assert p['progress']['experiments']==0
+    finally:c.close()

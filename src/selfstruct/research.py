@@ -776,7 +776,7 @@ class Scientist:
                 self.client.capabilities = {"input": "text", "status": "unverified", "checked_at": time.time()}
             from .config import write_json
             write_json(self.store.root/"host"/"model-capabilities.json", self.client.capabilities)
-        from .research_actions import (MAX_CALLS,MAX_SECONDS,MAX_IMAGE_BYTES,INSTRUCTIONS,
+        from .research_actions import (MAX_CALLS,MAX_SECONDS,MAX_IMAGE_BYTES,INSTRUCTIONS,model_instructions,
             record_findings,run_actions,needs_followup,history_context,progress,allowed_evidence,context_entry,hypothesis_context,experiment_context)
         from .research_mission import identity
         payload['mission']=identity()
@@ -829,7 +829,9 @@ class Scientist:
             issued_step=payload.get('research_calls',0)+1
             new_ids=[f'r{issued_step}_{i}' for i in range(1,9) if f'r{issued_step}_{i}' not in payload.get('hypotheses',{})]
             payload['new_hypothesis_ids']=new_ids
-            prefix = prompt+"\n"+VISUAL_INSTRUCTIONS+("" if INSTRUCTIONS in prompt else "\n"+INSTRUCTIONS)+"\nモデル画像入力: "+str(bool(getattr(self.client,"vision",False)))
+            tools=model_instructions(bool(getattr(self.client,"vision",False)))
+            base=prompt.replace(INSTRUCTIONS,tools)
+            prefix = base+"\n"+VISUAL_INSTRUCTIONS+("" if tools in base else "\n"+tools)+"\nモデル画像入力: "+str(bool(getattr(self.client,"vision",False)))
             if payload.get('research_phase')=='implementation':
                 prefix='実装フェーズ。根拠と必要挙動を満たす完全な候補だけを作成してください。新しい世界仮説は不要。\n計画：'+json.dumps(payload['implementation_plan'],ensure_ascii=False)+'\n'+PROMPT[PROMPT.index('Agent ABI:'):].format(source=self.revisions.source(),rows='[]')
             implementation_repair=bool(payload.get('repair_response') and repair_kind(payload)=='implementation')

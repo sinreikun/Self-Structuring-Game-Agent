@@ -179,6 +179,9 @@ class App(ManagementUI):
         for title,command in [('START',self.start),('PAUSE',self.pause),('STOP',self.stop),('診断ZIPをコピー',self.export)]:
             button=ttk.Button(footer,text=title,command=command)
             button.pack(side='left',padx=(0,4));self.control_buttons[title]=button
+        from . import __version__
+        self.version_label=ttk.Label(footer,text='SelfStruct '+__version__,font=(UI_FONT,9),foreground='#a8bbc9')
+        self.version_label.pack(side='right',padx=(8,0))
         self.control_state=tk.StringVar(value='停止中')
         ttk.Label(footer,textvariable=self.control_state).pack(side='left',padx=12)
         self.control_help=ttk.Label(self.home,text='START：開始／再開　PAUSE：ゲーム操作を休止（研究は継続）　STOP：操作・研究を終了して保存',font=(UI_FONT,9),foreground='#a8bbc9',wraplength=1050)
