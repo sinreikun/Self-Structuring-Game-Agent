@@ -159,6 +159,9 @@ def test_mission_and_human_report_preserve_uncertainty_without_promoting_claims(
     c,job,p=world
     prompt=research_prompt('',c.store.rows(),['A','B'],[],pull=True)
     assert MISSION in prompt and prompt.count(MISSION)==1
+    assert '人間が画面を見て入力し' in prompt and 'Hostが与える既知の前提' in prompt
+    assert '画像解析や道具の作成は、そのための手段' in prompt
+    assert 'ゲーム・対話型プログラム' in identity()['environment']
     assert '主目的' in prompt and '副目的' in prompt and '対象の目的ではありません' in prompt
     request={'op':'research_report','title':'対象の目的はまだ不明','target_goal':'画面内の目的表示を確認する必要がある','goal_status':'unknown','goal_evidence':[],
         'findings':[{'text':'許可入力の完了経験が保存されている','status':'observation','evidence':[c.last_eid]}],
