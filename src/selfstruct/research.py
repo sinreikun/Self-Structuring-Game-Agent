@@ -780,6 +780,8 @@ class Scientist:
             run_actions(self,jid,payload,payload['pending_actions']);payload.pop('pending_actions',None)
         self.initial_visual_evidence(jid,payload)
         for _ in range(MAX_CALLS+1):
+            payload['experiment_context']=experiment_context(self,jid)
+            payload['hypothesis_context']=hypothesis_context(self,payload)
             if payload.get('research_calls',0)>=MAX_CALLS or time.time()-payload['research_started']>=MAX_SECONDS or payload.get('research_limit'):
                 payload.setdefault('research_limit','calls' if payload.get('research_calls',0)>=MAX_CALLS else 'time')
                 self.activity.record('RESEARCH',f'limit job={jid} reason={payload["research_limit"]}')
@@ -818,8 +820,6 @@ class Scientist:
             elif payload.get('repair_response'):
                 prefix+='\n研究JSONの形式修正。WAT生成・ABI修正へ移行しないでください。操作名はopの列挙値だけ、パラメータは別のJSONフィールドです。\n検査：'+payload.get('repair_error','')+'\n不完全な応答：'+payload['repair_response'][:3000]
             prefix+='\n根拠IDはExperience IDのみ。observation IDは観測参照用で、findings.evidenceへ混ぜません。許可Evidence IDs：'+json.dumps(sorted(allowed_evidence(payload)))
-            payload['experiment_context']=experiment_context(self,jid)
-            payload['hypothesis_context']=hypothesis_context(self,payload)
             prefix+='\n参照中の仮説（保存された主張と事前登録。変更は別IDへ）：'+json.dumps(payload['hypothesis_context'],ensure_ascii=False,separators=(',',':'))
             prefix+='\n今回の新規findings.id候補：'+json.dumps(new_ids)+'。既存仮説を使うだけならfindingsを空にしてactions.hypothesisへ既存の別名／IDを指定する。主張・事前登録を変更するなら新規IDで別仮説を定義する。'
             prefix+='\n研究履歴：'+history_context(payload)
@@ -898,6 +898,8 @@ class Scientist:
             requests=actions+[{"op":"observe",**r} if isinstance(r,dict) else r for r in legacy] if isinstance(actions,list) and isinstance(legacy,list) else None
             if requests is None or len(requests)>4:raise ResearchRepairNeeded('actions/visual_requestsは合計最大4件の配列にしてください。')
             if not requests:
+                payload['experiment_context']=experiment_context(self,jid)
+                payload['hypothesis_context']=hypothesis_context(self,payload)
                 if value.get('wat'):
                     progress(payload)['candidates']+=1
                     payload['candidate_sha256']=hashlib.sha256(value['wat'].encode()).hexdigest()

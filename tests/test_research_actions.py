@@ -508,3 +508,48 @@ def test_experiment_targets_survive_new_hypotheses_and_observation_history(tmp_p
         assert summary['experiments'][1]['state']=='queued' and summary['experiments'][1]['completed']==0
         assert summary['experiments'][1]['evidence']==[]
     finally:c.close()
+
+
+def test_experiment_context_separates_inputs_and_explains_unregistered_targets(tmp_path):
+    from selfstruct.research_actions import experiment_context
+    c=Controller(Config(root=str(tmp_path),keys=['A','B']),UnlabelledDynamics());c.step()
+    job=c.store.job('research',{});kid=c.store.knowledge('hypothesis','画像変化についての未登録仮説','inferred','hypothesis',[c.last_eid])
+    try:
+        for i,action in enumerate((0,1)):
+            c.experiments.submit(job,str(i),{'action':action,'repeat':1,'duration':10,'wait':10},kid);c.step()
+        group=experiment_context(c.scientist,job)['hypotheses'][0]
+        assert group['completed']==2
+        assert {x['input']:x['completed'] for x in group['by_action']}=={'A':1,'B':1}
+        requirement=group['evaluation_requirements']
+        assert not requirement['preregistered'] and requirement['matching_post_registration_samples']==0
+        assert set(requirement['blocking_reasons'])=={'not_preregistered','insufficient_samples'}
+        assert c.store.db.execute('SELECT validation FROM knowledge WHERE id=?',(kid,)).fetchone()[0]=='inconclusive'
+        assert c.store.db.execute('SELECT count(*) FROM claims WHERE knowledge=?',(kid,)).fetchone()[0]==0
+    finally:c.close()
+
+
+def test_last_call_experiment_is_in_final_diagnostic_context(tmp_path,monkeypatch):
+    import selfstruct.research_actions as actions
+    monkeypatch.setattr(actions,'MAX_CALLS',1)
+    c=Controller(Config(root=str(tmp_path),keys=['A','B'],research_every=100000),UnlabelledDynamics());c.step();eid=c.last_eid
+    class Client:
+        def complete(self,prompt,**options):
+            return json.dumps({'findings':[{'id':'r1_1','text':'入力後の変化確率を事前登録','evidence':[eid],'action':1,'change_probability':1}],
+                'actions':[{'op':'experiment','hypothesis':'r1_1','action':1,'duration':10,'wait':10,'repeat':1}]})
+    c.scientist.client=Client();job=c.store.job('research',{})
+    thread=threading.Thread(target=lambda:c.scientist.study(c.store.rows(),job));thread.start()
+    try:
+        deadline=time.time()+10
+        while thread.is_alive() and time.time()<deadline:c.step();time.sleep(.01)
+        thread.join(1);assert not thread.is_alive()
+        p=json.loads(c.store.get_job(job)['payload']);kid=p['hypotheses']['r1_1']
+        assert p['research_limit']=='calls' and p['research_calls']==1
+        summary=p['experiment_context'];assert summary['plans_used']==1 and summary['plans_remaining']==3
+        assert summary['hypotheses'][0]['hypothesis']==kid and summary['hypotheses'][0]['completed']==1
+        requirement=summary['hypotheses'][0]['evaluation_requirements']
+        assert requirement['preregistered'] and requirement['matching_post_registration_samples']==1
+        assert requirement['missing_samples']==15 and requirement['blocking_reasons']==['insufficient_samples']
+        assert kid in {h['id'] for h in p['hypothesis_context']}
+        assert p['progress']['hypotheses_evaluated']==0
+        assert c.store.db.execute('SELECT validation FROM knowledge WHERE id=?',(kid,)).fetchone()[0]=='inconclusive'
+    finally:c.close();thread.join(2)

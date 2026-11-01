@@ -24,7 +24,7 @@ actionsは最大4件。opには操作名だけを入れ、event等は別のJSON�
 observe: event,phase=before/after/diff,box=[左,上,右,下],size=[幅,高さ],mode=RGB/L,output=pixels/statistics/histogram/components/image,operations,offset,limit。event省略は現在画面。
 compare: observeと同じ指定にcompare={event,phase,box}を追加。2つのEvidenceの同一領域を比較。
 analyze: observeと同じ指定にoperations=[{op:edge/threshold/grayscale/blur/invert,...}]を追加。解析器APIもactionsから直接利用可。
-experiment: hypothesis=h1または既存仮説ID（必須。先にfindingsへid/text/evidenceを定義）,action=入力番号,duration=10..500ミリ秒,wait=10..2000ミリ秒,repeat=1..8。最大4計画/32入力。condition={box,size,mode,operations,mean_min:0..255,mean_max:0..255,max_wait_steps:1..128}で画素平均範囲を満たす状態を待てる。意味ラベルは禁止。conditionは実行状態の選別条件で、観測フォーマット指定ではない。指定時はmean_min/mean_maxの少なくとも1つが必須。無条件ならcondition自体を省略する。入力結果は別observe/compareで確認する。PAUSE中は入力しない。STOP/中断は再送しない。
+experiment: hypothesis=h1または既存仮説ID（必須。先にfindingsへid/text/evidenceを定義）,action=入力番号,duration=10..500ミリ秒,wait=10..2000ミリ秒,repeat=1..8。最大4計画/32入力。condition={box,size,mode,operations,mean_min:0..255,mean_max:0..255,max_wait_steps:1..128}で画素平均範囲を満たす状態を待てる。意味ラベルは禁止。conditionは実行状態の選別条件で、観測フォーマット指定ではない。指定時はmean_min/mean_maxの少なくとも1つが必須。無条件ならcondition自体を省略する。入力結果は別observe/compareで確認する。experiment_context.hypothesesのevaluation_requirementsには事前登録の有無・同じ登録入力の標本数・不足数・判定不能の理由がある。単なるcompleted合計を統計標本数と混同しない。未登録の結果へ後から確率を付けて支持・反証してはいけない。PAUSE中は入力しない。STOP/中断は再送しない。
 evaluate: hypothesis=既存の別名またはID,change_probability=0..1。画面変化確率を検証する場合は実験より先にfindings.actionとchange_probabilityを登録する。未登録や事後に変更した確率は判定不能。実験の独立した完了経験16件以上で画面変化確率のみ統計比較。少数・異なる入力混在・意味推測は判定不能。
 candidate: problem, evidence=[取得済みIDを2件以上], behavior, evaluationを指定すると実装フェーズへ。根拠・必要挙動・評価条件を揃えてから要求。
 findingsにactionとchange_probabilityを仮説作成時に指定すると事前登録となる（無条件の指定入力後の画面変化確率のみ）。条件付き仮説の意味・因果は未確認のまま。新規findingsのidはその推論ステップで提示された未使用ID候補から選び、experiment/evaluateで参照する。同じidを別の仮説や変更した主張に再割当しない。新しい仮説にはh2/h3等の新しいidを使う。各結果は同じJobへ返され、次の推論で使える。新しい根拠、仮説、検証、解析器、候補は進展として記録する。観測・仮説だけの完了も正当。ただし次の行動が必要なら実行せず完了としない。
@@ -277,8 +277,28 @@ def experiment_context(scientist,jid):
             group['evidence']=[r['id'] for r in complete];group['completed']=len(complete)
             group['actual_inputs']=sorted({r['action'] for r in complete})
             group['changed']=sum(r['change']>.01 for r in complete);group['unchanged']=sum(r['change']<=.01 for r in complete)
+            # Counts for different inputs describe observations, not pooled samples.
+            group['by_action']=[{'action':scientist.keys.index(key),'input':key,
+                'completed':sum(r['action']==key for r in complete),
+                'changed':sum(r['action']==key and r['change']>.01 for r in complete)} for key in group['actual_inputs']]
+            claim=scientist.store.db.execute('SELECT action,probability,after_id FROM claims WHERE knowledge=?',(group['hypothesis'],)).fetchone()
+            reasons=[]
+            if not claim:reasons.append('not_preregistered')
+            conditional=any((json.loads(row['request']).get('condition') or {}).get('mean_min',0)>0 or
+                            (json.loads(row['request']).get('condition') or {}).get('mean_max',255)<255
+                            for row in rows if row['hypothesis']==group['hypothesis'])
+            if conditional:reasons.append('conditional_selection')
+            if claim and any(r['action']!=claim['action'] for r in complete):reasons.append('action_mismatch')
+            eligible=[r for r in complete if claim and r['action']==claim['action'] and r['id']>claim['after_id']]
+            if claim and len(eligible)<len([r for r in complete if r['action']==claim['action']]):reasons.append('before_registration')
+            if len(eligible)<16:reasons.append('insufficient_samples')
+            group['evaluation_requirements']={'scope':'current_job_only','preregistered':bool(claim),
+                'registered_target':{'action':scientist.keys.index(claim['action']),'change_probability':claim['probability'],'after_id':claim['after_id']} if claim else None,
+                'matching_post_registration_samples':len(eligible),'missing_samples':max(0,16-len(eligible)),
+                'blocking_reasons':reasons,
+                'note':'現在Jobの集計であり評価結果ではない。未登録の過去経験は標本へ転用できない。evaluateは同じ仮説に紐づく全Jobを再検査する。'}
             result['hypotheses'].append(group)
     result['plans_remaining']=max(0,result['plan_limit']-result['plans_used'])
     result['inputs_remaining']=max(0,result['input_limit']-result['requested_inputs'])
-    result['note']='完了経験だけを計数。未送信・中断は成功扱いしない。未登録なら新しい仮説と今後の実験が必要。異なる仮説・入力の標本は混ぜない。'
+    result['note']='completed/changedは入力別内訳を持つ観測数で統計的な支持・反証ではない。完了経験だけを計数。未送信・中断は成功扱いしない。未登録なら新しい仮説と今後の実験が必要。異なる仮説・入力の標本は混ぜない。'
     return result
