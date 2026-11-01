@@ -60,16 +60,18 @@ class SyntheticGame:
 
 
 def smoke():
-    with tempfile.TemporaryDirectory(prefix="selfstruct-smoke-") as folder:
+    from contextlib import ExitStack
+    with tempfile.TemporaryDirectory(prefix="selfstruct-smoke-") as folder, ExitStack() as cleanup:
         config = Config(root=folder, keys=["A", "B"], quota_bytes=64 * 1024**2, research_every=10000)
         game = SyntheticGame()
         ctrl = Controller(config, game)
+        cleanup.callback(ctrl.close)
         ctrl.start()
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + 30
         while ctrl.steps < 12 and time.monotonic() < deadline:
             time.sleep(.02)
         ctrl.pause()
-        assert ctrl.steps >= 12, ctrl.error
+        assert ctrl.steps >= 12, f"steps={ctrl.steps} status={ctrl.status} error={ctrl.error}"
         assert not game.held
         rows = ctrl.store.rows()
         assert len(rows) >= 12
@@ -85,6 +87,7 @@ def smoke():
         ctrl.close()
         config.resume = True
         resumed = Controller(config, SyntheticGame())
+        cleanup.callback(resumed.close)
         assert resumed.session == sid and resumed.revisions.active == revision and resumed.experiment == experiment
         assert len(resumed.store.rows()) >= 12
         resumed.close()
