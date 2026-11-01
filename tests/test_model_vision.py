@@ -50,7 +50,7 @@ def test_no_projector_and_failed_acquisition_remain_explicitly_text_only(tmp_pat
     assert failed['vision_resolution']['status']=='unavailable' and 'offline' in failed['vision_resolution']['error']
     monkeypatch.setattr('selfstruct.model_vision.fetch_json',lambda url:metadata())
     monkeypatch.setattr('selfstruct.model_vision.Gateway.download',lambda *a,**kw:(_ for _ in ()).throw(InterruptedError('cancelled')))
-    with pytest.raises(InterruptedError):prepare_projector(manager,state,cancel=threading.Event())
+    with pytest.raises(InterruptedError):prepare_projector(manager,failed,cancel=threading.Event())
 
 
 def test_projector_is_not_registered_as_a_language_model(tmp_path,monkeypatch):

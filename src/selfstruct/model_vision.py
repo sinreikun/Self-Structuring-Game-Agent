@@ -40,7 +40,8 @@ def resolve_projector(info):
 
 def prepare_projector(manager,state,progress=lambda done,total:None,cancel=None):
     """One resolution per immutable model; no network on ordinary inference."""
-    if state.get('projector') or state.get('vision_resolution',{}).get('model_sha256')==state['model_sha256']:return state
+    cached=state.get('vision_resolution',{})
+    if state.get('projector') or (cached.get('model_sha256')==state['model_sha256'] and cached.get('status') in ('paired','not_available','runtime_failed')):return state
     info=state.get('model_info') or {}
     if not info.get('url'):return state
     state=dict(state)
