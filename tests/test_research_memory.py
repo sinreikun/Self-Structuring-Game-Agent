@@ -195,3 +195,30 @@ def test_external_notes_survive_reopening_the_individual(world):
         doc=read(scientist,'next-job',{}, {k:entries[0][k] for k in ('collection','ref','revision')})
         assert '未確認の領域' in doc['content']
     finally:reopened.close()
+
+
+def test_batched_reads_report_undelivered_pages_without_destroying_records(world,monkeypatch):
+    from selfstruct.research import LocalLLM
+    from selfstruct.research_actions import run_actions
+    c,job,p=world;p.update(memory_mode='pull',research_calls=1,research_started=time.time())
+    requests=[]
+    for i in range(4):
+        kid=c.store.knowledge('hypothesis',f'本文{i} '+('未確認の記録。'*350),'inferred','hypothesis',[c.last_eid])
+        meta=search(c.scientist,job,p,{'collection':'knowledge','ref':str(kid)})['records'][0]
+        requests.append({'op':'memory_read',**{k:meta[k] for k in ('collection','ref','revision')},'limit':1600})
+    run_actions(c.scientist,job,p,requests);c.store.set_job(job,'running',p)
+    original=json.dumps(p['memory_results'],sort_keys=True)
+    client=LocalLLM('http://127.0.0.1:8766/v1','fixture');client.context=8192
+    monkeypatch.setattr(client,'health',lambda:None);monkeypatch.setattr(client,'count_tokens',lambda text:len(text)//2)
+    calls=[]
+    def complete(prompt,**options):
+        calls.append(prompt)
+        omitted=json.loads(prompt.split('省略情報：')[-1])['omitted_memory']
+        assert omitted and all(item['request']['ref'] in {r['ref'] for r in requests} for item in omitted)
+        assert options['max_tokens']>=512 and 'content_sha256' in prompt
+        return '{"findings":[],"actions":[],"wat":""}'
+    monkeypatch.setattr(client,'complete',complete);c.scientist.client=client
+    c.scientist.study(c.store.rows(),job);final=json.loads(c.store.get_job(job)['payload'])
+    assert len(calls)==1 and json.dumps(final['memory_results'],sort_keys=True)==original
+    delivered=final['research_steps'][-1]['delivered_memory_actions']
+    assert 0<len(delivered)<4 and len(final['action_history'])==4

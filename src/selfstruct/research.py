@@ -846,7 +846,9 @@ class Scientist:
             omitted_visual_results=0
             omitted_attachments=0
             def render():
-                return prefix+'\n研究履歴：'+history_context(payload,compact=compact_history)+"\n追加観測結果（attachment_indexは画像添付の0始まり番号。古い結果はJob履歴へ保持し必要なら再要求）:"+json.dumps(visible, ensure_ascii=False, separators=(",", ":"))+"\n省略情報："+json.dumps({"older_results_omitted":omitted_visual_results,"attachment_omitted":omitted_attachments})
+                delivered={item['action_id'] for item in visible if 'action_id' in item}
+                omitted_memory=[{'action_id':item['action_id'],'request':{k:v for k,v in item.get('request',{}).items() if k in ('op','collection','ref','revision','offset','limit','query')}} for item in payload.get('memory_results',[]) if item.get('step')==payload.get('research_calls',0) and item['action_id'] not in delivered]
+                return prefix+'\n研究履歴：'+history_context(payload,compact=compact_history)+"\n追加観測結果（attachment_indexは画像添付の0始まり番号。古い結果はJob履歴へ保持し必要なら再要求）:"+json.dumps(visible, ensure_ascii=False, separators=(",", ":"))+"\n省略情報："+json.dumps({"older_results_omitted":omitted_visual_results,"attachment_omitted":omitted_attachments,"omitted_memory":omitted_memory})
             text = render()
             # Context pressure must be recoverable, never cause an endless retry
             # with the same oversized pixels. Expose exact replayable references.
