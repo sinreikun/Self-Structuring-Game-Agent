@@ -191,12 +191,20 @@ def overview(scientist,jid,payload):
         summary=payload.get('experiment_context',{})
         goal_view={'text':goal['target_goal'][:160],'text_truncated':len(goal['target_goal'])>160,'status':goal['goal_status'],'source':metadata('report',str(goal['id']),document(scientist,'report',str(goal['id'])))} if goal else {'text':'未確認','status':'unknown'}
         active=[metadata('knowledge',str(h['id']),document(scientist,'knowledge',str(h['id']))) for h in payload.get('hypothesis_context',[])]
+        recent_notes=[metadata('note',str(r['id']),document(scientist,'note',str(r['id']))) for r in scientist.store.db.execute('SELECT id FROM research_notes ORDER BY updated DESC,id DESC LIMIT 2')]
+        previous=scientist.store.db.execute("SELECT rowid AS record_ref,id FROM jobs WHERE kind='research' AND state='complete' AND id<>? ORDER BY updated DESC LIMIT 1",(jid,)).fetchone()
+        prior=None
+        if previous:
+            doc=document(scientist,'research',str(previous['record_ref']))
+            prior={**metadata('research',str(previous['record_ref']),doc),'job':previous['id'],'outcome':doc.get('outcome','unknown')}
+
     from .vision import MAX_PIXELS,MAX_VALUES
     from .research_actions import MAX_CALLS,MAX_ACTIONS
     return {'job':jid,'collections':counts,'seed_visual_metadata':[{'id':r['id'],**frame_sizes(scientist.store,r)} for r in payload.get('research_rows',[])[-3:]],
             'visual_limits':{'max_pixels':MAX_PIXELS,'max_values_per_request':MAX_VALUES},
             'research_budget':{'calls_including_this_turn':max(0,MAX_CALLS-payload.get('research_calls',0)),'actions_remaining':max(0,MAX_ACTIONS-len(payload.get('action_history',[])))},'seed_experience_ids':[r['id'] for r in payload.get('research_rows',[])[-3:]],
             'active_hypotheses':active,
+            'continuation':{'recent_notes':recent_notes,'previous_research':prior,'note_status':'Unverified working notes; retrieve only needed records and compare with current observations/API constraints'},
             'current_target_goal':goal_view,
             'experiment_budget':{k:summary[k] for k in ('plans_remaining','inputs_remaining') if k in summary},
             'rule':'Index only. Retrieve exact records with memory_search/read. No initial pixels were inspected automatically. Use observe/compare for actual visual evidence.'}

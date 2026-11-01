@@ -250,3 +250,32 @@ def test_initial_index_gives_source_dimensions_and_budgets_without_decoding_imag
     assert index['seed_visual_metadata']==[{'id':c.last_eid,'before_size':[160,96],'after_size':[160,96]}]
     assert index['visual_limits']=={'max_pixels':262144,'max_values_per_request':2048}
     assert index['research_budget']=={'calls_including_this_turn':7,'actions_remaining':22}
+
+
+def test_new_job_can_choose_previous_plan_from_a_small_reference_index(world):
+    from selfstruct.research_memory import overview
+    c,job,p=world
+    prior=c.store.job('research',{'prompt':'PRIVATE_OLD_PROMPT','source':'PRIVATE_OLD_SOURCE','outcome':'research_limit'})
+    for i in range(3):note(c.scientist,prior,p,{'title':f'以前の計画{i}','body':f'EXPLICIT_READ_ONLY_BODY_{i}','evidence':[c.last_eid]})
+    c.store.set_job(prior,'complete')
+    other=c.store.job('agent_task',{'prompt':'PRIVATE_OTHER_JOB'});c.store.set_job(other,'complete')
+    index=overview(c.scientist,job,p);continuation=index['continuation']
+    assert [n['title'] for n in continuation['recent_notes']]==['以前の計画2','以前の計画1']
+    assert continuation['previous_research']['job']==prior
+    assert 'PRIVATE_' not in json.dumps(index) and 'EXPLICIT_READ_ONLY_BODY_' not in json.dumps(index)
+    class Client:
+        calls=0
+        def complete(self,prompt,**options):
+            self.calls+=1
+            if self.calls==1:
+                history=json.loads(prompt.split('研究履歴：',1)[1].split('\n追加観測結果',1)[0])
+                ref=history['index']['continuation']['recent_notes'][0]
+                assert 'EXPLICIT_READ_ONLY_BODY_' not in prompt and 'PRIVATE_' not in prompt
+                return json.dumps({'actions':[{'op':'memory_read',**{k:ref[k] for k in ('collection','ref','revision')}}]})
+            assert self.calls==2 and 'EXPLICIT_READ_ONLY_BODY_2' in prompt and 'PRIVATE_' not in prompt
+            return '{"findings":[],"actions":[],"wat":""}'
+    client=Client();c.scientist.client=client;c.scientist.study(c.store.rows(),job)
+    final=json.loads(c.store.get_job(job)['payload'])
+    assert client.calls==2 and final['progress']['memory_reads']==1
+    assert final['research_steps'][1]['delivered_memory_actions'][0]['collection']=='note'
+    assert final['progress']['experiments']==0
