@@ -238,3 +238,15 @@ def test_experience_numeric_query_finds_the_record_and_grants_its_evidence(world
     assert search(c.scientist,job,p,{'collection':'experience','ref':'9'*128})['records']==[]
     scoped=search(c.scientist,job,p,{'collection':'experience','query':str(eid),'watermark':0})
     assert not scoped['records'] and 'does not mean the record is absent' in scoped['detail']
+
+
+def test_initial_index_gives_source_dimensions_and_budgets_without_decoding_images(world,monkeypatch):
+    from PIL import PngImagePlugin
+    from selfstruct.research_memory import overview
+    c,job,p=world;p['research_calls']=3;p['action_history']=[{},{}]
+    def cannot_decode(*args,**kwargs):raise AssertionError('Index must not decode screen pixels')
+    monkeypatch.setattr(PngImagePlugin.PngImageFile,'load',cannot_decode)
+    index=overview(c.scientist,job,p)
+    assert index['seed_visual_metadata']==[{'id':c.last_eid,'before_size':[160,96],'after_size':[160,96]}]
+    assert index['visual_limits']=={'max_pixels':262144,'max_values_per_request':2048}
+    assert index['research_budget']=={'calls_including_this_turn':7,'actions_remaining':22}

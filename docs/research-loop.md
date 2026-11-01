@@ -152,3 +152,11 @@ context_budgetにはモデルtokenizerのinput_count、context、reserved_output
 `memory_note`は短い課題・計画・不明点を保存します。既存メモの更新にはrefとrevisionを使い、古い版での更新を拒否します。`research_report`は対象の目的、goal_status、根拠、観測記述・仮説、未確認事項、次の方針を保存し、GUI「研究結果」と診断内の研究結果.mdから読めます。メモ・報告は仮説の支持・反証や候補採用を自動変更しません。
 
 実機確認では、(1)初回のLLMが索引から何を検索・取得したか、(2)実際に要求した目・領域・解像度、(3)結果が同じJobへ返ったか、(4)対象の目的を何と考え根拠をどう記したか、(5)目的に沿う操作・実験へ進んだか、(6)研究結果と未確認事項を人間向けに残したかを確認します。memory_*のref/revision/offset/content_sha256、研究stepsのconsumed_actions、実験イベント、mission、context_budget、研究メモ・研究結果を診断ZIPで追跡できます。レポート未提出や目的不明もそのまま記録し、達成扱いしません。
+
+### 0.7.2: 実寸と実際に配信した画素の範囲
+
+memory_indexのseed_visual_metadataは開始Experience最大3件のPNGヘッダーからBefore/After実寸を返します。画素デコードは行いません。visual_limitsとresearch_budgetから、最大画素数・最大値数・残り要求数／推論数も確認できます。原画像が利用できない場合は実寸をnullとし、推測しません。
+
+pixel_coverageは、この応答に含む値の範囲です。位置は変換後画像の[x,y,チャネル]、RGBチャネルはR=0/G=1/B=2、Lは0です。行優先で返し、offset/limitの単位はチャネル値の数です。complete_transformed_imageはoffset=0で変換後画像の全値が含まれる場合だけtrueです。原画像全体の取得や意味理解を保証する値ではありません。minimum_full_image_requestsは1回最大2,048値を使った場合の全体取得の最低要求数で、入力枠による配信縮小を考えると更に多く必要な場合があります。
+
+モデル入力で配列を縮小・省略した場合もpixel_coverageを再計算し、元のJob台帳は保持します。delivered_visual_evidenceに実際の配信内容を残し、画像添付・画素配列・統計・メタデータのみを区別できます。実機では実寸の利用、範囲／面積エラーからの復帰、同じ先頭ページだけの再要求や部分取得の全画面扱いが減ったか、観測が対象の目的に沿う操作や研究結果へつながったかを診断で確認してください。

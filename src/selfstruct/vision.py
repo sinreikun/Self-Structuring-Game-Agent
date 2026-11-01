@@ -90,6 +90,14 @@ def checked_transform(image,request,reference):
             'box_rule':'0 <= left < right <= source width; 0 <= top < bottom <= source height; omit box for full source',
             'size_rule':'width * height <= max_pixels; native uses the crop dimensions',
             'limit_rule':'limit only bounds returned values; reducing limit does not reduce transformed pixel area'}
+        resolved=request.get('size',[32,32])
+        if resolved=='native':
+            try:
+                box=box_for(request.get('box'),image.size);resolved=[box[2]-box[0],box[3]-box[1]]
+            except ValueError:resolved=None
+        if isinstance(resolved,list) and len(resolved)==2 and all(type(v)==int and 1<=v<=MAX_PIXELS for v in resolved):
+            constraints.update(requested_pixels=resolved[0]*resolved[1],
+                max_height_at_requested_width=MAX_PIXELS//resolved[0],max_width_at_requested_height=MAX_PIXELS//resolved[1])
         raise VisualRequestError(str(error),constraints) from error
 
 def components(image, threshold=128):
@@ -121,6 +129,20 @@ def components(image, threshold=128):
     return {"components": found, "component_count": total, "truncated": total > len(found)}
 
 
+def refresh_pixel_delivery(result):
+    """Describe only bytes present in this view, including context-trimmed pages."""
+    if 'pixels' not in result and 'pixel_coverage' not in result:return
+    size=result.get('size',[]);mode=result.get('mode')
+    if not isinstance(size,list) or len(size)!=2 or any(type(v)!=int or v<1 for v in size) or mode not in ('L','RGB'):return
+    channels=3 if mode=='RGB' else 1;stride=size[0]*channels
+    total=result.get('total_values',size[0]*size[1]*channels);offset=result.get('offset',0)
+    present=isinstance(result.get('pixels'),list);count=len(result['pixels']) if present else 0
+    def position(index):return [(index%stride)//channels,index//stride,index%channels]
+    result['pixel_coverage']={'payload_present':present,'returned_values':count,'channels':channels,'row_stride_values':stride,
+        'first_sample':position(offset) if count else None,'last_sample':position(offset+count-1) if count else None,
+        'complete_transformed_image':offset==0 and count==total,'minimum_full_image_requests':(total+MAX_VALUES-1)//MAX_VALUES}
+
+
 def describe(image, request):
     result = {"size": list(image.size), "mode": image.mode}
     output = request.get("output", "pixels")
@@ -132,6 +154,7 @@ def describe(image, request):
                       next_offset=offset+limit if offset+limit < len(values) else None)
         if image.mode == "L" and len(values) <= MAX_VALUES and offset == 0:
             result["gray"] = result["pixels"]  # Original Agent ABI compatibility.
+        refresh_pixel_delivery(result)
     elif output == "pixel":
         point = request.get("point")
         if not isinstance(point, list) or len(point) != 2:
@@ -459,7 +482,7 @@ class Analyzers:
 
 VISUAL_INSTRUCTIONS = """画面そのものが主要Evidenceです。色、形状、模様、領域、動き、記号、数字、文字列、UI、画像等の構造があり得ます。意味を事前に仮定せず、解析方法は自分で考えてください。画像からの解釈も未検証の仮説です。
 情報不足ならJSONのvisual_requests配列（最大4件）で追加観測し、結果を見て再要求できます。各要求はop=observe、event=経験ID、phase=before/after/diff（既定before）。eventを省略すると現在画面、fresh=trueは次の新しい取得を待ちます。返るobservation IDで同じ画面を再要求できます。
-box=[左,上,右,下]は原画面座標、size=[幅,高さ]（32/64/128等）またはnative、mode=L/RGB。最大262144画素。output=pixels/pixel/statistics/histogram/components/image。pixelsはoffsetとlimit（最大2048）でページ取得。pixelは変換後point=[x,y]。返るcoordinatesで原画面へ戻せます。compare={event,phase,box}で差分と類似度。operations=[{op:grayscale/threshold/blur/edge/invert,...}]で意味を持たない処理を組み合わせられます。Vision入力確認済みの場合だけoutput=imageを画像として渡し、それ以外は同じ画像の画素を返します。
+box=[左,上,右,下]は原画面座標、size=[幅,高さ]（32/64/128等）またはnative、mode=L/RGB。最大262144画素。output=pixels/pixel/statistics/histogram/components/image。pixelsは行優先でRGBならR,G,Bの各値、Lなら1値を並べた配列で、offset/limitは画素数ではなく値の数（最大2048）。pixel_coverageのfirst/last_sampleは変換後の[x,y,色チャネル]で、complete_transformed_image=falseならbox全体を見たことにはならない。minimum_full_image_requestsと残り要求数を見て、必要なら小さい概観・統計・別の観測方法を自分で選ぶ。pixelは変換後point=[x,y]。返るcoordinatesで原画面へ戻せます。compare={event,phase,box}で差分と類似度。operations=[{op:grayscale/threshold/blur/edge/invert,...}]で意味を持たない処理を組み合わせられます。Vision入力確認済みの場合だけoutput=imageを画像として渡し、それ以外は同じ画像の画素を返します。
 op=analyzer_create,definition={description,query:{box,size,mode,operations,output:statistics/histogram/components}}で安全な解析器を生成・保存し、op=analyzer_run,id,event,experimental=trueで試験。op=analyzer_evaluate,id,train:[経験ID],test:[経験ID]は各8..64件、trainは作成以前、testは作成後の独立経験。再現性・予測寄与・未知率・誤反応・コストを評価し合格後だけ通常利用可。op=analyzer_list,cursor（返るnext_cursorでページ取得）、op=analyzer_get,idで定義を取得、op=analyzer_retire,idで再利用・比較・廃止。op=evidence_keep,observation,reasonで重要な追加画面を保存保護。変更は新定義から新IDを作成。WATとこれらの演算や作業領域を組み合わせられます。
 op=library_request,name,purpose,reasonでHostへ取得を要求可能。信頼元・ライセンス・ハッシュ・署名・Runtime検証済みの資源だけが利用対象で、AgentへネットワークやNative実行権限はありません。
 """

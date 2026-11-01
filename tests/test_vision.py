@@ -390,3 +390,44 @@ def test_research_recovers_from_real_source_bounds_and_native_area_limits(world,
     assert payload['progress']['new_evidence']==1 and payload['visual_history'][0]['request']['size']==[320,180]
     from selfstruct.diagnostics import diagnostic_job_payload
     assert json.loads(diagnostic_job_payload(json.dumps(payload)))['action_history'][0]['result']['constraints']['source_size']==[1600,900]
+
+
+@pytest.mark.parametrize('offset,limit,first,last,complete',[
+    (0,36,[0,0,0],[3,2,2],True),
+    (5,11,[1,0,2],[1,1,0],False),
+    (34,10,[3,2,1],[3,2,2],False),
+    (36,10,None,None,False),
+])
+def test_pixel_pages_report_exact_transformed_positions(offset,limit,first,last,complete):
+    from selfstruct.vision import describe
+    raw=bytes(range(36));image=Image.frombytes('RGB',(4,3),raw)
+    result=describe(image,{'output':'pixels','offset':offset,'limit':limit});coverage=result['pixel_coverage']
+    assert result['pixels']==list(raw[offset:offset+limit])
+    assert coverage['returned_values']==len(result['pixels']) and coverage['row_stride_values']==12
+    assert coverage['first_sample']==first and coverage['last_sample']==last
+    assert coverage['complete_transformed_image']==complete
+
+
+def test_pixel_delivery_metadata_tracks_context_trimming_and_omission():
+    from selfstruct.vision import describe,refresh_pixel_delivery
+    image=Image.new('RGB',(480,540),(7,19,31));before=image.tobytes()
+    result=describe(image,{'output':'pixels','limit':2048})
+    assert result['pixel_coverage']['minimum_full_image_requests']==380
+    assert result['pixel_coverage']['last_sample']==[202,1,1]
+    result['pixels']=result['pixels'][:64];refresh_pixel_delivery(result)
+    assert result['pixel_coverage']['returned_values']==64 and result['pixel_coverage']['last_sample']==[21,0,0]
+    assert not result['pixel_coverage']['complete_transformed_image']
+    del result['pixels'];refresh_pixel_delivery(result)
+    assert not result['pixel_coverage']['payload_present'] and result['pixel_coverage']['returned_values']==0
+    assert result['pixel_coverage']['first_sample'] is None and image.tobytes()==before
+
+
+def test_native_limit_feedback_gives_feasible_axis_bounds_without_changing_request(world):
+    from selfstruct.vision import VisualRequestError
+    store,add,access=world;eid=add(Image.new('RGB',(960,540),'blue'))
+    request={'event':eid,'size':'native','output':'pixels','limit':64};original=request.copy()
+    with pytest.raises(VisualRequestError) as caught:access.handle(request)
+    limits=caught.value.constraints
+    assert limits['requested_pixels']==518400
+    assert limits['max_height_at_requested_width']==273 and limits['max_width_at_requested_height']==485
+    assert request==original

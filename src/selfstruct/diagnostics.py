@@ -97,7 +97,7 @@ def diagnostic_job_payload(value):
         request=entry.get('request',{})
         safe['request']=research_request_summary(request)
         raw=entry.get('result',{})
-        safe['result']={k:raw[k] for k in ('error','detail','constraints','duplicate','original_step','experiment','job','hypothesis','state','completed','events','evidence','box','size','mode','coordinates','status','n','observed_probability','expected_probability','interval95','pre_registered','required_samples','reasons','registered_target','phase','id','retained','collection','ref','revision','records','watermark','next_cursor','offset','next_offset','total','format','content_sha256','source_revision','source_changed') if k in raw}
+        safe['result']={k:raw[k] for k in ('error','detail','constraints','duplicate','original_step','experiment','job','hypothesis','state','completed','events','evidence','box','size','mode','coordinates','pixel_coverage','status','n','observed_probability','expected_probability','interval95','pre_registered','required_samples','reasons','registered_target','phase','id','retained','collection','ref','revision','records','watermark','next_cursor','offset','next_offset','total','format','content_sha256','source_revision','source_changed') if k in raw}
         result['action_history'].append(safe)
     result["omitted"]="prompt/source/arrays"
     return json.dumps(redact(result),ensure_ascii=False)

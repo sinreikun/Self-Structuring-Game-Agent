@@ -594,6 +594,9 @@ def test_managed_context_with_four_experiments_preserves_targets_and_repair(tmp_
         assert final['outcome']!='input_budget_exceeded' and final['research_calls']==7
         assert final['experiment_context']['plans_used']==4
         assert final['context_budget']['compact_history'] and final['context_budget']['omitted_visual_results']>0
+        delivery=final['research_steps'][-1]['delivered_visual_evidence'][-1]
+        assert 0<delivery['pixel_coverage']['returned_values']<=128
+        assert not delivery['pixel_coverage']['complete_transformed_image']
         assert len(final['hypothesis_context'])==4
         from selfstruct.diagnostics import diagnostic_job_payload
         assert json.loads(diagnostic_job_payload(json.dumps(final)))['context_budget']==final['context_budget']

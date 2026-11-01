@@ -1,6 +1,7 @@
 """Pull-based research records. Primary stores stay authoritative; reads use revisions."""
 import hashlib
 import json
+import re
 import time
 
 COLLECTIONS=('experience','knowledge','experiment','visual','research','note','report')
@@ -15,6 +16,20 @@ def setup(db):
 
 def encoded(value):return json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':'))
 def revision(value):return hashlib.sha256(encoded(value).encode()).hexdigest()
+
+
+def frame_sizes(store,row):
+    """Read only registered PNG headers; no pixel decoding or attention choice."""
+    from PIL import Image
+    sizes={}
+    for phase in ('before','after'):
+        digest=row.get(phase+'_hash');size=None
+        if isinstance(digest,str) and re.fullmatch('[a-f0-9]{64}',digest):
+            try:
+                with Image.open(store.root/'evidence'/(digest+'.png')) as image:size=list(image.size)
+            except (OSError,ValueError):pass
+        sizes[phase+'_size']=size
+    return sizes
 
 
 def document(scientist,collection,ref):
@@ -32,7 +47,7 @@ def document(scientist,collection,ref):
     if not row:return None
     row=dict(row)
     if collection=='experience':
-        return {k:v for k,v in row.items() if k in ('id','action','duration','state','feature','change','prediction','sent','observed','before_hash','after_hash')}
+        return {**{k:v for k,v in row.items() if k in ('id','action','duration','state','feature','change','prediction','sent','observed','before_hash','after_hash')},'visual_metadata':frame_sizes(store,row)}
     if collection=='knowledge':
         row['evidence']=json.loads(row['evidence'])
         claim=store.db.execute('SELECT action,probability,after_id FROM claims WHERE knowledge=?',(row['id'],)).fetchone()
@@ -176,7 +191,11 @@ def overview(scientist,jid,payload):
         summary=payload.get('experiment_context',{})
         goal_view={'text':goal['target_goal'][:160],'text_truncated':len(goal['target_goal'])>160,'status':goal['goal_status'],'source':metadata('report',str(goal['id']),document(scientist,'report',str(goal['id'])))} if goal else {'text':'未確認','status':'unknown'}
         active=[metadata('knowledge',str(h['id']),document(scientist,'knowledge',str(h['id']))) for h in payload.get('hypothesis_context',[])]
-    return {'job':jid,'collections':counts,'seed_experience_ids':[r['id'] for r in payload.get('research_rows',[])[-3:]],
+    from .vision import MAX_PIXELS,MAX_VALUES
+    from .research_actions import MAX_CALLS,MAX_ACTIONS
+    return {'job':jid,'collections':counts,'seed_visual_metadata':[{'id':r['id'],**frame_sizes(scientist.store,r)} for r in payload.get('research_rows',[])[-3:]],
+            'visual_limits':{'max_pixels':MAX_PIXELS,'max_values_per_request':MAX_VALUES},
+            'research_budget':{'calls_including_this_turn':max(0,MAX_CALLS-payload.get('research_calls',0)),'actions_remaining':max(0,MAX_ACTIONS-len(payload.get('action_history',[])))},'seed_experience_ids':[r['id'] for r in payload.get('research_rows',[])[-3:]],
             'active_hypotheses':active,
             'current_target_goal':goal_view,
             'experiment_budget':{k:summary[k] for k in ('plans_remaining','inputs_remaining') if k in summary},

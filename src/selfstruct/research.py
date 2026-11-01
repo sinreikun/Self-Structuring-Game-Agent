@@ -14,7 +14,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 from .sandbox import Revisions, Sandbox, improves, replay
 from .store import CapacityError, Store
 from .evaluation import sample, summarize, assessment, regression_safe
-from .vision import Eyes, VisualAccess, VISUAL_INSTRUCTIONS, resolved_request, evidence_ids
+from .vision import Eyes, VisualAccess, VISUAL_INSTRUCTIONS, resolved_request, evidence_ids, refresh_pixel_delivery
 
 log = logging.getLogger(__name__)
 
@@ -807,6 +807,7 @@ class Scientist:
                 if payload.get('memory_mode')=='pull' and entry.get('kind')=='initial_evidence':continue
                 item=context_entry(entry,older=i<len(history)-4)
                 item.pop("native", None)
+                if isinstance(item.get("result"),dict):refresh_pixel_delivery(item["result"])
                 if entry.get("native") and i >= len(history)-4 and getattr(self.client,"vision",False):
                     try:
                         _, attachment = self.visual.handle(entry["request"], pin=pin, native=True)
@@ -875,6 +876,7 @@ class Scientist:
                         for key in ("pixels","gray","histogram","components"):
                             if key in item['result']:item['result'].pop(key);removed=True
                         if removed:
+                            refresh_pixel_delivery(item['result'])
                             item['payload_omitted']='Older array retained in Job journal; request exact source/offset to inspect'
                             text=render()
                 while len(visible)>1 and not fits():
@@ -892,6 +894,7 @@ class Scientist:
                         result['pixels']=result['pixels'][:64]
                         if 'gray' in result:result['gray']=result['pixels']
                         result['next_offset']=result.get('offset',0)+64
+                        refresh_pixel_delivery(result)
                         item['payload_omitted']='Only first 64 exact values in this view; full returned chunk retained in Job journal'
                     for key in ('histogram','components'):
                         if key in result:
@@ -923,6 +926,7 @@ class Scientist:
             payload['research_calls']=payload.get('research_calls',0)+1
             step={'step':payload['research_calls'],'phase':('repair' if implementation_repair else 'protocol_repair') if payload.get('repair_response') else payload.get('research_phase','observation'),
                   'started_at':time.time(),'consumed_actions':[r['action_id'] for r in payload.get('action_history',[]) if r['state'] in ('done','duplicate','error')], 'image_count':len(images),'delivered_memory_actions':[{'action_id':item['action_id'],**{k:v for k,v in item.get('result',{}).items() if k in ('collection','ref','revision','offset','next_offset','content_sha256','status','source_revision','source_changed')}} for item in visible if 'action_id' in item]}
+            step['delivered_visual_evidence']=[{**{k:v for k,v in item['result'].items() if k in ('evidence','box','size','mode','offset','next_offset','pixel_coverage')},'image_attached':'attachment_index' in item,'payload_fields':[k for k in ('pixels','gray','histogram','components','mean','value') if k in item['result']]} for item in visible if isinstance(item.get('result'),dict) and item['result'].get('evidence')]
             payload.setdefault('research_steps',[]).append(step)
             self.store.set_job(jid,'running',payload)
             self.activity.update(experiment=f'研究Job {jid[:8]}：取得結果を再分析（step {payload["research_calls"]}）' if payload.get('action_history') else f'研究Job {jid[:8]}：観測・仮説を分析（step {payload["research_calls"]}）',next='必要な観測・実験をLLMが選択します')
