@@ -48,6 +48,8 @@ def test_same_job_crop_compare_experiment_evaluate_analyzer_loop(tmp_path,vision
                 return json.dumps({'findings':[{'id':'h1','text':'同じ許可入力後に画像差分が再現するかを検証する。意味は不明。','action':1,'change_probability':1.0,'evidence':[last,older]}],
                     'actions':[{'op':'experiment','hypothesis':'h1','action':1,'duration':10,'wait':10,'repeat':8}]})
             if n==4:
+                assert '同じ許可入力後に画像差分が再現するかを検証する' in prompt
+                assert '"preregistered":{"action":1,"change_probability":1.0}' in prompt
                 assert '"completed":8' in prompt
                 return json.dumps({'actions':[{'op':'experiment','hypothesis':'h1','action':1,'duration':10,'wait':10,'repeat':8}]})
             if n==5:

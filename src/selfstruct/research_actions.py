@@ -208,3 +208,24 @@ def context_entry(entry,older=False):
         item['request']={k:v for k,v in item.get('request',{}).items() if k in ('op','event','observation','phase','box','size','mode','output','offset','limit','id')}
         item['payload_omitted']='Older full result retained in this Job journal. Request exact Evidence/offset again to inspect cached results.'
     return item
+
+
+def hypothesis_context(scientist,payload):
+    """Keep actively referenced claims in context; an alias alone is not a memory."""
+    aliases=payload.get('hypotheses',{});active=[]
+    for entry in payload.get('action_history',[])[-4:]:
+        ref=entry.get('request',{}).get('hypothesis')
+        kid=aliases.get(ref) if isinstance(ref,str) else ref
+        if type(kid)==int:active.append(kid)
+    ids=list(dict.fromkeys(active+list(aliases.values())[-4:]))[:8]
+    result=[]
+    with scientist.store.lock:
+        for kid in ids:
+            row=scientist.store.db.execute("SELECT id,text,validation,evidence FROM knowledge WHERE id=? AND kind='hypothesis'",(kid,)).fetchone()
+            if not row:continue
+            claim=scientist.store.db.execute('SELECT action,probability FROM claims WHERE knowledge=?',(kid,)).fetchone()
+            item={'id':kid,'aliases':[k for k,v in aliases.items() if v==kid],'text':row['text'][:240],
+                  'text_truncated':len(row['text'])>240,'validation':row['validation'],'evidence':json.loads(row['evidence'])[-16:]}
+            if claim:item['preregistered']={'action':scientist.keys.index(claim['action']),'change_probability':claim['probability']}
+            result.append(item)
+    return result

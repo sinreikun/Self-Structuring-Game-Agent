@@ -774,7 +774,7 @@ class Scientist:
             from .config import write_json
             write_json(self.store.root/"host"/"model-capabilities.json", self.client.capabilities)
         from .research_actions import (MAX_CALLS,MAX_SECONDS,MAX_IMAGE_BYTES,INSTRUCTIONS,
-            record_findings,run_actions,needs_followup,history_context,progress,allowed_evidence,context_entry)
+            record_findings,run_actions,needs_followup,history_context,progress,allowed_evidence,context_entry,hypothesis_context)
         payload.setdefault('research_started',time.time());payload['research_job']=jid
         if payload.get('pending_actions'):
             run_actions(self,jid,payload,payload['pending_actions']);payload.pop('pending_actions',None)
@@ -815,6 +815,8 @@ class Scientist:
             elif payload.get('repair_response'):
                 prefix+='\n研究JSONの形式修正。WAT生成・ABI修正へ移行しないでください。操作名はopの列挙値だけ、パラメータは別のJSONフィールドです。\n検査：'+payload.get('repair_error','')+'\n不完全な応答：'+payload['repair_response'][:3000]
             prefix+='\n根拠IDはExperience IDのみ。observation IDは観測参照用で、findings.evidenceへ混ぜません。許可Evidence IDs：'+json.dumps(sorted(allowed_evidence(payload)))
+            payload['hypothesis_context']=hypothesis_context(self,payload)
+            prefix+='\n参照中の仮説（保存された主張と事前登録。変更は別IDへ）：'+json.dumps(payload['hypothesis_context'],ensure_ascii=False,separators=(',',':'))
             prefix+='\n研究履歴：'+history_context(payload)
             def render():
                 return prefix+"\n追加観測結果（attachment_indexは画像添付の0始まり番号。古い結果はJob履歴へ保持し必要なら再要求）:"+json.dumps(visible, ensure_ascii=False, separators=(",", ":"))
