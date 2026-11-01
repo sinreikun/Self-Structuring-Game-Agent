@@ -481,3 +481,30 @@ def test_inconclusive_evaluation_explains_missing_registration_and_sample_size(t
         context=history_context({'action_history':[{'action_id':'1:0','step':1,'state':'done','request':{'op':'evaluate','hypothesis':kid},'result':result}]})
         assert 'not_preregistered' in context and 'insufficient_samples' in context
     finally:c.close()
+
+
+def test_experiment_targets_survive_new_hypotheses_and_observation_history(tmp_path):
+    from selfstruct.research_actions import experiment_context,hypothesis_context,history_context
+    c=Controller(Config(root=str(tmp_path),keys=['A','B']),UnlabelledDynamics());c.step()
+    job=c.store.job('research',{})
+    original=c.store.knowledge('hypothesis','実験後も評価する元の主張','inferred','hypothesis',[c.last_eid]);c.store.claim(original,'B',1,c.last_eid)
+    aliases={'r1_1':original}
+    try:
+        c.experiments.submit(job,'s1',{'action':1,'repeat':1,'duration':10,'wait':10},original);c.step()
+        experiment_event=c.last_eid
+        for i in range(12):aliases[f'r{i+2}_1']=c.store.knowledge('hypothesis',f'後から追加した別の主張{i}','inferred','hypothesis',[experiment_event])
+        p={'hypotheses':aliases,'action_history':[{'step':i,'state':'done','request':{'op':'observe','event':experiment_event},'result':{}} for i in range(12)]}
+        p['experiment_context']=experiment_context(c.scientist,job)
+        p['hypothesis_context']=hypothesis_context(c.scientist,p)
+        assert original in {h['id'] for h in p['hypothesis_context']}
+        assert next(h for h in p['hypothesis_context'] if h['id']==original)['text']=='実験後も評価する元の主張'
+        summary=p['experiment_context'];assert summary['plans_used']==1 and summary['plans_remaining']==3
+        assert summary['requested_inputs']==1 and summary['inputs_remaining']==31
+        assert summary['experiments'][0]['evidence']==[experiment_event] and summary['experiments'][0]['completed']==1
+        assert 'experiment_context' in history_context(p)
+        c.pause();c.experiments.submit(job,'s2',{'action':0,'repeat':3},original)
+        c.step();summary=experiment_context(c.scientist,job)
+        assert summary['plans_used']==2 and summary['requested_inputs']==4
+        assert summary['experiments'][1]['state']=='queued' and summary['experiments'][1]['completed']==0
+        assert summary['experiments'][1]['evidence']==[]
+    finally:c.close()

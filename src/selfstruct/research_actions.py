@@ -210,7 +210,7 @@ def history_context(payload):
         safe={k:v for k,v in result.items() if k in ('state','error','detail','duplicate','completed','hypothesis','status','n','observed_probability','expected_probability','interval95','id','events','phase','original_step','pre_registered','required_samples','reasons','registered_target')}
         if isinstance(safe.get('events'),list):safe['events']=[{k:v for k,v in row.items() if k in ('id','action','change','state')} for row in safe['events']]
         history.append({k:entry[k] for k in ('action_id','step','state','request') if k in entry}|{'result':safe})
-    return json.dumps({'job':payload.get('research_job'),'step':payload.get('research_calls',0),'phase':payload.get('research_phase','observation'),'hypotheses':payload.get('hypotheses',{}),'progress':progress(payload),'actions':history,'older_actions_omitted':max(0,len(payload.get('action_history',[]))-4),'redirect':payload.get('redirect','')},ensure_ascii=False,separators=(',',':'))
+    return json.dumps({'job':payload.get('research_job'),'step':payload.get('research_calls',0),'phase':payload.get('research_phase','observation'),'hypotheses':payload.get('hypotheses',{}),'progress':progress(payload),'actions':history,'experiment_context':payload.get('experiment_context',{}),'older_actions_omitted':max(0,len(payload.get('action_history',[]))-4),'redirect':payload.get('redirect','')},ensure_ascii=False,separators=(',',':'))
 
 
 def made_progress(payload):
@@ -239,7 +239,8 @@ def hypothesis_context(scientist,payload):
         ref=entry.get('request',{}).get('hypothesis')
         kid=aliases.get(ref) if isinstance(ref,str) else ref
         if type(kid)==int:active.append(kid)
-    ids=list(dict.fromkeys(active+list(aliases.values())[-4:]))[:8]
+    tested=[entry['hypothesis'] for entry in payload.get('experiment_context',{}).get('experiments',[]) if type(entry.get('hypothesis'))==int]
+    ids=list(dict.fromkeys(tested+active+list(aliases.values())[-4:]))[:8]
     result=[]
     with scientist.store.lock:
         for kid in ids:
@@ -250,4 +251,34 @@ def hypothesis_context(scientist,payload):
                   'text_truncated':len(row['text'])>240,'validation':row['validation'],'evidence':json.loads(row['evidence'])[-16:]}
             if claim:item['preregistered']={'action':scientist.keys.index(claim['action']),'change_probability':claim['probability'],'after_id':claim['after_id']}
             result.append(item)
+    return result
+
+
+def experiment_context(scientist,jid):
+    """Compact factual ledger for this Job, independent of recent action history."""
+    result={'scope':'current_job','experiments':[],'hypotheses':[],'plans_used':0,'plan_limit':4,'requested_inputs':0,'input_limit':32,'required_evaluation_samples':16}
+    with scientist.store.lock:
+        rows=scientist.store.db.execute('SELECT * FROM research_experiments WHERE job=? ORDER BY created',(jid,)).fetchall()
+        for row in rows:
+            request=json.loads(row['request']);ids=json.loads(row['events'])
+            events=[dict(r) for r in scientist.store.db.execute('SELECT id,action,change,state FROM events WHERE id IN ('+','.join('?' for _ in ids)+') ORDER BY id',ids)] if ids else []
+            complete=[r for r in events if r['state']=='complete']
+            item={'id':row['id'],'hypothesis':row['hypothesis'],'state':row['state'],'action':request['action'],
+                  'requested':request['repeat'],'completed':len(complete),'evidence':[r['id'] for r in complete],
+                  'changed':sum(r['change']>.01 for r in complete),'unchanged':sum(r['change']<=.01 for r in complete)}
+            result['experiments'].append(item);result['plans_used']+=1;result['requested_inputs']+=request['repeat']
+        groups={}
+        for row in rows:
+            kid=row['hypothesis'];group=groups.setdefault(kid,{'hypothesis':kid,'experiment_ids':[],'evidence':[]})
+            group['experiment_ids'].append(row['id']);group['evidence'].extend(json.loads(row['events']))
+        for group in groups.values():
+            ids=sorted(set(group['evidence']))
+            complete=[dict(r) for r in scientist.store.db.execute("SELECT id,action,change FROM events WHERE state='complete' AND id IN ("+','.join('?' for _ in ids)+') ORDER BY id',ids)] if ids else []
+            group['evidence']=[r['id'] for r in complete];group['completed']=len(complete)
+            group['actual_inputs']=sorted({r['action'] for r in complete})
+            group['changed']=sum(r['change']>.01 for r in complete);group['unchanged']=sum(r['change']<=.01 for r in complete)
+            result['hypotheses'].append(group)
+    result['plans_remaining']=max(0,result['plan_limit']-result['plans_used'])
+    result['inputs_remaining']=max(0,result['input_limit']-result['requested_inputs'])
+    result['note']='完了経験だけを計数。未送信・中断は成功扱いしない。未登録なら新しい仮説と今後の実験が必要。異なる仮説・入力の標本は混ぜない。'
     return result
