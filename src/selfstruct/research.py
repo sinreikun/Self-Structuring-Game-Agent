@@ -540,12 +540,12 @@ class Scientist:
     def finish_failed_research(self, jid, payload, error, outcome="repair_exhausted"):
         payload.update(outcome=outcome, implementation_verified=False, repair_error=str(error)[:1000],
                        response="候補を採用せず保存しました。修正上限または入力制約のため、新しい経験で研究を進めます。")
-        self.store.set_job(jid, "complete", payload)
         self.store.report("candidate", False, "修正を打ち切り、根拠と候補を保存して新しい研究へ進みます。",
                           {"job": jid, "error": str(error)[:1000], "outcome": outcome,
                            "repair_failures": payload.get("repair_failures", 0), "implementation_verified": False})
         for prefix in ("research-job-", "pending-", "suspended-"):
             self.store.unpin(prefix+jid)
+        self.store.set_job(jid, "complete", payload)
         self.activity.update(llm="待機", comparison="候補を保存・新しい研究へ", experiment="修正上限に達した研究を保存")
         self.activity.emit("research_exhausted")
         self.notify("同じ候補の修正を終了しました。既存の個体を保持し、新しい画面Evidenceで次の研究を行います。")
