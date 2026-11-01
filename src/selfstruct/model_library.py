@@ -82,17 +82,26 @@ class ModelLibrary:
             gateway=Gateway(self.root,llm.quota);item=Catalog.resolve_engine(backend=desired)
             engine=gateway.extract_engine(gateway.download(item,'engine',cancel=cancel))
             state.update(engine=str(engine),engine_sha256=Gateway.digest(engine,cancel),backend=desired)
+        from .model_vision import prepare_projector, text_fallback
+        state=prepare_projector(llm,state,cancel=cancel)
         live=llm.active_state or {}
         alive=llm.process is not None and llm.process.poll() is None
-        same=alive and all(live.get(k)==state.get(k) for k in ('model_sha256','context','threads','backend'))
+        same=alive and all(live.get(k)==state.get(k) for k in ('model_sha256','context','threads','backend','projector_sha256'))
         if not same:
             llm.stop()  # Single loaded model policy: no unbounded VRAM standby pool.
             try:
                 if not llm.start(state,cancel=cancel,auto_gpu=config.llm_backend=='auto'):
                     raise OSError('モデルをロードできませんでした。')
+            except InterruptedError:raise
             except Exception as error:
-                self.register({**state,'last_error':str(error)[:1000]})
-                raise
+                if not state.get('projector'):
+                    self.register({**state,'last_error':str(error)[:1000]});raise
+                llm.stop();state=text_fallback(state,error)
+                try:
+                    if not llm.start(state,cancel=cancel,auto_gpu=config.llm_backend=='auto'):
+                        raise OSError('モデルをロードできませんでした。')
+                except Exception as fallback_error:
+                    self.register({**state,'last_error':str(fallback_error)[:1000]});raise
         try:
             if not state.get('validation',{}).get('minimal_inference'):
                 from .research import LocalLLM

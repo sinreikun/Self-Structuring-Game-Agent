@@ -294,8 +294,14 @@ class ManagedLLM:
         self.stop()
         state = {"engine": str(engine), "model": str(model), "engine_sha256": Gateway.digest(engine,cancel),
                  "model_sha256": model_item["sha256"], "model_info": model_item, "backend":engine_item.get("backend","cpu"), "previous": old}
+        from .model_vision import prepare_projector, text_fallback
         try:
-            self.start(state, cancel=cancel)
+            state=prepare_projector(self,state,progress,cancel)
+            try:self.start(state, cancel=cancel)
+            except InterruptedError:raise
+            except Exception as error:
+                if not state.get('projector'):raise
+                self.stop();state=text_fallback(state,error);self.start(state,cancel=cancel)
             state=dict(self.active_state or state)
             state["backend"]=self.current_info.get("backend",state.get("backend","cpu"))
             from .research import LocalLLM
@@ -343,7 +349,14 @@ class ManagedLLM:
                 fallback={**state,**cpu,'backend':'cpu','gpu_error':str(error)[:500]}
                 return self.start(fallback,cancel,auto_gpu=False)
         engine, model = Path(state["engine"]), Path(state["model"])
-        for path, digest in ((engine, state["engine_sha256"]), (model, state["model_sha256"])):
+        assets=[(engine, state["engine_sha256"]), (model, state["model_sha256"])]
+        if state.get('projector') or state.get('projector_sha256'):
+            if not state.get('projector') or not state.get('projector_sha256'):
+                raise ValueError('視覚projectorの完全性情報がありません。')
+            if state.get('projector_info',{}).get('paired_model_sha256')!=state['model_sha256']:
+                raise ValueError('視覚projectorとモデルの組み合わせが一致しません。')
+            assets.append((Path(state['projector']),state['projector_sha256']))
+        for path, digest in assets:
             if not path.resolve().is_relative_to((self.root / "assets").resolve()) or Gateway.digest(path,cancel) != digest:
                 raise ValueError("推論環境の完全性を確認できません。")
         manifests = [parent / "expanded-files.json" for parent in engine.parents if (parent / "expanded-files.json").is_file()]
@@ -388,6 +401,9 @@ class ManagedLLM:
         command=[str(engine), '-m', str(model), '--host', '127.0.0.1', '--port', '8766',
                  '--alias','local','-c',str(state.get('context',8192)),'--parallel','1','-lv','4']
         if state.get('threads',0):command+=['-t',str(state['threads'])]
+        if state.get('projector'):
+            command+=['--mmproj',state['projector']]
+            if state.get('backend','cpu')=='cpu':command+=['--no-mmproj-offload']
         if state.get('backend')=='vulkan':command+=['-ngl','auto','--fit','on','--fit-target','1024']
         else:command+=['-ngl','0']
         self.process = subprocess.Popen(command,

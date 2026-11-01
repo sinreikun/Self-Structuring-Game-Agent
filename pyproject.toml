@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "selfstruct"
-version = "0.7.3"
+version = "0.7.4"
 description = "画面と限定入力から学ぶ自律研究環境"
 requires-python = ">=3.12"
 dependencies = ["Pillow==11.3.0", "psutil==7.1.0", "wasmtime==38.0.0", "cryptography==46.0.3"]

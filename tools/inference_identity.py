@@ -2,7 +2,7 @@
 import ast
 import hashlib
 
-FILES=('src/selfstruct/resources.py','src/selfstruct/research.py','src/selfstruct/store.py',
+FILES=('src/selfstruct/model_vision.py','src/selfstruct/model_library.py','src/selfstruct/resources.py','src/selfstruct/research.py','src/selfstruct/store.py',
        'src/selfstruct/experiments.py','src/selfstruct/research_actions.py','src/selfstruct/research_schema.py','src/selfstruct/sandbox.py','src/selfstruct/vision.py','src/selfstruct/visual_libraries.py','src/selfstruct/assets/catalog.json','pyproject.toml')
 
 
