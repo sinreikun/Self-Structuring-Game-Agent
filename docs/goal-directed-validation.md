@@ -35,3 +35,9 @@ python -m tools.check_visual_perception --model-root MODEL_ROOT --state STATE_JS
 既存の個体・モデルでSTARTする。対応が確認できた場合のみ同一固定版の視覚ファイルを取得する。`host/llm.json`のprojector・vision_resolutionと、診断のRuntime `input=vision`を確認する。取得不可・非対応なら理由を残してText-onlyへ戻り、Vision成功とはしない。
 
 その後に確認するのは、LLM自身が選んだ `observe output=image` が画像として配信されたか、画面内の指示・配置について根拠付きの説明があるか、それに結び付くExperiment、同じJobでの結果受領、目的に沿う進歩があるか、である。能力申告だけ・画像添付だけ・色統計だけでは合格しない。Text-only経路のまま同等の理解へ至ることは、この修正で実証していない。
+
+## 通常研究での比較結果
+
+Visionを有効にした通常研究でも、生成中の応答は前後画面のpixels取得を提案しました。しかし600秒の推論制限でJSONが未完のまま終了し、観測実行0・操作0・報告0でした。判定は `inconclusive_runtime_budget`。画像の自律的な要求・対象理解・目的に沿う操作は、今回の比較では確認できません。Text-only側と同じ1ケースで、別ケースへの一般化も未確認です。CPU負荷や非決定的な生成条件があるため速度の対照実験としては扱いません。
+
+修正で確認できた前進は、同じモデルが画面内の指示と配置を読める視覚経路を利用可能にしたことだけです。主目的の達成として扱いません。[測定結果と制約](evidence/v0.7.4/results.json)を保存しています。

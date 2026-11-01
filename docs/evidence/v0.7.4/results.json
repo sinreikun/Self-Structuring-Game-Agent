@@ -1,0 +1,107 @@
+{
+  "purpose": "Understand an interactive target and operate toward its goal; transport success is insufficient.",
+  "base_source": "747df1bd8f5c2ae04273466c064798303dd87a7f",
+  "projector_loader_source": "f910c29cd29b56d89e3b9449d693d4d70c160535",
+  "model_sha256": "0a270ec9fe6b34f4a0d33992b6135117b484ebc4766ab76b51d4ae8c457e4c42",
+  "model_version": "fc034cfff751157913579611efad8462ac1be606",
+  "projector_sha256": "91f086971e56d7a7d8d39e271873fccdb49541bd259d6e02c401a4f1cb7a219e",
+  "projector_size": 175115840,
+  "automatic_resolution": "paired",
+  "baseline": {
+    "raw_result": {
+      "status": "failed",
+      "first_unmet": "hypothesis_linked_input_executed",
+      "gates": {
+        "observation_requested": true,
+        "spatial_evidence_delivered": true,
+        "hypothesis_linked_input_executed": false,
+        "same_job_result_reinference": false,
+        "post_input_explanation_candidate": false,
+        "environment_goal_reached": false,
+        "human_readable_report_saved": false
+      },
+      "semantic_understanding_verified": false,
+      "error": "Harness deadline reached; InterruptedError: 推論を中断しました。",
+      "seed": 271828,
+      "job": "f74cf52ab863427f918f218e92c313b8",
+      "job_state": "pending",
+      "job_outcome": null,
+      "research_calls": 2,
+      "oracle": {
+        "direction_for_A": -1,
+        "target": 5,
+        "initial_distance": 5,
+        "final_distance": 5,
+        "bootstrap_inputs": 1,
+        "llm_transitions": []
+      },
+      "reports": []
+    },
+    "audit_status": "inconclusive_runtime_budget",
+    "delivered_values": 64,
+    "image_attachments": 0,
+    "delivered_region": "x=0..21, y=0, RGB; no instruction or shape pixels in this task"
+  },
+  "vision_comparison": {
+    "status": "inconclusive_runtime_budget",
+    "first_unmet": "observation_requested",
+    "gates": {
+      "observation_requested": false,
+      "spatial_evidence_delivered": false,
+      "hypothesis_linked_input_executed": false,
+      "same_job_result_reinference": false,
+      "post_input_explanation_candidate": false,
+      "environment_goal_reached": false,
+      "human_readable_report_saved": false
+    },
+    "semantic_understanding_verified": false,
+    "error": "InferenceUnavailable: LLM timeout",
+    "seed": 271828,
+    "job": "04364e8638cd411dbd375fa306259f60",
+    "job_state": "pending",
+    "job_outcome": null,
+    "research_calls": 1,
+    "oracle": {
+      "direction_for_A": -1,
+      "target": 5,
+      "initial_distance": 5,
+      "final_distance": 5,
+      "bootstrap_inputs": 1,
+      "llm_transitions": []
+    },
+    "reports": []
+  },
+  "directed_perception_probe": {
+    "capabilities": {
+      "input": "vision",
+      "status": "runtime_reported",
+      "model": "local",
+      "checked_at": 1793570115.5818877
+    },
+    "model_sha256": "0a270ec9fe6b34f4a0d33992b6135117b484ebc4766ab76b51d4ae8c457e4c42",
+    "projector_sha256": "91f086971e56d7a7d8d39e271873fccdb49541bd259d6e02c401a4f1cb7a219e",
+    "prompt": "画面に実際に表示されている指示文と、図形同士の位置関係を短く説明してください。見えないこと・操作結果は補完せずunknown。これは視覚入力単独の検証で、操作や道具選択の検証ではありません。",
+    "response": "指示文：MOVE WHITE BOX INTO GREEN FRAME\n位置関係：左側に白い正方形、右側に緑色の枠（フレーム）があります。",
+    "completion": {
+      "finish_reason": "stop",
+      "usage": {},
+      "elapsed": 27.559502185002202
+    },
+    "directed": true,
+    "autonomous_choice_verified": false,
+    "game_goal_achieved": false
+  },
+  "visual_review": {
+    "instruction_matches_rendered_text": true,
+    "white_left_of_green_matches_image": true,
+    "image": "synthetic-initial.png",
+    "semantic_action_loop_verified": false
+  },
+  "limitations": [
+    "One synthetic seed only; held-out case not executed.",
+    "Linux CPU, not user Windows Vulkan; same model weights and production prompt/schema, not same performance.",
+    "CPU contention from concurrent local tests and nondeterministic generation; not a controlled speed comparison.",
+    "Baseline raw evaluator predates inconclusive classification; retain original error and distinguish timeout during audit.",
+    "Directed image probe does not establish autonomous tool choice, goal understanding, control, or real-game usefulness."
+  ]
+}
