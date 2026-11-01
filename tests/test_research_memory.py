@@ -225,3 +225,16 @@ def test_batched_reads_report_undelivered_pages_without_destroying_records(world
     assert len(calls)==1 and json.dumps(final['memory_results'],sort_keys=True)==original
     delivered=final['research_steps'][-1]['delivered_memory_actions']
     assert 0<len(delivered)<4 and len(final['action_history'])==4
+
+
+def test_experience_numeric_query_finds_the_record_and_grants_its_evidence(world):
+    c,job,p=world;eid=c.last_eid
+    p['research_rows']=[]
+    found=search(c.scientist,job,p,{'collection':'experience','query':str(eid)})['records']
+    assert len(found)==1 and found[0]['ref']==str(eid) and eid in p['memory_evidence']
+    doc=read(c.scientist,job,p,{k:found[0][k] for k in ('collection','ref','revision')})
+    assert json.loads(doc['content'])['id']==eid
+    assert search(c.scientist,job,p,{'collection':'experience','query':'999999999'})['records']==[]
+    assert search(c.scientist,job,p,{'collection':'experience','ref':'9'*128})['records']==[]
+    scoped=search(c.scientist,job,p,{'collection':'experience','query':str(eid),'watermark':0})
+    assert not scoped['records'] and 'does not mean the record is absent' in scoped['detail']

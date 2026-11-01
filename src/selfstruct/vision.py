@@ -27,13 +27,11 @@ def integer(value, low, high):
 
 def box_for(value, size):
     box = value if value is not None else [0, 0, *size]
-    if not isinstance(box, list) or len(box) != 4:
-        raise ValueError("Invalid visual region")
-    x, y, r, b = box
-    for v in box:
-        integer(v, 0, max(size))
-    if not (x < r <= size[0] and y < b <= size[1]):
-        raise ValueError("Invalid visual region")
+    if not isinstance(box,list) or len(box)!=4 or any(type(v)!=int for v in box):
+        raise ValueError(f'Invalid visual region; source_size={list(size)}; box must be four integer source coordinates')
+    x,y,r,b=box
+    if not (0<=x<r<=size[0] and 0<=y<b<=size[1]):
+        raise ValueError(f'Invalid visual region; source_size={list(size)}; require 0<=left<right<=width and 0<=top<bottom<=height; omit box for full source')
     return box
 
 
@@ -47,7 +45,7 @@ def transform(image, request):
     for v in size:
         integer(v, 1, MAX_PIXELS)
     if size[0] * size[1] > MAX_PIXELS:
-        raise ValueError("Visual pixel budget exceeded; request smaller crops")
+        raise ValueError(f"Visual pixel budget exceeded: size={size}, max_pixels={MAX_PIXELS}. Reduce size or native crop area; limit only bounds returned values")
     mode = request.get("mode", "L")
     if mode not in {"L", "RGB"}:
         raise ValueError("Visual mode must be L or RGB")
@@ -76,6 +74,23 @@ def transform(image, request):
             raise ValueError("Visual operation not granted")
     return result, box
 
+
+
+class VisualRequestError(ValueError):
+    def __init__(self,message,constraints):
+        super().__init__(message)
+        self.constraints=constraints
+
+
+def checked_transform(image,request,reference):
+    try:return transform(image,request)
+    except ValueError as error:
+        constraints={'source_size':list(image.size),'source':{k:v for k,v in reference.items() if k in ('event','observation','phase')},
+            'requested_size':request.get('size',[32,32]),'max_pixels':MAX_PIXELS,'max_values':MAX_VALUES,
+            'box_rule':'0 <= left < right <= source width; 0 <= top < bottom <= source height; omit box for full source',
+            'size_rule':'width * height <= max_pixels; native uses the crop dimensions',
+            'limit_rule':'limit only bounds returned values; reducing limit does not reduce transformed pixel area'}
+        raise VisualRequestError(str(error),constraints) from error
 
 def components(image, threshold=128):
     """Four-connected foreground geometry, without object names."""
@@ -236,7 +251,7 @@ class Eyes:
             with self.store.lock, self.store.db:
                 self.store.db.execute("INSERT OR IGNORE INTO visual_observation_pins VALUES(?,?)", (reference["observation"], pin))
         original_size = image.size
-        image, box = transform(image, request)
+        image, box = checked_transform(image, request,reference)
         compare = request.get("compare")
         if compare is not None:
             if not isinstance(compare, dict):
@@ -245,7 +260,7 @@ class Eyes:
             if pin and "observation" in other_reference:
                 with self.store.lock, self.store.db:
                     self.store.db.execute("INSERT OR IGNORE INTO visual_observation_pins VALUES(?,?)", (other_reference["observation"], pin))
-            other, _ = transform(other, {**request, "box": compare.get("box", box)})
+            other, _ = checked_transform(other, {**request, "box": compare.get("box", box)},other_reference)
             if image.mode != other.mode or image.size != other.size:
                 raise ValueError("Comparison shape differs")
             delta = ImageChops.difference(image, other)

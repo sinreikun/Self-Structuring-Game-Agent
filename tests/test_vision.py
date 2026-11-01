@@ -359,3 +359,34 @@ def test_actual_trace_identifies_evidence_region_and_resolution_within_display_b
     trace = access.eyes.activity.snapshot().trace[-1]
     assert f'experience={event}:before' in trace.text
     assert 'crop=[16, 0, 96, 64]' in trace.text and '128x64 RGB' in trace.text
+
+
+@pytest.mark.parametrize('vision',[False,True])
+def test_research_recovers_from_real_source_bounds_and_native_area_limits(world,vision):
+    store,add,access=world
+    eid=add(Image.new('RGB',(1600,900),(17,29,43)))
+    class Client:
+        calls=0
+        def complete(self,prompt,**options):
+            self.calls+=1
+            if self.calls==1:
+                return json.dumps({'actions':[{'op':'observe','event':eid,'box':[0,0,1920,1080],'size':'native','mode':'RGB','output':'pixels','limit':2048}]})
+            if self.calls==2:
+                assert '"source_size":[1600,900]' in prompt and 'omit box for full source' in prompt
+                return json.dumps({'actions':[{'op':'observe','event':eid,'size':'native','mode':'RGB','output':'pixels','limit':64}]})
+            if self.calls==3:
+                assert '"max_pixels":262144' in prompt and 'reducing limit does not reduce' in prompt
+                return json.dumps({'actions':[{'op':'observe','event':eid,'size':[320,180],'mode':'RGB','output':'image' if vision else 'pixels','limit':64}]})
+            assert self.calls==4 and '"size":[320,180]' in prompt
+            if vision:assert len(options['images'])==1
+            else:assert '"pixels":[17,29,43' in prompt
+            return '{"findings":[],"actions":[],"wat":""}'
+    client=Client();client.vision=vision
+    scientist=Scientist(store,Revisions(store.root/'revisions'),client,['A'],48,lambda _:None);scientist.visual=access
+    job=store.job('research',{});scientist.study(store.rows(),job)
+    payload=json.loads(store.get_job(job)['payload'])
+    assert client.calls==4 and [a['state'] for a in payload['action_history']]==['error','error','done']
+    assert payload['action_history'][0]['result']['constraints']['source_size']==[1600,900]
+    assert payload['progress']['new_evidence']==1 and payload['visual_history'][0]['request']['size']==[320,180]
+    from selfstruct.diagnostics import diagnostic_job_payload
+    assert json.loads(diagnostic_job_payload(json.dumps(payload)))['action_history'][0]['result']['constraints']['source_size']==[1600,900]

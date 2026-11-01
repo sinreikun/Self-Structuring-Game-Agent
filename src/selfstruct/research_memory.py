@@ -27,6 +27,7 @@ def document(scientist,collection,ref):
         if not 0<=index<len(history):return None
         return {'job':job,'index':index,**{k:v for k,v in history[index].items() if k in ('request','result','kind','step')}}
     if collection not in TABLES or not ref.isdecimal():return None
+    if not 1<=int(ref)<=2**53-1:return None
     row=store.db.execute('SELECT * FROM '+TABLES[collection]+' WHERE rowid=?',(int(ref),)).fetchone()
     if not row:return None
     row=dict(row)
@@ -87,10 +88,16 @@ def search(scientist,jid,payload,request):
     cursor=request.get('cursor',2**53-1);watermark=request.get('watermark',2**53-1);limit=request.get('limit',4)
     query=request.get('query','').casefold();found=[]
     with store.lock:
-        if request.get('ref'):
-            try:doc=document(scientist,collection,request['ref'])
+        ref=request.get('ref')
+        numeric_query=not ref and collection=='experience' and query.strip().isascii() and query.strip().isdecimal()
+        if numeric_query:ref=str(int(query.strip()))
+        if ref:
+            if numeric_query and not (int(ref)<cursor and int(ref)<=watermark):
+                return {'collection':collection,'records':[],'next_cursor':None,'detail':'Requested ID is outside this cursor/watermark. Use ref for an exact lookup; this does not mean the record is absent.'}
+            try:doc=document(scientist,collection,ref)
             except (ValueError,TypeError):doc=None
-            return {'collection':collection,'records':[snapshot(scientist,jid,collection,request['ref'],doc)] if doc else [],'next_cursor':None}
+            if doc and collection=='experience':grant(scientist,jid,payload,[doc['id']])
+            return {'collection':collection,'records':[snapshot(scientist,jid,collection,ref,doc)] if doc else [],'next_cursor':None}
         if collection=='visual':
             history=payload.get('visual_history',[]);watermark=min(watermark,len(history))
             candidates=[(i,jid+':'+str(i)) for i in range(min(len(history),cursor,watermark)-1,-1,-1)]

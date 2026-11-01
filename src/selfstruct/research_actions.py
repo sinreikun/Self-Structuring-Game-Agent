@@ -203,6 +203,7 @@ def run_actions(scientist,jid,payload,requests):
             except InterruptedError:raise
             except (ValueError,OSError,KeyError,TypeError) as error:
                 record.update(state='error',result={'error':type(error).__name__,'detail':str(error)[:240]})
+                if getattr(error,'constraints',None):record['result']['constraints']=error.constraints
                 scientist.activity.record('RESEARCH',f'error job={jid} step={record["step"]} op={request.get("op","observe")} {str(error)[:100]}')
         record['finished_at']=time.time();payload.pop('stream_draft',None)
         scientist.store.set_job(jid,'running',payload)
@@ -231,7 +232,7 @@ def history_context(payload,compact=False):
         recent=[]
         for entry in payload.get('action_history',[])[-2:]:
             result=entry.get('result',{});request={k:v for k,v in entry.get('request',{}).items() if k!='body' and (entry.get('request',{}).get('op')!='research_report' or k in ('op','title'))}
-            view={k:v for k,v in result.items() if k in ('state','error','detail','completed','hypothesis','status','n','interval95','pre_registered','reasons','registered_target','records','collection','ref','revision','next_offset','experiment')}
+            view={k:v for k,v in result.items() if k in ('state','error','detail','constraints','completed','hypothesis','status','n','interval95','pre_registered','reasons','registered_target','records','collection','ref','revision','next_offset','experiment')}
             if 'events' in result:
                 view['event_ids']=[r['id'] for r in result['events']]
                 if not compact:view['events']=[{k:v for k,v in r.items() if k in ('id','action','change','state')} for r in result['events']]
@@ -241,7 +242,7 @@ def history_context(payload,compact=False):
     count=2 if compact else 4
     for entry in payload.get('action_history',[])[-count:]:
         result=entry.get('result',{})
-        safe={k:v for k,v in result.items() if k in ('state','error','detail','duplicate','completed','hypothesis','status','n','observed_probability','expected_probability','interval95','id','events','phase','original_step','pre_registered','required_samples','reasons','registered_target')}
+        safe={k:v for k,v in result.items() if k in ('state','error','detail','constraints','duplicate','completed','hypothesis','status','n','observed_probability','expected_probability','interval95','id','events','phase','original_step','pre_registered','required_samples','reasons','registered_target')}
         if compact:safe.pop('events',None)
         elif isinstance(safe.get('events'),list):safe['events']=[{k:v for k,v in row.items() if k in ('id','action','change','state')} for row in safe['events']]
         history.append({k:entry[k] for k in ('action_id','step','state','request') if k in entry}|{'result':safe})
