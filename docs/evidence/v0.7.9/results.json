@@ -15,13 +15,15 @@
   "retained_job_audit": {
     "jobs": 40,
     "completed_experiment_actions": 63,
-    "results_delivered_as_image_or_numeric": 20,
+    "results_delivered_as_image_or_numeric": 21,
     "result_ids_with_statements": 47,
     "next_experiments_blocked_without_statement": 52,
     "pixel_area_errors": 188,
     "human_reports": 1,
     "report_goal_status": "unknown",
-    "report_key_mismatch": "Report says action 12=TAB; actual configured keys 12=NUM8 and 13=TAB."
+    "report_key_mismatch": "Report says action 12=TAB; actual configured keys 12=NUM8 and 13=TAB.",
+    "direct_result_delivery": 20,
+    "delivery_includes_comparison_sources": true
   },
   "limitations": [
     "Curated diagnostic, not a complete individual backup or lifetime count.",
