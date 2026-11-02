@@ -162,6 +162,10 @@ def test_observatory_gui_diagnostics_layout_activity_and_no_full_knowledge_poll(
         raise AssertionError(app.status.get())
     try:
         app.start();until(lambda:app.controller and app.controller.steps>=3)
+        claim='現在の仮説：目的と入力の関係は未確認。'*12
+        app.controller.store.knowledge('hypothesis',claim,'inferred','hypothesis',[app.controller.last_eid])
+        app.refresh_text()
+        assert claim in app.current_hypotheses.get('1.0','end')
         monkeypatch.setattr(app.controller.store,'knowledge_rows',lambda:(_ for _ in ()).throw(AssertionError('full scan')))
         app.poll();app.pause()
         app.export();until(lambda:bool(copied) and not app.busy)
@@ -298,3 +302,42 @@ def test_experience_counter_survives_reopen_and_older_application_writes(tmp_pat
     store=Store(tmp_path,64*1024**2)
     assert store.counts()['experience']==2
     store.close()
+
+
+@pytest.mark.skipif(os.name!='nt' and not os.environ.get('DISPLAY'),reason='Display required')
+def test_lab_hypotheses_and_all_management_sashes_survive_restart(tmp_path,monkeypatch):
+    import tkinter as tk
+    from selfstruct import gui
+    monkeypatch.setattr(gui,'default_root',lambda:tmp_path/'settings')
+    Config(root=str(tmp_path/'data'),game_exe='configured.exe').save(tmp_path/'settings'/'host'/'settings.json')
+    expected={}
+    def settle(window):
+        deadline=time.monotonic()+.35
+        while time.monotonic()<deadline:window.update();time.sleep(.01)
+    def dispose(app):
+        app.performance_monitor.stop.set();app.closing=True;app.window.destroy()
+    ids=('lab-streams','individual-management','llm-management','model-browser-panes')
+    window=tk.Tk();app=gui.App(window)
+    try:
+        assert [app.lab_research_tabs.tab(t,'text') for t in app.lab_research_tabs.tabs()]==['現在の仮説','自作器官接続図']
+        assert app.lab_research_tabs.index(app.lab_research_tabs.select())==0
+        assert app.current_hypotheses.cget('wrap')=='word'
+        for key in ids:
+            app.tabs.select(app.home if key=='lab-streams' else app.individual_tab if key=='individual-management' else app.llm_tab)
+            settle(window);pane=app.layout.widgets[key][1]
+            extent=pane.winfo_height() if str(pane.cget('orient'))=='vertical' else pane.winfo_width()
+            pane.sashpos(0,int(extent*.45));window.update()
+            expected[key]=pane.sashpos(0)
+        app.layout.save()
+    finally:dispose(app)
+    # Save again with most tabs never mapped: their old positions must survive.
+    window=tk.Tk();app=gui.App(window)
+    try:
+        settle(window);app.layout.save()
+        saved=json.loads(app.layout.path.read_text())['elements']
+        assert all(saved[key]['sashes']==[expected[key]] for key in ids)
+        for key in ids:
+            app.tabs.select(app.home if key=='lab-streams' else app.individual_tab if key=='individual-management' else app.llm_tab)
+            settle(window)
+            assert abs(app.layout.widgets[key][1].sashpos(0)-expected[key])<=1,key
+    finally:dispose(app)

@@ -167,8 +167,19 @@ class App(ManagementUI):
             widget.pack(fill='both',expand=True);widget.tag_configure('fresh',foreground='#dceee7')
             setattr(self,name,widget);self.layout.panel('lab-'+name,frame)
         self.layout.pane('lab-streams',streams)
-        ttk.Label(readout,text='自作器官接続図').pack(anchor='w',pady=(8,0))
-        self.mini_graph=tk.Canvas(readout,background='#06090c',height=160,highlightthickness=0)
+        self.lab_research_tabs=ttk.Notebook(readout)
+        self.lab_research_tabs.pack(fill='both',expand=True,pady=(8,0))
+        hypotheses=ttk.Frame(self.lab_research_tabs)
+        organs=ttk.Frame(self.lab_research_tabs)
+        self.lab_research_tabs.add(hypotheses,text='現在の仮説')
+        self.lab_research_tabs.add(organs,text='自作器官接続図')
+        self.current_hypotheses=tk.Text(hypotheses,height=8,width=1,wrap='word',font=(UI_FONT,10),
+            background='#06090c',foreground='#dce5ed',state='disabled',borderwidth=0)
+        scroll=ttk.Scrollbar(hypotheses,command=self.current_hypotheses.yview)
+        scroll.pack(side='right',fill='y')
+        self.current_hypotheses.configure(yscrollcommand=scroll.set)
+        self.current_hypotheses.pack(fill='both',expand=True)
+        self.mini_graph=tk.Canvas(organs,background='#06090c',height=160,highlightthickness=0)
         self.mini_graph.pack(fill='both',expand=True)
         self.mini_graph.create_text(10,20,anchor='nw',fill='#91a5b3',text='Agentからの自己記述を待っています')
         self.mini_graph.bind('<MouseWheel>',lambda e:self.mini_graph.yview_scroll(-1 if e.delta>0 else 1,'units'))
@@ -529,6 +540,8 @@ class App(ManagementUI):
             with IndividualView(self.config,self.controller) as view:
                 name=view.repo.profile(view.identifier)['name'] if view.identifier else '未ロード'
                 live=bool(view.controller)
+                rows=view.store.note_rows('仮説',20) if view.store else []
+                self.set_record_text(self.current_hypotheses,'\n\n'.join(prose(r['text']) for r in rows) or '現在の仮説はまだありません。')
                 self.record_scope.set('個体：'+name+' ／ '+(view.activity().get('phase','実行中')+'の記録' if live else '保存済み記録（STARTせず閲覧できます）'))
                 if self.tabs.select()==str(self.book):
                     category=self.note_category.get();store=view.store
@@ -554,6 +567,7 @@ class App(ManagementUI):
                     self.set_record_text(self.raw_text,text)
             if self.tabs.select()==str(self.capabilities):self.render_graph()
         except (OSError,ValueError,__import__('sqlite3').Error) as error:
+            self.set_record_text(self.current_hypotheses,'現在の仮説を取得できません。')
             self.record_scope.set('ロード済み個体の記録を取得できません：'+str(error))
             self.set_record_text(self.book_text,'記録を取得できません。個体管理でロード中の個体をご確認ください。')
             self.set_record_text(self.raw_text,str(error));self.graph.delete('all')
@@ -664,7 +678,7 @@ class App(ManagementUI):
         self.update_control_buttons()
         if time.monotonic()-self.last_record_refresh>2:
             self.last_record_refresh=time.monotonic()
-            if self.tabs.select() in (str(self.book),str(self.capabilities),str(self.details)):self.refresh_text()
+            if self.tabs.select() in (str(self.home),str(self.book),str(self.capabilities),str(self.details)):self.refresh_text()
         self.pc_performance.set(self.performance_monitor.text())
         info=self.llm.current_info
         if self.config.llm_url!='http://127.0.0.1:8766/v1':

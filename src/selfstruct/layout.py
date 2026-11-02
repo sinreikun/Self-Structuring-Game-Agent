@@ -60,25 +60,38 @@ class Layout:
 
     def pane(self,id,widget,default_fraction=None,default_tail=180):
         self.widgets[id]=('pane',widget)
-        restored=False
+        ready=False
+        pending=None
+        def remember(event=None):
+            if ready and widget.winfo_width()>1 and widget.winfo_height()>1:
+                self.entries[id]={'sashes':[widget.sashpos(i) for i in range(len(widget.panes())-1)]}
         def restore():
-            nonlocal restored
-            if restored:return
-            entry=self.entries.get(id,{})
-            if not isinstance(entry,dict):return
-            positions=entry.get('sashes',[])
-            if not isinstance(positions,list):return
+            nonlocal ready,pending
+            pending=None
             extent=widget.winfo_height() if str(widget.cget('orient'))=='vertical' else widget.winfo_width()
             if not widget.winfo_ismapped() or extent<100:return
-            restored=True
+            entry=self.entries.get(id,{})
+            positions=entry.get('sashes',[]) if isinstance(entry,dict) else []
+            if not isinstance(positions,list):positions=[]
             if not positions and len(widget.panes())==2:
                 positions=[int(extent*default_fraction) if default_fraction is not None else max(80,extent-default_tail)]
             for i,value in enumerate(positions[:max(0,len(widget.panes())-1)]):
                 if type(value)==int:
-                    try:widget.sashpos(i,max(50,min(value,max(50,extent-50))))
-                    except Exception:pass
-        widget.bind("<Map>",lambda _:widget.after_idle(restore),add="+")
-        widget.after(150,restore)
+                    widget.sashpos(i,max(50,min(value,max(50,extent-50))))
+            ready=True
+            remember()
+        def schedule(event):
+            nonlocal ready,pending
+            if event.widget!=widget:return
+            ready=False
+            if pending:widget.after_cancel(pending)
+            pending=widget.after(150,restore)
+        widget.bind('<Map>',schedule,add='+')
+        widget.bind('<Configure>',schedule,add='+')
+        widget.bind('<ButtonRelease-1>',remember,add='+')
+        widget.bind('<Unmap>',remember,add='+')
+        # An unmapped, never-restored pane must not replace a saved sash with zero.
+        widget.layout_pane_ready=lambda:ready
 
     def notebook(self,id,widget):
         self.widgets[id]=('notebook',widget)
@@ -94,7 +107,10 @@ class Layout:
                     if w.state()=='zoomed' and isinstance(previous,dict) and previous:
                         entries[id]={**previous,'maximized':True}
                     else:entries[id]=dict(width=w.winfo_width(),height=w.winfo_height(),x=w.winfo_x(),y=w.winfo_y(),maximized=w.state()=='zoomed',visible=w.state()!='withdrawn')
-                elif kind=='pane': entries[id]={'sashes':[w.sashpos(i) for i in range(len(w.panes())-1)]}
+                elif kind=='pane':
+                    if w.winfo_ismapped() and w.layout_pane_ready():
+                        entries[id]={'sashes':[w.sashpos(i) for i in range(len(w.panes())-1)]}
+                    elif id in self.entries:entries[id]=self.entries[id]
                 elif kind=='panel':entries[id]={'visible':w.layout_visible,'collapsed':w.layout_collapsed}
                 else:entries[id]={'selected':w.index(w.select())}
             except Exception:continue
