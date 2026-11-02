@@ -19,7 +19,7 @@ memory_search: collection=experience/knowledge/experiment/visual/research/note/r
 memory_read: collection,ref,revision,offset,limit=1..1600文字。本文JSONを取得。next_offsetで続き、選択版は同じJobに最大32件保持。source_changedは正本の更新を示す。最新が必要なら再検索。staleなら新しいrevisionでoffset=0へ。異なる版を結合しない。unavailableは内容不明。
 memory_note: title,body,evidenceで短い課題・計画・不明点を外部保存。更新はref/revision必須。別Jobや再起動後も検索可。メモは未検証。
 research_report: title,target_goal,goal_status=unknown/hypothesis/observed,goal_evidence,findings=[{text,status:observation/hypothesis,evidence}],unknowns,next_steps。日本語の人間向け副目的。報告だけを量産しない。
-observe/compare/analyze: eventまたはobservation,phase,box=[左,上,右,下],size,mode,output,operations,offset,limit。必要な場所・方法は自分で選ぶ。compareに第2参照を指定。詳細は視覚API説明。
+observe/compare/analyze: eventは実ID（行番号ではない）。索引外はmemory_search(collection=experience)で取得。eventまたはobservation,phase,box=[左,上,右,下],size,mode,output,operations,offset,limit。必要な場所・方法は自分で選ぶ。compareに第2参照を指定。詳細は視覚API説明。
 experiment: hypothesis（既存ID/別名、必須）,action（0始まり許可入力）,duration=10..500ms,wait=10..2000ms,repeat=1..8。最大4計画/32入力。conditionは画素mean_min/mean_maxによる状態選別。無条件は省略。意味ラベルではない。完了Experienceを返す。PAUSE中は入力せずSTOP後は再送しない。
 evaluate: hypothesis,change_probability=0..1。画像変化率を検証するなら実験前にfindings.actionとchange_probabilityを登録する。未登録・事後変更・条件選別・異なる入力混在・16件未満は判定不能。意味や目標達成は検証しない。
 candidate: problem,evidence（取得済みID2件以上）,behavior,evaluationで持続する挙動の実装へ。根拠と評価条件を揃える。
@@ -28,12 +28,13 @@ candidate: problem,evidence（取得済みID2件以上）,behavior,evaluationで
 
 
 
-def model_instructions(vision):
+def model_instructions(vision, example_event=None):
     """Describe the representation this runtime can actually deliver, without forcing actions."""
-    if not vision:return INSTRUCTIONS
+    if not vision:
+        return INSTRUCTIONS.replace('"event":1,', '"event":'+str(example_event)+',' if example_event is not None else '')
     example='例 {"op":"observe","event":1,"phase":"before","size":[32,32],"mode":"RGB","output":"pixels","limit":64}。例のIDは今回の索引・許可入力へ置換する。'
     native='このRuntimeは画像を直接見られます。画面の文字・UI・配置や目的を読むにはobserveのoutput="image"で画像を要求できます。pixelsは画素値の数列、statisticsは要約であり、画面そのものの画像入力ではありません。見る方法・領域・解像度は自分で選びます。\n例 {"op":"observe","event":1,"phase":"before","size":[512,512],"mode":"RGB","output":"image"}。例のID・解像度は今回の索引と目的に合わせて選ぶ。sizeの積は262144以下。'
-    return INSTRUCTIONS.replace(example,native)
+    return INSTRUCTIONS.replace(example,native).replace('"event":1,', '"event":'+str(example_event)+',' if example_event is not None else '')
 
 
 def allowed_evidence(payload):
@@ -151,12 +152,22 @@ def execute(scientist,jid,payload,request,token):
         if any(not isinstance(request.get(k),str) or not 1<=len(request[k])<=1000 for k in ('problem','behavior','evaluation')):raise ValueError('Implementation requires problem, behavior and evaluation')
         payload['implementation_plan']={k:request[k] for k in ('problem','evidence','behavior','evaluation')};payload['research_phase']='implementation';p['candidate_plans']+=1
         return {'phase':'implementation','plan':payload['implementation_plan']},None,None
+    # Bind visual lookups to real references exposed to this Job. Searching the
+    # archive explicitly grants old IDs; never remap an ordinal to a seed event.
+    available=allowed_evidence(payload)
+    for ref in (request,request.get('compare') or {}):
+        event=ref.get('event')
+        if event is not None and event not in available:
+            error=ValueError('Unresolved Experience ID; event is a real ID, not a row number. Use an available ID or memory_search collection=experience first.')
+            error.constraints={'requested_event':event,'available_event_ids':sorted(available),
+                               'lookup':{'op':'memory_search','collection':'experience','ref':str(event)}}
+            raise error
     translated=dict(request)
     if op=='compare' and not isinstance(request.get('compare'),dict):raise ValueError('compare requires a second Evidence reference')
     if op in ('compare','analyze'):translated['op']='observe'
     if translated.get('op','observe')=='observe' and translated.get('output','pixels') in ('pixels','image'):translated={'limit':128,**translated}
     scientist.activity.update(experiment=f'研究Job {jid[:8]}：{op} Experience {request.get("event","現在")} {request.get("phase","before")} 領域 {request.get("box","全体")} 解像度 {request.get("size","既定")}',next='取得結果を同じ研究Jobへ返して再推論')
-    result,attachment=scientist.visual.handle(translated,pin='research-job-'+jid,native=bool(getattr(scientist.client,'vision',False)))
+    result,attachment=scientist.visual.handle(translated,pin='research-job-'+jid,native=bool(getattr(scientist.client,'vision',False)),allowed=available)
     if len(json.dumps(result).encode())>12000:result={'error':'VisualResultTooLarge','detail':'Use smaller size/crop or pixels limit<=512'};attachment=None
     resolved=resolved_request(translated,result['evidence']) if 'evidence' in result else translated
     ids=sorted(evidence_ids(result.get('evidence',{})))

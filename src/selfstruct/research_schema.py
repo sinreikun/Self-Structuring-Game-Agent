@@ -93,6 +93,27 @@ def response_schema(base,keys,allowed,new_ids=None,aliases=None):
         for name in ('actions','visual_requests'):
             for variant in schema['properties'][name]['items']['anyOf']:
                 if 'hypothesis' in variant['properties']:variant['properties']['hypothesis']=deepcopy(references)
+    # A valid database row is not necessarily a reference presented to this Job.
+    # Historical references remain available through explicit memory retrieval.
+    events=sorted(allowed)
+    for name in ('actions','visual_requests'):
+        bound=[]
+        for variant in schema['properties'][name]['items']['anyOf']:
+            fields=variant['properties']
+            if 'event' in fields:
+                if not events:continue
+                fields['event']={**fields['event'],'enum':events}
+            if 'compare' in fields:
+                refs=[]
+                for ref in fields['compare']['anyOf']:
+                    props=ref['properties']
+                    if 'event' in props:
+                        if not events:continue
+                        props['event']={**props['event'],'enum':events}
+                    refs.append(ref)
+                fields['compare']['anyOf']=refs
+            bound.append(variant)
+        schema['properties'][name]['items']['anyOf']=bound
     finding['action']['maximum']=len(keys)-1
     if allowed:finding['evidence']['items']={'type':'integer','enum':sorted(allowed)}
     else:schema['properties']['findings']['maxItems']=0

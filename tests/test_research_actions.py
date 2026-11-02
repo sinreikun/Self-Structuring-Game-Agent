@@ -638,3 +638,92 @@ def test_runtime_visual_tools_are_advertised_without_overriding_model_choice(tmp
         assert p['research_steps'][-1]['image_count']==int(vision and output=='image')
         assert p['progress']['experiments']==0
     finally:c.close()
+
+
+@pytest.mark.parametrize('allowed',[set(),{720,721,722}])
+def test_visual_event_schema_rejects_row_numbers_but_keeps_current_and_archive_lookup(allowed):
+    from selfstruct.research import PROPOSAL_SCHEMA
+    from selfstruct.research_schema import response_schema,validate
+    schema=response_schema(PROPOSAL_SCHEMA,['A','B'],allowed)
+    for name in ('actions','visual_requests'):
+        item=schema['properties'][name]['items']
+        with pytest.raises(ValueError):validate(item,{'op':'observe','event':3,'output':'image'})
+        with pytest.raises(ValueError):validate(item,{'op':'compare','compare':{'event':3},'output':'statistics'})
+        validate(item,{'op':'observe','output':'image','fresh':True})
+        validate(item,{'op':'memory_search','collection':'experience','ref':'3'})
+        if allowed:
+            validate(item,{'op':'compare','event':720,'compare':{'event':721},'output':'statistics'})
+
+
+def test_unresolved_existing_frame_never_decodes_or_remaps_and_explicit_lookup_restores_access(tmp_path,monkeypatch):
+    from selfstruct.research_actions import run_actions,allowed_evidence,model_instructions
+    c=Controller(Config(root=str(tmp_path),keys=['A','B'],research_every=100000),UnlabelledDynamics())
+    for _ in range(4):c.step()
+    older,current=3,c.last_eid
+    job=c.store.job('research',{});p={'research_rows':c.store.rows(1),'research_calls':1}
+    assert c.store.observed_image(older,'before').tobytes()!=c.store.observed_image(current,'before').tobytes()
+    queries=[];original=c.visual.handle
+    def observe(request,**options):queries.append(request);return original(request,**options)
+    monkeypatch.setattr(c.visual,'handle',observe)
+    def issue(*requests):
+        run_actions(c.scientist,job,p,list(requests));p['research_calls']+=1
+        return p['action_history'][-1]
+    try:
+        blocked=issue({'op':'observe','event':older,'output':'statistics'})
+        assert blocked['state']=='error' and blocked['result']['constraints']['requested_event']==older
+        assert blocked['result']['constraints']['available_event_ids']==[current] and not queries
+        blocked=issue({'op':'compare','event':current,'compare':{'event':older},'output':'statistics'})
+        assert blocked['state']=='error' and not queries
+        good=issue({'op':'observe','event':current,'output':'statistics'})
+        assert good['result']['evidence']['event']==current
+        assert '"event":'+str(current)+',' in model_instructions(True,current)
+        assert '"event":1,' not in model_instructions(True,current)
+        issue({'op':'memory_search','collection':'experience','ref':str(older)})
+        assert older in allowed_evidence(p)
+        old=issue({'op':'observe','event':older,'output':'statistics'})
+        assert old['state']=='done' and old['result']['evidence']['event']==older
+        assert old['result']['mean']!=good['result']['mean']
+        assert [q['event'] for q in queries]==[current,older]
+    finally:c.close()
+
+
+@pytest.mark.parametrize('vision',[False,True])
+def test_completed_experiment_ids_remain_available_for_same_job_visual_feedback(tmp_path,vision):
+    from selfstruct.research_schema import validate
+    c=Controller(Config(root=str(tmp_path),keys=['A','B'],research_every=100000),UnlabelledDynamics())
+    c.step();initial=c.last_eid;errors=[]
+    class Client:
+        calls=0
+        event=None
+        def complete(self,prompt,**options):
+            self.calls+=1
+            if self.calls==1:
+                return json.dumps({'findings':[{'id':'r1_1','text':'入力後の画面を調べる。意味は未確認。','evidence':[initial]}],
+                                   'actions':[{'op':'experiment','hypothesis':'r1_1','action':1,'duration':10,'wait':10,'repeat':1}]})
+            if self.calls==2:
+                p=json.loads(c.store.get_job(job)['payload'])
+                self.event=p['action_history'][0]['result']['events'][0]['id']
+                assert self.event>initial
+                queries=[{'op':'observe','event':self.event,'phase':'after','size':[32,32],'mode':'RGB','output':'image' if vision else 'pixels','limit':64},
+                         {'op':'compare','event':initial,'compare':{'event':self.event,'phase':'before'},'size':[32,32],'output':'statistics'}]
+                for q in queries:validate(options['schema']['properties']['actions']['items'],q)
+                return json.dumps({'actions':queries})
+            assert self.calls==3 and bool(options.get('images'))==vision
+            return json.dumps({'findings':[{'id':'r3_1','text':'実験前後を取得。意味と目標達成は未確認。','evidence':[initial,self.event]}],'actions':[],'wat':''})
+    client=Client();client.vision=vision;c.scientist.client=client;job=c.store.job('research',{})
+    def study():
+        try:c.scientist.study(c.store.rows(),job)
+        except Exception as error:errors.append(error)
+    worker=threading.Thread(target=study);worker.start();deadline=time.monotonic()+5
+    try:
+        while worker.is_alive() and time.monotonic()<deadline:
+            with c.store.lock:pending=c.store.db.execute("SELECT 1 FROM research_experiments WHERE state IN ('queued','running')").fetchone()
+            if pending:c.step()
+            else:time.sleep(.01)
+        worker.join(1);assert not worker.is_alive() and not errors,errors
+        p=json.loads(c.store.get_job(job)['payload'])
+        assert client.calls==3 and p['progress']['experiments']==1
+        assert all(a['state']=='done' for a in p['action_history'])
+        assert p['action_history'][1]['result']['evidence']['event']==client.event
+        assert p['action_history'][2]['result']['evidence']['right']['event']==client.event
+    finally:c.scientist.stop_event.set();worker.join(2);c.close()

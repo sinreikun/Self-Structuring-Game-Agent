@@ -315,6 +315,8 @@ def test_scientist_can_cite_requested_older_evidence_outside_initial_summary(wor
         def complete(self, prompt, **kwargs):
             self.calls += 1
             if self.calls == 1:
+                return json.dumps({'actions':[{'op':'memory_search','collection':'experience','ref':str(ids[0])}]})
+            if self.calls == 2:
                 return json.dumps({'visual_requests': [{'event': ids[0], 'output': 'statistics'}]})
             return json.dumps({'findings': [{'text': '古い領域と最近の領域の関連は未確認です。', 'evidence': [ids[0]]}], 'wat': ''})
     scientist = Scientist(store, Revisions(store.root/'revisions'), Client(), ['A'], 48, lambda _: None)

@@ -829,7 +829,8 @@ class Scientist:
             issued_step=payload.get('research_calls',0)+1
             new_ids=[f'r{issued_step}_{i}' for i in range(1,9) if f'r{issued_step}_{i}' not in payload.get('hypotheses',{})]
             payload['new_hypothesis_ids']=new_ids
-            tools=model_instructions(bool(getattr(self.client,"vision",False)))
+            seed_rows=payload.get("research_rows",[])
+            tools=model_instructions(bool(getattr(self.client,"vision",False)),seed_rows[-1]["id"] if seed_rows else None)
             base=prompt.replace(INSTRUCTIONS,tools)
             prefix = base+"\n"+VISUAL_INSTRUCTIONS+("" if tools in base else "\n"+tools)+"\nモデル画像入力: "+str(bool(getattr(self.client,"vision",False)))
             if payload.get('research_phase')=='implementation':

@@ -1,0 +1,114 @@
+{
+  "source_version": "0.7.5",
+  "snapshots": [
+    {
+      "time": "084015",
+      "completed_experiments": 1,
+      "completed_same_job_feedback": 0,
+      "started_same_job_feedback": 0,
+      "regression": {
+        "source_version": "0.7.5",
+        "source_sha256": "0ee734c0d4a938c07eeaeefc1bf3fe604a4d66fdf678de25e3e8aab808f6cee3",
+        "read_only": true,
+        "sampled_jobs": 6,
+        "terminal_jobs": 5,
+        "finite_repair_jobs": 0,
+        "original_images_verified": 11,
+        "before_after_pairs_available": 22,
+        "region_rgb_edge_pixels_statistics_histogram_components": "passed",
+        "pause_consistent": true,
+        "limitations": "Recorded diagnostic replay only; no live game or new model inference. Curated diagnostics are not full individual backups."
+      }
+    },
+    {
+      "time": "084037",
+      "completed_experiments": 1,
+      "completed_same_job_feedback": 0,
+      "started_same_job_feedback": 0,
+      "regression": {
+        "source_version": "0.7.5",
+        "source_sha256": "3654f83091661c1190c06421a48fc7feb8cdd12a14e97ed274974e5a0000e828",
+        "read_only": true,
+        "sampled_jobs": 6,
+        "terminal_jobs": 5,
+        "finite_repair_jobs": 0,
+        "original_images_verified": 13,
+        "before_after_pairs_available": 6,
+        "region_rgb_edge_pixels_statistics_histogram_components": "passed",
+        "pause_consistent": true,
+        "limitations": "Recorded diagnostic replay only; no live game or new model inference. Curated diagnostics are not full individual backups."
+      }
+    },
+    {
+      "time": "084247",
+      "completed_experiments": 5,
+      "completed_same_job_feedback": 3,
+      "started_same_job_feedback": 3,
+      "regression": {
+        "source_version": "0.7.5",
+        "source_sha256": "a49b7d29bc789924d6a545ea2ecc262beb8aa68a1b1913b6c7bf9f8a9f18cbcd",
+        "read_only": true,
+        "sampled_jobs": 7,
+        "terminal_jobs": 6,
+        "finite_repair_jobs": 0,
+        "original_images_verified": 14,
+        "before_after_pairs_available": 7,
+        "region_rgb_edge_pixels_statistics_histogram_components": "passed",
+        "pause_consistent": true,
+        "limitations": "Recorded diagnostic replay only; no live game or new model inference. Curated diagnostics are not full individual backups."
+      }
+    },
+    {
+      "time": "084620",
+      "completed_experiments": 8,
+      "completed_same_job_feedback": 5,
+      "started_same_job_feedback": 6,
+      "regression": {
+        "source_version": "0.7.5",
+        "source_sha256": "42a4602bcac036501adf15135e09bbaa1b8f800e5e794bf5dd53b6f6bd04b1ba",
+        "read_only": true,
+        "sampled_jobs": 8,
+        "terminal_jobs": 7,
+        "finite_repair_jobs": 0,
+        "original_images_verified": 12,
+        "before_after_pairs_available": 6,
+        "region_rgb_edge_pixels_statistics_histogram_components": "passed",
+        "pause_consistent": true,
+        "limitations": "Recorded diagnostic replay only; no live game or new model inference. Curated diagnostics are not full individual backups."
+      }
+    }
+  ],
+  "total_unique_completed_experiments": 8,
+  "reference_mismatch": {
+    "job": "5ba113265a244026834a0921782df3da",
+    "seed_ids": [
+      720,
+      721,
+      722
+    ],
+    "step": 3,
+    "delivered_event_ids": [
+      3
+    ],
+    "claim": {
+      "id": 116,
+      "evidence": [
+        720,
+        721,
+        722
+      ]
+    },
+    "seed_before_hash": "7ae04b84f570e5ac167387e0b63efb7705fe94391c5ac67b6606474ebd1dee3d",
+    "observed_event3_before_hash": "e051f8575babca228e2c9e7a8ac6e3091faaa20d97c843ec4dd764cac94764b9"
+  },
+  "limits": {
+    "hypotheses_supported_or_refuted": 0,
+    "human_readable_reports": 0,
+    "game_goal_progress_verified": false,
+    "remaining_observation_gaps": [
+      "Some requested images were omitted under the context budget.",
+      "One Job ended on image-byte budget before its final input result was reinferred.",
+      "Matching an ID does not prove the semantic truth of a model claim."
+    ]
+  }
+}

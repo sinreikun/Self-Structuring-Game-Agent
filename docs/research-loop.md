@@ -172,3 +172,9 @@ memory_index.continuationは最近2件の作業メモと直前の完了研究Job
 VisionをRuntimeで確認した場合、研究用の取得例と説明を `observe output=image` へ切り替える。画面の文字・UI・配置を読むための画像入力と、数値計算のためのpixels/statisticsを区別して案内する。これは選択可能な手段の説明で、観測命令の自動生成・画像の無条件添付・LLMのpixels要求の上書きではない。最初は引き続き索引のみ。Text-onlyは既存の画素・解析器による経路を利用する。
 
 診断ではRuntimeのVision申告だけでなく、LLMの実際の要求がimageか、次の推論に画像添付があるかを確認する。その上で、対象の目的を根拠付きで説明し、Experimentと結果に基づく理解更新へ進むかを別々に判定する。
+
+## Experience参照の整合性（0.7.6）
+
+eventは配列の行番号ではなくExperienceの実ID。研究応答の生成schemaとHostの両方で、そのJobのseed・追加観測・記憶の明示取得・実験結果に含まれる参照へ結び付ける。未取得IDは、DBに画像があっても黙って表示せず、要求IDと検索方法を返す。比較の左右にも同じ条件を適用する。
+
+索引外の経験はmemory_search(collection=experience,refまたはquery)で探せる。検索で得たIDや、読み取ったメモ・仮説のEvidence IDは既存のgrant経路で参照範囲へ入る。実験の新規Experienceもそのまま使える。古い経験を調べる権限や、eventを省略して現在画面を要求する手段は維持する。何を見るかをHostが自動で読み替えない。
