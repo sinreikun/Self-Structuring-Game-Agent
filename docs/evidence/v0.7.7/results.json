@@ -38,5 +38,42 @@
     "The real-model decision did not select the actual result.",
     "No post-guard autonomous recovery or real-game goal achievement verified.",
     "A cited result is not a semantic correctness check."
-  ]
+  ],
+  "verified_distribution": {
+    "source": "6331828bdea2f7c9a64ad72a0f47494ead3dfeff",
+    "run_id": 41371790238,
+    "tag": "v0.7.7-dev.1",
+    "version": "0.7.7",
+    "hashes": {
+      "SelfStruct.exe": "52ff28c35d531eddc48a18888af79aa3cb5add6b794f4863f0d530cae0e1ebf1",
+      "SHA256SUMS.txt": "97908649913f18c82a57233ea4dd5496725583286b459eff0868b8b12ceb5fbd",
+      "THIRD_PARTY_NOTICES.txt": "d570533b6cc66320f1e19f99fb1458ee2aa50c254098436b050a87ceb3d10828",
+      "build-info.json": "5b5786c15e50e295884749f687a7078a229fdf4394b94a62a661f26a82a9549b",
+      "window-validation.json": "9c4a0bfce58b9b6cb52dbd4e3cae42df12c1cfa9301949affe496cb3bd34b9d6",
+      "inference-validation.json": "b08c7ff5db1d99c5e38c6670c5ef47bbd0ef59d57501b1a5da67ee8edf9ac0e1",
+      "SelfStructLauncher.exe": "651339c9c4b78edf850ea4307ae4a006680e9d8761c0991edbf408c9324c7958",
+      "launcher-validation.json": "f218a9ba88db34932dd46de8a11d06f7895d6b0a885e279c6bfaf79cc1d7fc43"
+    },
+    "size": 33859978,
+    "tests": {
+      "linux": {
+        "tests": 252,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 13
+      },
+      "windows": {
+        "tests": 252,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 1
+      }
+    }
+  },
+  "local_tests": {
+    "passed": 232,
+    "skipped": 20,
+    "failures": 0,
+    "self_test": "passed"
+  }
 }
