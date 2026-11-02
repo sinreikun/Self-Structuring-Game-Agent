@@ -320,7 +320,7 @@ actionとchange_probabilityは指定入力の後に画像が変化する確率�
 任意のrequest()->i32をexportすると、memoryの4096からJSON要求を返せます。0は要求なし、最大8192バイト。
 許可操作はop=write/read/delete/mkdir/list、相対path、writeにはtext。応答は16384に長さ4バイトlittle endian、その後JSON。
 これはAgent専用作業領域だけを扱います。自分のagent.watを書いても本番世代には直接反映されず、候補評価が必要です。
-op=observeはbox=[左,上,右,下]、size=[幅,高さ]またはnative、mode=L/RGBで原画像を調べます。eventとphase=before/after/diffで過去画像、未指定は現在、fresh=trueで再観測。pixelsはoffset/limitで分割取得し、grayは互換用です。ゲーム意味は与えません。
+op=observeはbox=[左,上,右,下]、size=[幅,高さ]またはnative/fit、mode=L/RGBで原画像を調べます。eventとphase=before/after/diffで過去画像、未指定は現在、fresh=trueで再観測。pixelsはoffset/limitで分割取得し、grayは互換用です。ゲーム意味は与えません。
 op=describe,nodes=[{{id,description,role,input,output,uses,active,effectiveness,created_generation,status}}],edges=[[id,id]]で自分が構成した能力と接続を日本語で報告できます。権限やゲーム意味は追加しません。未報告の能力をHostが推測して表示することはありません。
 op=research,prompt=研究指示で非同期LLM作業を依頼し、返されたjobをop=job,id=jobで確認できます。op=candidate,path=作業領域のWATファイルで自分の改善候補を提出できます。任意のresearch_due(経験数:i32)->i32をexportし0を返すと初期の自動研究役を停止し、独自の役割分割・研究指示で内部構造を置き換えられます。
 評価器は時間順Replayでlearnを実行し、未確認予測はBrier損失0.25。
@@ -850,7 +850,7 @@ class Scientist:
             omitted_visual_results=0
             omitted_attachments=0
             def current_views():
-                return [{**{k:v for k,v in item['result'].items() if k in ('evidence','box','size','mode','offset','next_offset','pixel_coverage')},
+                return [{**{k:v for k,v in item['result'].items() if k in ('evidence','box','size','mode','offset','next_offset','pixel_coverage','requested_size','resize_policy')},
                          'image_attached':'attachment_index' in item,
                          'payload_fields':[k for k in ('pixels','gray','histogram','components','mean','value') if k in item['result']]}
                         for item in visible if isinstance(item.get('result'),dict) and item['result'].get('evidence')]

@@ -364,7 +364,8 @@ def test_actual_trace_identifies_evidence_region_and_resolution_within_display_b
 
 
 @pytest.mark.parametrize('vision',[False,True])
-def test_research_recovers_from_real_source_bounds_and_native_area_limits(world,vision):
+@pytest.mark.parametrize('resolution',[[320,180],'fit'])
+def test_research_recovers_from_real_source_bounds_and_native_area_limits(world,vision,resolution):
     store,add,access=world
     eid=add(Image.new('RGB',(1600,900),(17,29,43)))
     class Client:
@@ -378,8 +379,9 @@ def test_research_recovers_from_real_source_bounds_and_native_area_limits(world,
                 return json.dumps({'actions':[{'op':'observe','event':eid,'size':'native','mode':'RGB','output':'pixels','limit':64}]})
             if self.calls==3:
                 assert '"max_pixels":262144' in prompt and 'reducing limit does not reduce' in prompt
-                return json.dumps({'actions':[{'op':'observe','event':eid,'size':[320,180],'mode':'RGB','output':'image' if vision else 'pixels','limit':64}]})
-            assert self.calls==4 and '"size":[320,180]' in prompt
+                return json.dumps({'actions':[{'op':'observe','event':eid,'size':resolution,'mode':'RGB','output':'image' if vision else 'pixels','limit':64}]})
+            expected=[682,384] if resolution=='fit' else resolution
+            assert self.calls==4 and '"size":'+json.dumps(expected,separators=(',',':')) in prompt
             if vision:assert len(options['images'])==1
             else:assert '"pixels":[17,29,43' in prompt
             return '{"findings":[],"actions":[],"wat":""}'
@@ -389,7 +391,9 @@ def test_research_recovers_from_real_source_bounds_and_native_area_limits(world,
     payload=json.loads(store.get_job(job)['payload'])
     assert client.calls==4 and [a['state'] for a in payload['action_history']]==['error','error','done']
     assert payload['action_history'][0]['result']['constraints']['source_size']==[1600,900]
-    assert payload['progress']['new_evidence']==1 and payload['visual_history'][0]['request']['size']==[320,180]
+    assert payload['action_history'][1]['result']['constraints']['suggested_size']==[682,384]
+    if resolution=='fit':assert payload['research_steps'][-1]['delivered_visual_evidence'][0]['requested_size']=='fit'
+    assert payload['progress']['new_evidence']==1 and payload['visual_history'][0]['request']['size']==resolution
     from selfstruct.diagnostics import diagnostic_job_payload
     assert json.loads(diagnostic_job_payload(json.dumps(payload)))['action_history'][0]['result']['constraints']['source_size']==[1600,900]
 
@@ -433,3 +437,20 @@ def test_native_limit_feedback_gives_feasible_axis_bounds_without_changing_reque
     assert limits['requested_pixels']==518400
     assert limits['max_height_at_requested_width']==273 and limits['max_width_at_requested_height']==485
     assert request==original
+
+
+def test_explicit_fit_preserves_crop_and_never_silently_changes_numeric_or_native(world):
+    from selfstruct.vision import VisualRequestError,MAX_PIXELS
+    store,add,access=world
+    source=Image.new('RGB',(1600,900),(9,31,57));source.paste((240,22,33),(800,0,1600,900));eid=add(source)
+    for size in ([1600,900],'native'):
+        with pytest.raises(VisualRequestError):access.handle({'event':eid,'size':size,'output':'statistics'})
+    result,_=access.handle({'event':eid,'box':[800,0,1600,900],'size':'fit','mode':'RGB','output':'statistics'})
+    assert result['box']==[800,0,1600,900] and result['mean']==[240,22,33]
+    w,h=result['size'];assert w*h<=MAX_PIXELS and abs(w/h-800/900)<.003
+    assert result['coordinates']['origin']==[800,0]
+    assert result['coordinates']['scale']==[800/w,900/h]
+    small,_=access.handle({'event':eid,'box':[800,0,900,80],'size':'fit','output':'statistics'})
+    assert small['size']==[100,80]  # Never upscales a small crop.
+    with pytest.raises(ValueError,match='fixed output size'):
+        access.analyzers.create({'description':'dynamic fit is not a fixed analyzer shape','query':{'size':'fit','output':'statistics'}})

@@ -1,0 +1,31 @@
+{
+  "diagnostic_regression": {
+    "source_version": "0.7.7",
+    "source_sha256": "599d9d81006ff613c103f9eec6aa010d1802caf2069c42f7a3b9d7fcf00d3ee9",
+    "read_only": true,
+    "sampled_jobs": 40,
+    "terminal_jobs": 39,
+    "finite_repair_jobs": 0,
+    "original_images_verified": 16,
+    "before_after_pairs_available": 8,
+    "region_rgb_edge_pixels_statistics_histogram_components": "passed",
+    "pause_consistent": true,
+    "limitations": "Recorded diagnostic replay only; no live game or new model inference. Curated diagnostics are not full individual backups."
+  },
+  "retained_job_audit": {
+    "jobs": 40,
+    "completed_experiment_actions": 63,
+    "results_delivered_as_image_or_numeric": 20,
+    "result_ids_with_statements": 47,
+    "next_experiments_blocked_without_statement": 52,
+    "pixel_area_errors": 188,
+    "human_reports": 1,
+    "report_goal_status": "unknown",
+    "report_key_mismatch": "Report says action 12=TAB; actual configured keys 12=NUM8 and 13=TAB."
+  },
+  "limitations": [
+    "Curated diagnostic, not a complete individual backup or lifetime count.",
+    "Statements are not semantic verification.",
+    "No real-model selection of fit or live-game goal achievement has been verified."
+  ]
+}

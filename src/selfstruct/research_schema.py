@@ -9,7 +9,7 @@ def array(items,low=0,high=64):return {'type':'array','items':items,'minItems':l
 def obj(properties,required=()):return {'type':'object','additionalProperties':False,'properties':properties,'required':list(required)}
 
 BOX=array(integer(0,32768),4,4)
-SIZE={'anyOf':[array(integer(1,262144),2,2),{'type':'string','enum':['native']}]}
+SIZE={'anyOf':[array(integer(1,262144),2,2),{'type':'string','enum':['native','fit']}]}
 OPERATIONS=array(obj({'op':{'type':'string','enum':['grayscale','threshold','blur','edge','invert']},'value':integer(0,255),'radius':integer(0,8)},['op']),0,8)
 REFERENCE={'anyOf':[obj({'event':integer(1),'phase':{'type':'string','enum':['before','after','diff']},'box':BOX},['event']),obj({'observation':integer(1),'phase':{'type':'string','enum':['before']},'box':BOX},['observation']),obj({'phase':{'type':'string','enum':['before']},'box':BOX})]}
 QUERY={'event':integer(1),'observation':integer(1),'phase':{'type':'string','enum':['before','after','diff']},'box':BOX,'size':SIZE,
