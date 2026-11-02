@@ -312,8 +312,12 @@ def test_lab_hypotheses_and_all_management_sashes_survive_restart(tmp_path,monke
     Config(root=str(tmp_path/'data'),game_exe='configured.exe').save(tmp_path/'settings'/'host'/'settings.json')
     expected={}
     def settle(window):
-        deadline=time.monotonic()+.35
-        while time.monotonic()<deadline:window.update();time.sleep(.01)
+        started=time.monotonic()
+        while time.monotonic()-started<5:
+            window.update();time.sleep(.01)
+            mapped=[w for kind,w in app.layout.widgets.values() if kind=='pane' and w.winfo_ismapped()]
+            if time.monotonic()-started>=.35 and all(w.layout_pane_ready() for w in mapped):return
+        raise AssertionError('Pane layout did not settle')
     def dispose(app):
         app.performance_monitor.stop.set();app.closing=True;app.window.destroy()
     ids=('lab-streams','individual-management','llm-management','model-browser-panes')
@@ -326,7 +330,7 @@ def test_lab_hypotheses_and_all_management_sashes_survive_restart(tmp_path,monke
             app.tabs.select(app.home if key=='lab-streams' else app.individual_tab if key=='individual-management' else app.llm_tab)
             settle(window);pane=app.layout.widgets[key][1]
             extent=pane.winfo_height() if str(pane.cget('orient'))=='vertical' else pane.winfo_width()
-            pane.sashpos(0,int(extent*.45));window.update()
+            pane.sashpos(0,int(extent*.45));pane.event_generate('<ButtonRelease-1>');window.update()
             expected[key]=pane.sashpos(0)
         app.layout.save()
     finally:dispose(app)

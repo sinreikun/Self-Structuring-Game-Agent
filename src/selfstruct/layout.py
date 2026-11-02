@@ -1,6 +1,7 @@
 """Versioned layout registry; unknown UI IDs and malformed entries are harmless."""
 import json
 import os
+import tkinter as tk
 from pathlib import Path
 
 from .config import write_json
@@ -63,7 +64,13 @@ class Layout:
         ready=False
         pending=None
         def remember(event=None):
-            if ready and widget.winfo_width()>1 and widget.winfo_height()>1:
+            nonlocal ready,pending
+            if event is not None and event.type==tk.EventType.ButtonRelease:
+                # A user's drag takes precedence over a delayed startup restore.
+                if pending:widget.after_cancel(pending);pending=None
+                ready=True
+            extent=widget.winfo_height() if str(widget.cget('orient'))=='vertical' else widget.winfo_width()
+            if (ready or id not in self.entries) and extent>=100:
                 self.entries[id]={'sashes':[widget.sashpos(i) for i in range(len(widget.panes())-1)]}
         def restore():
             nonlocal ready,pending
