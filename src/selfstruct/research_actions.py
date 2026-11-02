@@ -20,11 +20,11 @@ memory_read: collection,ref,revision,offset,limit=1..1600文字。本文JSONを�
 memory_note: title,body,evidenceで短い課題・計画・不明点を外部保存。更新はref/revision必須。別Jobや再起動後も検索可。メモは未検証。
 research_report: title,target_goal,goal_status=unknown/hypothesis/observed,goal_evidence,findings=[{text,status:observation/hypothesis,evidence}],unknowns,next_steps。日本語の人間向け副目的。報告だけを量産しない。
 observe/compare/analyze: eventは実ID（行番号ではない）。索引外はmemory_search(collection=experience)で取得。eventまたはobservation,phase,box=[左,上,右,下],size,mode,output,operations,offset,limit。必要な場所・方法は自分で選ぶ。compareに第2参照を指定。詳細は視覚API説明。
-experiment: hypothesis（既存ID/別名、必須）,action（0始まり許可入力）,duration=10..500ms,wait=10..2000ms,repeat=1..8。最大4計画/32入力。conditionは画素mean_min/mean_maxによる状態選別。無条件は省略。意味ラベルではない。完了Experienceを返す。PAUSE中は入力せずSTOP後は再送しない。
+experiment: hypothesis（既存ID/別名）,action（0始まり許可入力）,duration=10..500ms,wait=10..2000ms,repeat=1..8。最大4計画/32入力。conditionは画素mean_min/mean_maxで状態選別（無条件は省略）。完了Experienceを返す。次の実験前に結果IDをfindings等で検討。不明も可。PAUSE中は入力せずSTOP後は再送しない。
 evaluate: hypothesis,change_probability=0..1。画像変化率を検証するなら実験前にfindings.actionとchange_probabilityを登録する。未登録・事後変更・条件選別・異なる入力混在・16件未満は判定不能。意味や目標達成は検証しない。
 candidate: problem,evidence（取得済みID2件以上）,behavior,evaluationで持続する挙動の実装へ。根拠と評価条件を揃える。
 新規findings.idは毎回提示された候補から選ぶ。同じidへ別の主張や確率を再割当しない。既存仮説を使うだけならfindings=[]でactions.hypothesisへ既存ID/別名を指定する。目的・意味が未確認ならそのまま記録する。
-取得結果は同じJobへ返る。同じ過去Evidence/処理を再要求しても新情報ではない。1 Job最大10推論/24要求/600秒/画像4MiB。必要なら具体的actionsで続行、不要なら根拠・未確認事項を残して終了。'''
+結果は同じJobへ。index.input_feedbackは実験結果の参照と配信状況。古い画像を新入力の結果と混同しない。1 Job最大10推論/24要求/600秒/画像4MiB。必要なら具体的actionsで続行、不要なら根拠・未確認事項を残して終了。'''
 
 
 
@@ -49,6 +49,23 @@ def allowed_evidence(payload):
 
 def progress(payload):
     return payload.setdefault('progress',{'new_evidence':0,'new_hypotheses':0,'hypotheses_evaluated':0,'experiments':0,'analysis_methods':0,'candidates':0,'candidate_plans':0,'unknown_reduction':None})
+
+
+
+def completed_feedback(payload):
+    result={}
+    for item in payload.get('action_history',[]):
+        row=item.get('result',{})
+        if item.get('state')!='done' or item.get('request',{}).get('op')!='experiment' or item.get('step',0)>=payload.get('research_calls',0):continue
+        ids=[r['id'] for r in row.get('events',[]) if r.get('state')=='complete']
+        if ids:result[row['experiment']]=ids
+    return result
+
+
+def record_feedback_statement(payload, ids, collection, ref):
+    completed={i for ids in completed_feedback(payload).values() for i in ids}
+    for event in set(ids)&completed:
+        payload.setdefault('feedback_statements',{})[str(event)]={'collection':collection,'ref':str(ref),'step':payload.get('research_calls',0)}
 
 
 def record_findings(scientist,jid,payload,value):
@@ -91,6 +108,7 @@ def record_findings(scientist,jid,payload,value):
                 evidence=json.loads(scientist.store.db.execute('SELECT evidence FROM knowledge WHERE id=?',(kid,)).fetchone()[0])
                 with scientist.store.db:scientist.store.db.execute('UPDATE knowledge SET evidence=? WHERE id=?',(json.dumps(sorted(set(evidence+ids))),kid))
             if isinstance(ref,str) and 1<=len(ref)<=40:mappings[ref]=kid
+            record_feedback_statement(payload,ids,'knowledge',kid)
     scientist.store.set_job(jid,'running',payload)
 
 
@@ -112,6 +130,8 @@ def execute(scientist,jid,payload,request,token):
     if op in ('memory_search','memory_read','memory_note','research_report'):
         from .research_memory import search,read,note,report
         result={'memory_search':search,'memory_read':read,'memory_note':note,'research_report':report}[op](scientist,jid,payload,request)
+        if op=='memory_note' and result.get('status')=='saved':record_feedback_statement(payload,request.get('evidence',[]),'note',result['ref'])
+        if op=='research_report':record_feedback_statement(payload,request.get('goal_evidence',[])+[i for f in request.get('findings',[]) for i in f.get('evidence',[])],'report',result['ref'])
         payload['research_phase']={'memory_note':'planning','research_report':'reporting'}.get(op,'retrieval')
         label={'memory_search':'記録を検索','memory_read':'必要な記録を取得','memory_note':'課題・計画を保存','research_report':'人間向け研究結果を保存'}[op]
         scientist.activity.update(experiment=f'研究Job {jid[:8]}：{label}',next='研究対象の目的に沿う記録・観測・操作をLLMが選びます')
@@ -124,6 +144,12 @@ def execute(scientist,jid,payload,request,token):
         return result,None,None
     payload['research_phase']={'experiment':'experiment','evaluate':'evaluation','analyzer_create':'analyzer_creation','analyzer_evaluate':'evaluation','analyze':'analysis'}.get(op,'observation')
     if op=='experiment':
+        discussed={int(i) for i in payload.get('feedback_statements',{})}
+        pending={plan:ids for plan,ids in completed_feedback(payload).items() if not set(ids)&discussed}
+        if pending:
+            error=ValueError('Review completed input results before another experiment. Cite their actual event IDs in findings, a memory_note or research_report; unknown is valid. Observation methods remain your choice.')
+            error.constraints={'completed_results_without_statement':pending,'required':'Record what is known or unknown with result Evidence IDs. Choose observe/compare if needed; old images are not new input results.'}
+            raise error
         if not getattr(scientist,'experiments',None):raise ValueError('Player experiment executor unavailable')
         hypothesis=hypothesis_id(payload,request)
         if hypothesis is None:raise ValueError('Experiment requires an explicit hypothesis ID or findings.id reference; Host will not infer one')
@@ -232,6 +258,39 @@ def run_actions(scientist,jid,payload,requests):
 def needs_followup(value):
     prose=json.dumps({k:value.get(k,[]) for k in ('findings','problem','reason')},ensure_ascii=False)
     return bool(re.search(r'したい|次の実験|高解像度.{0,16}(?:必要|確認|調べ|見|不足)|情報不足|判断できない|確認が必要|need.*(?:observe|inspect|compar|sample)|want to',prose,re.I))
+
+
+
+def input_feedback(payload, current_views=()):
+    """Small, persistent result references; delivered views are not conclusions."""
+    previous={k:set() for k in ('before','after','comparison')};current={k:set() for k in previous}
+    def collect(view, target):
+        if not (view.get('image_attached') or view.get('payload_fields')):return
+        def source(ref):
+            if not isinstance(ref,dict):return
+            if type(ref.get('event'))==int:
+                phase=ref.get('phase','before')
+                target['comparison' if phase=='diff' else phase].add(ref['event'])
+            for side in ('left','right'):
+                item=ref.get(side)
+                if isinstance(item,dict) and type(item.get('event'))==int:target['comparison'].add(item['event'])
+        source(view.get('evidence',{}))
+    for step in payload.get('research_steps',[]):
+        if step.get('finished_at'):
+            for view in step.get('delivered_visual_evidence',[]):collect(view,previous)
+    for view in current_views:collect(view,current)
+    result=[]
+    for plan in payload.get('experiment_context',{}).get('experiments',[]):
+        ids=plan.get('evidence',[])
+        if plan.get('state') not in ('complete','interrupted','expired') or not ids:continue
+        result.append({'experiment':plan['id'],'hypothesis':plan['hypothesis'],'action':plan['action'],'state':plan['state'],'event_ids':ids,
+                       'before_delivered':sorted(set(ids)&(previous['before']|current['before'])),
+                       'after_delivered':sorted(set(ids)&(previous['after']|current['after'])),
+                       'comparison_delivered':sorted(set(ids)&(previous['comparison']|current['comparison'])),
+                       'before_in_this_input':sorted(set(ids)&current['before']),
+                       'after_in_this_input':sorted(set(ids)&current['after']),
+                       'discussed_event_ids':sorted(set(ids)&{int(i) for i in payload.get('feedback_statements',{})})})
+    return result
 
 
 def experiment_prompt_context(summary):

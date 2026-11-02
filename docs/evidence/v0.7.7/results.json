@@ -1,0 +1,42 @@
+{
+  "diagnostic": {
+    "source_version": "0.7.6",
+    "source_sha256": "b74f27df0005e5fdb38e190eb6a8ad21d330fe020231e9ebe9c3e37839cb69c2",
+    "read_only": true,
+    "sampled_jobs": 14,
+    "terminal_jobs": 13,
+    "finite_repair_jobs": 0,
+    "original_images_verified": 2,
+    "before_after_pairs_available": 56,
+    "region_rgb_edge_pixels_statistics_histogram_components": "passed",
+    "pause_consistent": true,
+    "limitations": "Recorded diagnostic replay only; no live game or new model inference. Curated diagnostics are not full individual backups."
+  },
+  "real_model_pre_guard": {
+    "status": "no_result_observation_selected",
+    "scripted_setup": true,
+    "autonomous_full_loop_verified": false,
+    "real_model_calls": 1,
+    "model_sha256": "0a270ec9fe6b34f4a0d33992b6135117b484ebc4766ab76b51d4ae8c457e4c42",
+    "projector_sha256": "91f086971e56d7a7d8d39e271873fccdb49541bd259d6e02c401a4f1cb7a219e",
+    "old_image_event": 1,
+    "completed_experiment_event": 2,
+    "completion": {
+      "finish_reason": "stop",
+      "usage": {},
+      "elapsed": 598.9183817839948
+    }
+  },
+  "recorded_reply_guard_replay": {
+    "proposed_additional_experiments": 2,
+    "blocked_without_result_statement": 2,
+    "additional_plan_rows": 0,
+    "time_budget_reset_for_isolated_replay": true,
+    "guard_is_not_semantic_validation": true
+  },
+  "limitations": [
+    "The real-model decision did not select the actual result.",
+    "No post-guard autonomous recovery or real-game goal achievement verified.",
+    "A cited result is not a semantic correctness check."
+  ]
+}

@@ -199,12 +199,13 @@ def overview(scientist,jid,payload):
             prior={**metadata('research',str(previous['record_ref']),doc),'job':previous['id'],'outcome':doc.get('outcome','unknown')}
 
     from .vision import MAX_PIXELS,MAX_VALUES
-    from .research_actions import MAX_CALLS,MAX_ACTIONS
+    from .research_actions import MAX_CALLS,MAX_ACTIONS,input_feedback
     return {'job':jid,'collections':counts,'seed_visual_metadata':[{'id':r['id'],**frame_sizes(scientist.store,r)} for r in payload.get('research_rows',[])[-3:]],
             'visual_limits':{'max_pixels':MAX_PIXELS,'max_values_per_request':MAX_VALUES},
             'research_budget':{'calls_including_this_turn':max(0,MAX_CALLS-payload.get('research_calls',0)),'actions_remaining':max(0,MAX_ACTIONS-len(payload.get('action_history',[])))},'seed_experience_ids':[r['id'] for r in payload.get('research_rows',[])[-3:]],
             'active_hypotheses':active,
             'continuation':{'recent_notes':recent_notes,'previous_research':prior,'note_status':'Unverified working notes; retrieve only needed records and compare with current observations/API constraints'},
+            'input_feedback':input_feedback(payload),
             'current_target_goal':goal_view,
             'experiment_budget':{k:summary[k] for k in ('plans_remaining','inputs_remaining') if k in summary},
             'rule':'Index only. Retrieve exact records with memory_search/read. No initial pixels were inspected automatically. Use observe/compare for actual visual evidence.'}

@@ -777,7 +777,7 @@ class Scientist:
             from .config import write_json
             write_json(self.store.root/"host"/"model-capabilities.json", self.client.capabilities)
         from .research_actions import (MAX_CALLS,MAX_SECONDS,MAX_IMAGE_BYTES,INSTRUCTIONS,model_instructions,
-            record_findings,run_actions,needs_followup,history_context,progress,allowed_evidence,context_entry,hypothesis_context,experiment_context)
+            record_findings,run_actions,needs_followup,history_context,progress,allowed_evidence,context_entry,hypothesis_context,experiment_context,input_feedback)
         from .research_mission import identity
         payload['mission']=identity()
         payload.setdefault('research_started',time.time());payload['research_job']=jid
@@ -849,7 +849,17 @@ class Scientist:
             compact_history=False
             omitted_visual_results=0
             omitted_attachments=0
+            def current_views():
+                return [{**{k:v for k,v in item['result'].items() if k in ('evidence','box','size','mode','offset','next_offset','pixel_coverage')},
+                         'image_attached':'attachment_index' in item,
+                         'payload_fields':[k for k in ('pixels','gray','histogram','components','mean','value') if k in item['result']]}
+                        for item in visible if isinstance(item.get('result'),dict) and item['result'].get('evidence')]
+            result_ids={i for plan in payload.get('experiment_context',{}).get('experiments',[]) for i in plan.get('evidence',[])}
+            for item in visible:
+                if result_ids and isinstance(item.get('result'),dict) and item['result'].get('evidence'):
+                    item['input_result_events']=sorted(evidence_ids(item['result']['evidence']) & result_ids)
             def render():
+                if payload.get('memory_mode')=='pull':payload['memory_index']['input_feedback']=input_feedback(payload,current_views())
                 delivered={item['action_id'] for item in visible if 'action_id' in item}
                 omitted_memory=[{'action_id':item['action_id'],'request':{k:v for k,v in item.get('request',{}).items() if k in ('op','collection','ref','revision','offset','limit','query')}} for item in payload.get('memory_results',[]) if item.get('step')==payload.get('research_calls',0) and item['action_id'] not in delivered]
                 return prefix+'\n研究履歴：'+history_context(payload,compact=compact_history)+"\n追加観測結果（attachment_indexは画像添付の0始まり番号。古い結果はJob履歴へ保持し必要なら再要求）:"+json.dumps(visible, ensure_ascii=False, separators=(",", ":"))+"\n省略情報："+json.dumps({"older_results_omitted":omitted_visual_results,"attachment_omitted":omitted_attachments,"omitted_memory":omitted_memory})
@@ -859,7 +869,16 @@ class Scientist:
             if isinstance(self.client, LocalLLM) and self.client.managed:
                 reserved_output=min(budget,2048)
                 def fits():
-                    return self.client.count_tokens(text)<=getattr(self.client,"context",8192)-reserved_output-256-len(images)*1024
+                    nonlocal reserved_output
+                    phases={}
+                    for view in current_views():
+                        ref=view.get('evidence',{})
+                        if view['image_attached'] and ref.get('event') in result_ids:
+                            phases.setdefault(ref['event'],set()).add(ref.get('phase'))
+                    pair=any({'before','after'}<=parts for parts in phases.values())
+                    count=self.client.count_tokens(text);context=getattr(self.client,"context",8192)
+                    reserved_output=512 if pair and count+len(images)*1024+256+512<=context else min(budget,2048)
+                    return count<=context-reserved_output-256-len(images)*1024
                 def remove_image(index):
                     nonlocal omitted_attachments
                     images.pop(index);omitted_attachments+=1
@@ -929,7 +948,8 @@ class Scientist:
             payload['research_calls']=payload.get('research_calls',0)+1
             step={'step':payload['research_calls'],'phase':('repair' if implementation_repair else 'protocol_repair') if payload.get('repair_response') else payload.get('research_phase','observation'),
                   'started_at':time.time(),'consumed_actions':[r['action_id'] for r in payload.get('action_history',[]) if r['state'] in ('done','duplicate','error')], 'image_count':len(images),'delivered_memory_actions':[{'action_id':item['action_id'],**{k:v for k,v in item.get('result',{}).items() if k in ('collection','ref','revision','offset','next_offset','content_sha256','status','source_revision','source_changed')}} for item in visible if 'action_id' in item]}
-            step['delivered_visual_evidence']=[{**{k:v for k,v in item['result'].items() if k in ('evidence','box','size','mode','offset','next_offset','pixel_coverage')},'image_attached':'attachment_index' in item,'payload_fields':[k for k in ('pixels','gray','histogram','components','mean','value') if k in item['result']]} for item in visible if isinstance(item.get('result'),dict) and item['result'].get('evidence')]
+            step['delivered_visual_evidence']=current_views()
+            step['input_feedback']=payload.get('memory_index',{}).get('input_feedback',[])
             payload.setdefault('research_steps',[]).append(step)
             self.store.set_job(jid,'running',payload)
             self.activity.update(experiment=f'研究Job {jid[:8]}：取得結果を再分析（step {payload["research_calls"]}）' if payload.get('action_history') else f'研究Job {jid[:8]}：観測・仮説を分析（step {payload["research_calls"]}）',next='必要な観測・実験をLLMが選択します')

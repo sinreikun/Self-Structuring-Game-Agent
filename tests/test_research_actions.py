@@ -51,7 +51,10 @@ def test_same_job_crop_compare_experiment_evaluate_analyzer_loop(tmp_path,vision
                 assert '同じ許可入力後に画像差分が再現するかを検証する' in prompt
                 assert '"preregistered":{"action":1,"change_probability":1.0,"after_id":' in prompt
                 assert '"completed":8' in prompt
-                return json.dumps({'actions':[{'op':'experiment','hypothesis':'h1','action':1,'duration':10,'wait':10,'repeat':8}]})
+                state=json.loads(c.store.get_job(job)['payload'])
+                completed=state['action_history'][-1]['result']['events']
+                return json.dumps({'findings':[{'id':'r4_1','text':'8件の数値結果を受領。支持は未確認で、同じ登録済み仮説の標本を追加する。','evidence':[r['id'] for r in completed]}],
+                                   'actions':[{'op':'experiment','hypothesis':'h1','action':1,'duration':10,'wait':10,'repeat':8}]})
             if n==5:
                 return json.dumps({'actions':[{'op':'evaluate','hypothesis':'h1','change_probability':1.0}]})
             if n==6:
@@ -73,7 +76,7 @@ def test_same_job_crop_compare_experiment_evaluate_analyzer_loop(tmp_path,vision
         assert state['state']=='complete' and p['outcome']=='research_progress'
         assert len(client.calls)==7 and p['research_calls']==7
         assert p['progress']['experiments']==2 and p['progress']['hypotheses_evaluated']==1
-        assert p['progress']['analysis_methods']==1 and p['progress']['new_hypotheses']==1
+        assert p['progress']['analysis_methods']==1 and p['progress']['new_hypotheses']==2
         with c.store.lock:
             plans=c.store.db.execute('SELECT * FROM research_experiments').fetchall()
             hypothesis=c.store.db.execute('SELECT * FROM knowledge WHERE id=?',(p['hypotheses']['h1'],)).fetchone()
@@ -726,4 +729,118 @@ def test_completed_experiment_ids_remain_available_for_same_job_visual_feedback(
         assert all(a['state']=='done' for a in p['action_history'])
         assert p['action_history'][1]['result']['evidence']['event']==client.event
         assert p['action_history'][2]['result']['evidence']['right']['event']==client.event
+    finally:c.scientist.stop_event.set();worker.join(2);c.close()
+
+
+def test_feedback_index_survives_old_history_and_counts_only_delivered_payloads():
+    from selfstruct.research_actions import input_feedback
+    p={'experiment_context':{'experiments':[{'id':'plan','hypothesis':10,'action':0,'state':'complete','evidence':[1657,1675]}]},
+       'research_steps':[{'finished_at':1,'delivered_visual_evidence':[{'evidence':{'event':1574,'phase':'after'},'image_attached':True}]},
+                         {'finished_at':2,'delivered_visual_evidence':[{'evidence':{'event':1657,'phase':'after'},'image_attached':False,'payload_fields':[]}]},
+                         {'delivered_visual_evidence':[{'evidence':{'event':1675,'phase':'after'},'image_attached':True}]}]}
+    f=input_feedback(p)[0]
+    assert f['event_ids']==[1657,1675] and not f['after_delivered']
+    now=[{'evidence':{'event':1657,'phase':'before'},'image_attached':True},
+         {'evidence':{'event':1657,'phase':'after'},'payload_fields':['mean']}]
+    f=input_feedback(p,now)[0]
+    assert f['before_delivered']==f['after_delivered']==[1657]
+    assert f['before_in_this_input']==f['after_in_this_input']==[1657]
+    diff={'evidence':{'event':1675,'phase':'diff'},'image_attached':True}
+    f=input_feedback(p,[diff])[0]
+    assert f['comparison_delivered']==[1675] and not f['before_delivered'] and not f['after_delivered']
+
+
+def test_actual_experiment_feedback_persists_and_requested_pair_fits_small_reply_budget(tmp_path,monkeypatch):
+    from selfstruct.research import LocalLLM
+    c=Controller(Config(root=str(tmp_path),keys=['A','B'],research_every=100000),UnlabelledDynamics());c.step();initial=c.last_eid
+    client=LocalLLM('http://127.0.0.1:8766/v1','local');client.vision=True;client.context=8192
+    monkeypatch.setattr(client,'health',lambda:None);monkeypatch.setattr(client,'count_tokens',lambda prompt:4800)
+    calls=[];event=[]
+    def complete(prompt,**options):
+        calls.append((prompt,options));n=len(calls)
+        history=json.loads(prompt.split('研究履歴：',1)[1].split('\n追加観測結果',1)[0])
+        if n==1:
+            return json.dumps({'findings':[{'id':'r1_1','text':'入力の効果は未確認。','evidence':[initial]}],
+                               'actions':[{'op':'experiment','hypothesis':'r1_1','action':1,'duration':10,'wait':10,'repeat':1}]})
+        feedback=history['index']['input_feedback'][0]
+        if n==2:
+            event.append(feedback['event_ids'][0]);assert event[0]>initial
+            assert not feedback['before_delivered'] and not feedback['after_delivered']
+            return json.dumps({'actions':[{'op':'memory_note','title':title,'body':'必要な前後画像を次に選ぶ','evidence':[event[0]]} for title in ('結果は未確認','次に確認する結果')]})
+        if n==3:
+            assert all(a['request']['op']=='memory_note' for a in history['actions'])
+            assert feedback['event_ids']==event and not feedback['after_delivered']
+            return json.dumps({'actions':[{'op':'observe','event':event[0],'phase':phase,'size':[64,32],'mode':'RGB','output':'image'} for phase in ('before','after')]})
+        assert n==4 and len(options['images'])==2
+        assert feedback['before_in_this_input']==feedback['after_in_this_input']==event
+        assert 512<=options['max_tokens']<2048
+        assert 4800+len(options['images'])*1024+options['max_tokens']+256<=8192
+        return '{"findings":[],"actions":[],"wat":""}'
+    monkeypatch.setattr(client,'complete',complete);c.scientist.client=client
+    job=c.store.job('research',{});errors=[]
+    def study():
+        try:c.scientist.study(c.store.rows(),job)
+        except Exception as exc:errors.append(exc)
+    worker=threading.Thread(target=study);worker.start();deadline=time.monotonic()+5
+    try:
+        while worker.is_alive() and time.monotonic()<deadline:
+            with c.store.lock:pending=c.store.db.execute("SELECT 1 FROM research_experiments WHERE state IN ('queued','running')").fetchone()
+            if pending:c.step()
+            else:time.sleep(.01)
+        worker.join(1);assert not worker.is_alive() and not errors,errors
+        p=json.loads(c.store.get_job(job)['payload'])
+        assert len(calls)==4 and p['research_steps'][-1]['image_count']==2
+        assert p['context_budget']['reserved_output']==512 and p['progress']['experiments']==1
+        assert p['progress'].get('hypotheses_evaluated',0)==0
+    finally:c.scientist.stop_event.set();worker.join(2);c.close()
+
+
+@pytest.mark.parametrize('vision',[False,True])
+def test_completed_input_requires_result_statement_and_unknown_can_resume(tmp_path,vision):
+    """Actual Player results: reject stacking, allow a self-chosen observation and unknown."""
+    c=Controller(Config(root=str(tmp_path),keys=['A','B'],research_every=100000),UnlabelledDynamics());c.step();initial=c.last_eid
+    class Client:
+        calls=0
+        def complete(self,prompt,**options):
+            self.calls+=1;n=self.calls
+            request={'op':'experiment','hypothesis':'r1_1','action':1,'duration':10,'wait':10,'repeat':1}
+            p=json.loads(c.store.get_job(job)['payload'])
+            if n==1:
+                # Preplanned batch in one response remains valid.
+                return json.dumps({'findings':[{'id':'r1_1','text':'入力効果は不明。','evidence':[initial]}],'actions':[request,request]})
+            complete=[a['result'] for a in p['action_history'] if a['state']=='done' and a['request']['op']=='experiment']
+            ids=[r['events'][0]['id'] for r in complete]
+            if n==2:
+                assert len(ids)==2
+                # Old-image claims do not count as discussing the new results.
+                return json.dumps({'findings':[{'id':'r2_1','text':'以前の画面だけでは不明。','evidence':[initial]}],'actions':[request]})
+            if n==3:
+                blocked=p['action_history'][-1]
+                assert blocked['state']=='error'
+                assert len(blocked['result']['constraints']['completed_results_without_statement'])==2
+                assert c.store.db.execute('SELECT count(*) FROM research_experiments').fetchone()[0]==2
+                return json.dumps({'actions':[{'op':'observe','event':i,'phase':'after','size':[32,32],'output':'image' if vision else 'statistics'} for i in ids]})
+            if n==4:
+                assert len(ids)==2 and all(a['state']=='done' for a in p['action_history'][-2:])
+                return json.dumps({'actions':[{'op':'memory_note','title':'入力後も意味は不明','body':'返された観測を確認したが、目的への効果は未確認。','evidence':ids},request]})
+            assert n==5 and len(ids)==3
+            assert set(map(int,p['feedback_statements']))==set(ids[:2])
+            return '{"findings":[],"actions":[]}'
+    client=Client();client.vision=vision;c.scientist.client=client
+    job=c.store.job('research',{});errors=[]
+    def study():
+        try:c.scientist.study(c.store.rows(),job)
+        except Exception as exc:errors.append(exc)
+    worker=threading.Thread(target=study);worker.start();deadline=time.monotonic()+10
+    try:
+        while worker.is_alive() and time.monotonic()<deadline:
+            with c.store.lock:pending=c.store.db.execute("SELECT 1 FROM research_experiments WHERE state IN ('queued','running')").fetchone()
+            if pending:c.step()
+            else:time.sleep(.01)
+        worker.join(1);assert not worker.is_alive() and not errors,errors
+        p=json.loads(c.store.get_job(job)['payload'])
+        assert client.calls==5 and p['progress']['experiments']==3
+        assert p['progress'].get('hypotheses_evaluated',0)==0
+        from selfstruct.diagnostics import diagnostic_job_payload
+        assert json.loads(diagnostic_job_payload(json.dumps(p)))['feedback_statements']==p['feedback_statements']
     finally:c.scientist.stop_event.set();worker.join(2);c.close()
