@@ -1,0 +1,32 @@
+{
+  "version": "0.8.0",
+  "tag": "v0.8.0-dev.1",
+  "release_name": "connected-research-loop",
+  "source": "481d0fbe0f345ff609aa0bbd1e134119bfe26f13",
+  "real_session": "c994c01402974610a18db09f99011a83",
+  "hypothesis_id": 6,
+  "evaluations": 1,
+  "support_refutation_updates": 1,
+  "research_reports": 1,
+  "registered_probability": 1.0,
+  "changed_samples": 0,
+  "samples": 16,
+  "verdict": "refuted",
+  "executor": "host_statistical_gate",
+  "report_producer": "host_record_summary",
+  "new_real_session": false,
+  "signed_distribution": "not_generated",
+  "local_tests": {
+    "passed": 280,
+    "skipped": 3,
+    "failed": 1,
+    "seconds": 143.22,
+    "exit_code": 1,
+    "baseline_passed": 281,
+    "baseline_skipped": 3,
+    "failed_test": "tests/test_observatory.py::test_observatory_gui_diagnostics_layout_activity_and_no_full_knowledge_poll",
+    "error": "TclError: ttk/classicTheme.tcl could not be read",
+    "log": "outputs/version-release-regression.txt"
+  },
+  "release_status": "stopped_on_regression"
+}
