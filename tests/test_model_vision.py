@@ -67,6 +67,8 @@ def test_projector_is_not_registered_as_a_language_model(tmp_path,monkeypatch):
 
 @pytest.mark.parametrize('failure',[None,'tampered','wrong_pair','outside'])
 def test_runtime_loads_only_integrity_checked_model_bound_projector(tmp_path,monkeypatch,failure):
+    # This fixture exercises CPU projector flags, regardless of the host GPU.
+    monkeypatch.setattr('selfstruct.resources.preferred_backend',lambda:'cpu')
     engine=tmp_path/'assets/engine/test/expanded/llama-server';engine.parent.mkdir(parents=True);engine.write_bytes(b'engine')
     model=tmp_path/'assets/model/test/artifact';model.parent.mkdir(parents=True);model.write_bytes(b'GGUFmodel')
     projector=tmp_path/'assets/library/test/artifact';projector.parent.mkdir(parents=True);projector.write_bytes(b'GGUFprojector')
