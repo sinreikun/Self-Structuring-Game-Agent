@@ -11,6 +11,10 @@ TABLES={'experience':'events','knowledge':'knowledge','experiment':'research_exp
 def setup(db):
     db.execute('CREATE TABLE IF NOT EXISTS research_memory_snapshots(job TEXT, collection TEXT, ref TEXT, revision TEXT, content TEXT, created REAL, PRIMARY KEY(job,collection,ref,revision))')
     db.execute('CREATE TABLE IF NOT EXISTS research_reports(id INTEGER PRIMARY KEY, job TEXT, title TEXT, target_goal TEXT, goal_status TEXT, goal_evidence TEXT, findings TEXT, unknowns TEXT, next_steps TEXT, updated REAL)')
+    if 'evaluations' not in {r[1] for r in db.execute('PRAGMA table_info(research_reports)')}:
+        db.execute("ALTER TABLE research_reports ADD COLUMN evaluations TEXT NOT NULL DEFAULT '[]'")
+    if 'producer' not in {r[1] for r in db.execute('PRAGMA table_info(research_reports)')}:
+        db.execute("ALTER TABLE research_reports ADD COLUMN producer TEXT NOT NULL DEFAULT 'llm'")
     db.execute('CREATE TABLE IF NOT EXISTS research_notes(id INTEGER PRIMARY KEY, job TEXT, title TEXT, body TEXT, evidence TEXT, updated REAL)')
 
 
@@ -62,7 +66,7 @@ def document(scientist,collection,ref):
         if isinstance(p.get('progress'),dict):p['progress']={k:v for k,v in p['progress'].items() if k not in ('memory_reads','memory_searches')}
         return {'job':row['id'],'state':row['state'],**{k:v for k,v in p.items() if k in ('outcome','progress','hypotheses','experiment_context','research_limit')}}
     if collection=='report':
-        for key in ('goal_evidence','findings','unknowns','next_steps'):row[key]=json.loads(row[key])
+        for key in ('goal_evidence','findings','unknowns','next_steps','evaluations'):row[key]=json.loads(row[key])
         row['attribution']='LLM research report; not an independent verification of game meaning or success'
         return row
     row['evidence']=json.loads(row['evidence']);return row
@@ -199,10 +203,10 @@ def overview(scientist,jid,payload):
             prior={**metadata('research',str(previous['record_ref']),doc),'job':previous['id'],'outcome':doc.get('outcome','unknown')}
 
     from .vision import MAX_PIXELS,MAX_VALUES
-    from .research_actions import MAX_CALLS,MAX_ACTIONS,input_feedback
+    from .research_actions import MAX_CALLS,MAX_ACTIONS,input_feedback,action_budget_used
     return {'job':jid,'collections':counts,'seed_visual_metadata':[{'id':r['id'],**frame_sizes(scientist.store,r)} for r in payload.get('research_rows',[])[-3:]],
             'visual_limits':{'max_pixels':MAX_PIXELS,'max_values_per_request':MAX_VALUES},
-            'research_budget':{'calls_including_this_turn':max(0,MAX_CALLS-payload.get('research_calls',0)),'actions_remaining':max(0,MAX_ACTIONS-len(payload.get('action_history',[])))},'seed_experience_ids':[r['id'] for r in payload.get('research_rows',[])[-3:]],
+            'research_budget':{'calls_including_this_turn':max(0,MAX_CALLS-payload.get('research_calls',0)),'actions_remaining':max(0,MAX_ACTIONS-action_budget_used(payload))},'seed_experience_ids':[r['id'] for r in payload.get('research_rows',[])[-3:]],
             'active_hypotheses':active,
             'continuation':{'recent_notes':recent_notes,'previous_research':prior,'note_status':'Unverified working notes; retrieve only needed records and compare with current observations/API constraints'},
             'input_feedback':input_feedback(payload),
@@ -211,7 +215,7 @@ def overview(scientist,jid,payload):
             'rule':'Index only. Retrieve exact records with memory_search/read. No initial pixels were inspected automatically. Use observe/compare for actual visual evidence.'}
 
 
-def report(scientist,jid,payload,request):
+def report(scientist,jid,payload,request,*,producer='llm'):
     from .research_actions import allowed_evidence
     ids=sorted(set(request['goal_evidence']+[i for f in request['findings'] for i in f['evidence']]))
     if any(i not in allowed_evidence(payload) for i in ids):raise ValueError('Report evidence must have been retrieved or observed')
@@ -219,18 +223,62 @@ def report(scientist,jid,payload,request):
     if not request['findings'] and not request['unknowns']:raise ValueError('A report needs findings or explicit unknowns')
     store=scientist.store
     with store.lock,store.db:
+        # Copy immutable evaluator output, not an LLM paraphrase or current verdict.
+        evaluations=[]
+        for row in store.db.execute('SELECT id,result FROM research_evaluations WHERE job=? ORDER BY id',(jid,)):
+            result=json.loads(row['result']);result['evaluation_id']=row['id'];evaluations.append(result)
+        completed=[a.get('result',{}) for a in payload.get('action_history',[]) if a.get('state')=='done' and a.get('request',{}).get('op')=='experiment' and a.get('result',{}).get('hypothesis') is not None and a.get('result',{}).get('completed',0)>0]
+        pending=[];linked=[]
+        for experiment in completed:
+            events={r['id'] for r in experiment.get('events',[]) if r.get('state')=='complete'}
+            matches=[e for e in evaluations if e['hypothesis']==experiment['hypothesis'] and experiment['experiment'] in e.get('experiments',[]) and events<=set(e['evidence'])]
+            if matches:linked.append(experiment)
+            else:pending.append({'hypothesis':experiment['hypothesis'],'experiment':experiment['experiment'],'evidence':sorted(events)})
+        if completed and not linked:
+            error=ValueError('Evaluate a completed experiment hypothesis before research_report; inconclusive with reasons is valid.')
+            error.constraints={'pending_evaluations':pending}
+            raise error
+        unknowns=list(request['unknowns'])
+        if pending:unknowns.append('未評価の実験（接続未確認）：'+encoded(pending))
+        ids=sorted(set(ids+[i for e in evaluations for i in e['evidence']]))
         store.reserve(16384)
-        ref=str(store.db.execute('INSERT INTO research_reports(job,title,target_goal,goal_status,goal_evidence,findings,unknowns,next_steps,updated) VALUES(?,?,?,?,?,?,?,?,?)',
-            (jid,request['title'],request['target_goal'],request['goal_status'],json.dumps(request['goal_evidence']),encoded(request['findings']),encoded(request['unknowns']),encoded(request['next_steps']),time.time())).lastrowid)
+        ref=str(store.db.execute('INSERT INTO research_reports(job,title,target_goal,goal_status,goal_evidence,findings,unknowns,next_steps,updated,evaluations,producer) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+            (jid,request['title'],request['target_goal'],request['goal_status'],json.dumps(request['goal_evidence']),encoded(request['findings']),encoded(unknowns),encoded(request['next_steps']),time.time(),encoded(evaluations),producer)).lastrowid)
         store.pin(ids,'research-report-'+ref)
-        return {'status':'saved',**metadata('report',ref,document(scientist,'report',ref)),
-                'validation':'LLM report; existing statistical verdicts and game success unchanged'}
+        return {'status':'saved',**metadata('report',ref,document(scientist,'report',ref)),'evaluation_ids':[e['evaluation_id'] for e in evaluations],'pending_evaluations':pending,
+                'validation':('Host record summary' if producer=='host_record_summary' else 'LLM report')+'; existing statistical verdicts and game success unchanged'}
+
+
+def finish_report(scientist,jid,payload):
+    """Close the factual handoff even when the model spends its budget elsewhere."""
+    store=scientist.store
+    with store.lock:
+        ids={r['id'] for r in store.db.execute('SELECT id,result FROM research_evaluations WHERE job=?',(jid,)) if json.loads(r['result']).get('n',0)>0}
+        if not ids:return
+        for row in store.db.execute('SELECT evaluations FROM research_reports WHERE job=?',(jid,)):
+            if ids<={e['evaluation_id'] for e in json.loads(row['evaluations'])}:return
+    result=report(scientist,jid,payload,{'title':'実験・評価の実測記録','target_goal':'','goal_status':'unknown','goal_evidence':[],
+        'findings':[],'unknowns':['対象の意味・目的・達成はこの実測集計では確認していません。'],
+        'next_steps':['未確認事項と保存済みの実験・評価を次の研究で照合します。']},producer='host_record_summary')
+    payload.setdefault('progress',{})['reports']=payload.get('progress',{}).get('reports',0)+1
+    payload.setdefault('action_history',[]).append({'action_id':'terminal-report','step':payload.get('research_calls',0),
+        'fingerprint':hashlib.sha256(('terminal-report:'+jid).encode()).hexdigest(),
+        'origin':'host_record_summary','request':{'op':'research_report'},'state':'done','result':result,
+        'at':time.time(),'finished_at':time.time()})
+    scientist.activity.record('REPORT',f'job={jid} report={result["ref"]} producer=host_record_summary evaluations={result["evaluation_ids"]}')
 
 
 def render_report(doc):
-    lines=['# '+doc['title'],'LLMの研究結果（記述内容の独立認証ではありません）',
+    lines=['# '+doc['title'],'実測記録からの報告（Host集計・ゲーム理解は未確認）' if doc.get('producer')=='host_record_summary' else 'LLMの研究結果（記述内容の独立認証ではありません）',
            '研究対象の目的：'+(doc['target_goal'] or '未確認')+' ['+doc['goal_status']+']',
            '目的の根拠：'+str(doc['goal_evidence']),'\n分かったこと・仮説']
     for item in doc['findings']:lines.append('- ['+item['status']+'] '+item['text']+' ／ 根拠 '+str(item['evidence']))
+    evaluations=doc.get('evaluations',[])
+    if isinstance(evaluations,str):evaluations=json.loads(evaluations)
+    lines.append('\n評価結果（保存時点の実測記録）')
+    if not evaluations:lines.append('- 評価未実行。接続未確認。')
+    for e in evaluations:
+        lines.append('- 仮説 '+str(e['hypothesis'])+'：'+e['status']+' ／ 評価 '+str(e['evaluation_id'])+' ／ 実験 '+str(e['experiments'])+' ／ 根拠 '+str(e['evidence'])+' ／ n='+str(e['n']))
+        lines.append('  判定根拠：'+encoded({'reasons':e['reasons'],'interval95':e['interval95'],'expected_probability':e['expected_probability'],'observed_probability':e['observed_probability'],'limitation':e['limitation']}))
     lines+=['\n未確認事項',*('- '+x for x in doc['unknowns']),'\n次の方針',*('- '+x for x in doc['next_steps'])]
     return '\n'.join(lines)

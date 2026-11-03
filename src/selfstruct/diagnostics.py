@@ -77,7 +77,7 @@ def diagnostic_job_payload(value):
     keys=("outcome","implementation_verified","repair_failures","same_error_failures","repair_error",
           "repair_history","repair_kind","behavior_repairs","visual_rounds","initial_visual_evidence","visual_budget_exhausted",
           "mission","memory_mode","memory_index","memory_evidence","feedback_statements","research_job","research_started","research_steps","research_calls","research_phase","research_limit","context_compactions","context_budget","progress","hypotheses","hypothesis_context","experiment_context","new_hypothesis_ids","candidate_sha256",
-          "stagnation_detected","stalled","duplicate_requests","duplicate_only_rounds","duplicate_redirects","image_bytes","redirected")
+          "evaluation_gate","mature_unevaluated","preregistration_gate","registrations_after_rejections","loop_gaps","stagnation_detected","stalled","duplicate_requests","duplicate_only_rounds","duplicate_redirects","image_bytes","redirected")
     result={k:payload[k] for k in keys if k in payload}
     history=payload.get("visual_history",[])
     result["visual_request_count"]=len(history) if isinstance(history,list) else 0
@@ -138,7 +138,7 @@ def create_diagnostics(root: Path, store=None, config=None, activity=None, gui=N
                 with store.lock, tempfile.TemporaryDirectory() as temp:
                     db=sqlite3.connect(Path(temp)/'diagnostics.sqlite3')
                     try:
-                        for table,order,limit in [('events','id',512),('knowledge','id',256),('reports','id',100),('gc_history','id',200),('compacted','last',256),('jobs','updated',40),('visual_analyzers','created',32),('visual_library_requests','created',32),('research_experiments','created',32),('research_notes','updated',64),('research_reports','updated',32),('research_memory_snapshots','created',32)]:
+                        for table,order,limit in [('events','id',512),('knowledge','id',256),('reports','id',100),('gc_history','id',200),('compacted','last',256),('jobs','updated',40),('visual_analyzers','created',32),('visual_library_requests','created',32),('research_experiments','created',32),('research_evaluations','created',64),('research_notes','updated',64),('research_reports','updated',32),('research_memory_snapshots','created',32)]:
                             columns=[r[1] for r in store.db.execute(f'PRAGMA table_info({table})')]
                             if not columns:continue
                             # All values are bound; never execute user content.

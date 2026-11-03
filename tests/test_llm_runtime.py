@@ -71,7 +71,8 @@ def test_real_prompt_excludes_large_report_metrics_and_limits_experiences():
     from pathlib import Path
     rows=[{'id':i,'action':'A','feature':i,'change':.1234567} for i in range(64)]
     prompt=research_prompt(Path('src/selfstruct/assets/seed.wat').read_text(),rows,['A'],[{'summary':'前回評価','metrics':'x'*100000}])
-    assert len(prompt.encode())<8000
+    # Gate A adds the required experiment notice; large metrics must still be excluded.
+    assert len(prompt.encode())<8400
     assert '"id":48' in prompt and '"id":0,' not in prompt
     assert 'x'*100 not in prompt
     assert 'unknown' in prompt and '(export "learn")' not in prompt

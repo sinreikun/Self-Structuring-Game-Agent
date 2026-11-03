@@ -216,7 +216,7 @@ def test_batched_reads_report_undelivered_pages_without_destroying_records(world
     calls=[]
     def complete(prompt,**options):
         calls.append(prompt)
-        omitted=json.loads(prompt.split('省略情報：')[-1])['omitted_memory']
+        omitted=json.JSONDecoder().raw_decode(prompt.split('省略情報：')[-1])[0]['omitted_memory']
         assert omitted and all(item['request']['ref'] in {r['ref'] for r in requests} for item in omitted)
         assert options['max_tokens']>=512 and 'content_sha256' in prompt
         return '{"findings":[],"actions":[],"wat":""}'
@@ -249,7 +249,8 @@ def test_initial_index_gives_source_dimensions_and_budgets_without_decoding_imag
     index=overview(c.scientist,job,p)
     assert index['seed_visual_metadata']==[{'id':c.last_eid,'before_size':[160,96],'after_size':[160,96]}]
     assert index['visual_limits']=={'max_pixels':262144,'max_values_per_request':2048}
-    assert index['research_budget']=={'calls_including_this_turn':7,'actions_remaining':22}
+    from selfstruct.research_actions import MAX_CALLS
+    assert index['research_budget']=={'calls_including_this_turn':MAX_CALLS-3,'actions_remaining':22}
 
 
 def test_new_job_can_choose_previous_plan_from_a_small_reference_index(world):

@@ -335,7 +335,9 @@ def test_managed_vision_context_pressure_preserves_references_and_does_not_retry
     client = LocalLLM('http://127.0.0.1:8766/v1', 'local')
     client.vision = True; client.context = 8192
     monkeypatch.setattr(client, 'health', lambda: None)
-    monkeypatch.setattr(client, 'count_tokens', lambda prompt: 6144)
+    # A fixed 6144 leaves only 768 tokens with one image, even after text
+    # compaction. Model the removable text so the 1024 reply floor is feasible.
+    monkeypatch.setattr(client, 'count_tokens', lambda prompt: min(6144, 4800+len(prompt)//8))
     calls = []
     def complete(prompt, **kwargs):
         calls.append((prompt, kwargs))

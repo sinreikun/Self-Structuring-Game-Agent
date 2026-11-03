@@ -847,6 +847,7 @@ class Scientist:
             prefix+='\n参照中の仮説（保存された主張と事前登録。変更は別IDへ）：'+json.dumps(payload['hypothesis_context'][-2:] if payload.get('memory_mode')=='pull' else payload['hypothesis_context'],ensure_ascii=False,separators=(',',':'))
             prefix+='\n今回の新規findings.id候補：'+json.dumps(new_ids)+'。既存仮説を使うだけならfindingsを空にしてactions.hypothesisへ既存の別名／IDを指定する。主張・事前登録を変更するなら新規IDで別仮説を定義する。'
             compact_history=False
+            history_chars=6000
             omitted_visual_results=0
             omitted_attachments=0
             def current_views():
@@ -862,7 +863,7 @@ class Scientist:
                 if payload.get('memory_mode')=='pull':payload['memory_index']['input_feedback']=input_feedback(payload,current_views())
                 delivered={item['action_id'] for item in visible if 'action_id' in item}
                 omitted_memory=[{'action_id':item['action_id'],'request':{k:v for k,v in item.get('request',{}).items() if k in ('op','collection','ref','revision','offset','limit','query')}} for item in payload.get('memory_results',[]) if item.get('step')==payload.get('research_calls',0) and item['action_id'] not in delivered]
-                return prefix+'\n研究履歴：'+history_context(payload,compact=compact_history)+"\n追加観測結果（attachment_indexは画像添付の0始まり番号。古い結果はJob履歴へ保持し必要なら再要求）:"+json.dumps(visible, ensure_ascii=False, separators=(",", ":"))+"\n省略情報："+json.dumps({"older_results_omitted":omitted_visual_results,"attachment_omitted":omitted_attachments,"omitted_memory":omitted_memory})
+                return prefix+'\n研究履歴：'+history_context(payload,compact=compact_history,max_chars=history_chars)+"\n追加観測結果（attachment_indexは画像添付の0始まり番号。古い結果はJob履歴へ保持し必要なら再要求）:"+json.dumps(visible, ensure_ascii=False, separators=(",", ":"))+"\n省略情報："+json.dumps({"older_results_omitted":omitted_visual_results,"attachment_omitted":omitted_attachments,"omitted_memory":omitted_memory})+ '\n今回の手順：観察後、状態条件なしの単一入力の画像変化率仮説を1つ選び、findingsにid,text,evidence,action,change_probabilityを実験前に登録。入力・確率は自分で選ぶ。意味仮説には確率を付けない。同じ登録ID・入力でconditionなしrepeat=8を2計画。間に全結果IDをmemory_noteで検討し、新規仮説へ移らず標本蓄積。experiment_contextの不足数を確認。16件でevaluate（確率省略）→research_report。'
             text = render()
             # Context pressure must be recoverable, never cause an endless retry
             # with the same oversized pixels. Expose exact replayable references.
@@ -877,8 +878,8 @@ class Scientist:
                             phases.setdefault(ref['event'],set()).add(ref.get('phase'))
                     pair=any({'before','after'}<=parts for parts in phases.values())
                     count=self.client.count_tokens(text);context=getattr(self.client,"context",8192)
-                    reserved_output=512 if pair and count+len(images)*1024+256+512<=context else min(budget,2048)
-                    return count<=context-reserved_output-256-len(images)*1024
+                    reserved_output=512 if pair else min(budget,2048)
+                    return count<=context-max(min(budget,1024),reserved_output)-256-len(images)*1024
                 def remove_image(index):
                     nonlocal omitted_attachments
                     images.pop(index);omitted_attachments+=1
@@ -891,6 +892,13 @@ class Scientist:
                 # Compact duplicate metadata first. Keep the newest actual visual
                 # evidence, not just references that would fail identically on replay.
                 if not fits():compact_history=True;text=render()
+                while not fits() and history_chars>2000:
+                    history_chars-=1000;text=render()
+                # A malformed response is replayable in the Job journal. Its
+                # diagnostic excerpt must yield to evidence and response space.
+                if not fits() and payload.get('repair_response') and not implementation_repair:
+                    prefix=prefix.replace(payload['repair_response'][:3000],payload['repair_response'][:1000])
+                    text=render()
                 for item in visible[:-1]:
                     if fits():break
                     if "result" in item:
@@ -908,7 +916,7 @@ class Scientist:
                 while images and not fits():
                     # Keep the newest image when a valid response still fits;
                     # the 2K output target is a preference, not a reason to blind vision.
-                    if len(images)==1 and self.client.count_tokens(text)+1024+256+512<=getattr(self.client,"context",8192):break
+                    if len(images)==1 and self.client.count_tokens(text)+1024+256+1024<=getattr(self.client,"context",8192):break
                     remove_image(0);text=render()
                 if visible and not fits():
                     item=visible[-1];result=item.get('result',{})
@@ -924,7 +932,7 @@ class Scientist:
                             item['payload_omitted']='Array retained in Job journal; request smaller crop/result'
                     text=render()
                 payload['context_budget']={'context':getattr(self.client,"context",8192),
-                    'input_count':self.client.count_tokens(text),'reserved_output':reserved_output,
+                    'input_count':self.client.count_tokens(text),'text_chars':len(text),'history_chars':len(history_context(payload,compact=compact_history,max_chars=history_chars)),'reserved_output':reserved_output,
                     'image_count':len(images),'compact_history':compact_history,
                     'omitted_visual_results':omitted_visual_results,'omitted_attachments':omitted_attachments}
                 if compact_history or omitted_visual_results:
@@ -934,7 +942,7 @@ class Scientist:
             if isinstance(self.client, LocalLLM) and self.client.managed:
                 output_budget = min(budget, getattr(self.client, "context", 8192)-self.client.count_tokens(text)-256-len(images)*1024)
                 payload['context_budget']['output_budget']=output_budget
-                if output_budget < 512:
+                if output_budget < min(budget,1024):
                     raise ResearchInputLimit("追加視覚観測がモデルの入力枠を超えました。保存済み結果を保持します。")
             if len(text.encode()) > 100000:
                 raise ResearchInputLimit("視覚研究の入力予算を超えました。")
@@ -948,6 +956,7 @@ class Scientist:
             payload['research_calls']=payload.get('research_calls',0)+1
             step={'step':payload['research_calls'],'phase':('repair' if implementation_repair else 'protocol_repair') if payload.get('repair_response') else payload.get('research_phase','observation'),
                   'started_at':time.time(),'consumed_actions':[r['action_id'] for r in payload.get('action_history',[]) if r['state'] in ('done','duplicate','error')], 'image_count':len(images),'delivered_memory_actions':[{'action_id':item['action_id'],**{k:v for k,v in item.get('result',{}).items() if k in ('collection','ref','revision','offset','next_offset','content_sha256','status','source_revision','source_changed')}} for item in visible if 'action_id' in item]}
+            step['context_budget']=dict(payload.get('context_budget',{}))
             step['delivered_visual_evidence']=current_views()
             step['input_feedback']=payload.get('memory_index',{}).get('input_feedback',[])
             payload.setdefault('research_steps',[]).append(step)
@@ -1082,11 +1091,19 @@ class Scientist:
             self.store.set_job(jid,'pending',payload)
             raise ResearchRepairNeeded(str(error)) from error
         source = proposal.get("wat", "")
+        from .research_memory import finish_report
+        finish_report(self,jid,payload)
         if not source:
-            from .research_actions import made_progress
+            from .research_actions import made_progress,loop_gaps
+            payload['connection_status']='unverified'
+            payload['loop_gaps']=loop_gaps(payload)
+            payload['research_counts']={'hypotheses_evaluated':payload.get('progress',{}).get('hypotheses_evaluated',0),
+                                        'hypotheses_updated':payload.get('progress',{}).get('hypotheses_updated',0),
+                                        'reports':payload.get('progress',{}).get('reports',0)}
             self.store.set_job(jid, "complete",{**payload,"outcome":"research_limit" if payload.get("research_limit") else "stalled" if payload.get("stalled") else "research_progress" if made_progress(payload) else "observations_only","implementation_verified":False})
             self.activity.update(experiment='研究上限・成果を保存' if payload.get('research_limit') else '研究停滞・未確認事項を保存' if payload.get('stalled') else '観測・実験結果を保存（実装改善なし）')
             self.activity.record('RESEARCH',f'complete job={jid} calls={payload.get("research_calls",0)} progress={payload.get("progress",{})}')
+            self.activity.record('LOOP',f'job={jid} connection=unverified counts={payload["research_counts"]} gaps={payload["loop_gaps"]}')
             return
         latest=self.store.rows(1)
         cutoff=max(rows[-1]['id'],payload.get('after',0),latest[-1]['id'] if latest else 0)

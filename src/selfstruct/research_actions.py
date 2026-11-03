@@ -7,22 +7,23 @@ import time
 from .store import CapacityError
 from .vision import evidence_ids, resolved_request
 
-MAX_CALLS=10
+MAX_CALLS=20
 MAX_ACTIONS=24
 MAX_SECONDS=600
 MAX_IMAGE_BYTES=4*1024*1024
 
 INSTRUCTIONS='''研究応答JSON: {"findings":[{"id":"供給された新規ID","text":"主張","evidence":[ID]}],"actions":[],"problem":"","reason":"","wat":""}。WATは任意。actionsは最大4件、opは操作名だけで引数は別フィールド。
 例 {"op":"observe","event":1,"phase":"before","size":[32,32],"mode":"RGB","output":"pixels","limit":64}。例のIDは今回の索引・許可入力へ置換する。
-最初は索引のみ。保存全履歴や原画像を入力へ集積せず、自分で必要な情報を要求する。各操作の型・詳細な引数は生成用schemaと以下の視覚API説明に従う。
+索引から必要な記録・画像を要求。型はschemaに従う。
 memory_search: collection=experience/knowledge/experiment/visual/research/note/report,query（文字列検索）またはref（既知ID）,limit=1..8,cursor,watermark。索引にref/revisionを返す。
-memory_read: collection,ref,revision,offset,limit=1..1600文字。本文JSONを取得。next_offsetで続き、選択版は同じJobに最大32件保持。source_changedは正本の更新を示す。最新が必要なら再検索。staleなら新しいrevisionでoffset=0へ。異なる版を結合しない。unavailableは内容不明。
+memory_read: collection,ref,revision,offset,limit=1..1600文字。本文はnext_offsetで続く。選択版は最大32件。source_changedなら正本更新、staleなら再検索しoffset=0から。異なる版を結合しない。unavailableは内容不明。
 memory_note: title,body,evidenceで短い課題・計画・不明点を外部保存。更新はref/revision必須。別Jobや再起動後も検索可。メモは未検証。
-research_report: title,target_goal,goal_status=unknown/hypothesis/observed,goal_evidence,findings=[{text,status:observation/hypothesis,evidence}],unknowns,next_steps。日本語の人間向け副目的。報告だけを量産しない。
+目的ループ：観察→仮説ID→experiment→evaluate→research_report。loop_gapsの不足段へ進む。評価は自動添付。未達は未確認。
+research_report: title,target_goal,goal_status=unknown/hypothesis/observed,goal_evidence,findings=[{text,status:observation/hypothesis,evidence}],unknowns,next_steps。日本語で報告。
 observe/compare/analyze: eventは実ID（行番号ではない）。索引外はmemory_search(collection=experience)で取得。eventまたはobservation,phase,box=[左,上,右,下],size,mode,output,operations,offset,limit。必要な場所・方法は自分で選ぶ。compareに第2参照を指定。詳細は視覚API説明。
-experiment: hypothesis（既存ID/別名）,action（0始まり許可入力）,duration=10..500ms,wait=10..2000ms,repeat=1..8。最大4計画/32入力。conditionは画素mean_min/mean_maxで状態選別（無条件は省略）。完了Experienceを返す。次の実験前に結果IDをfindings等で検討。不明も可。PAUSE中は入力せずSTOP後は再送しない。
-evaluate: hypothesis,change_probability=0..1。画像変化率を検証するなら実験前にfindings.actionとchange_probabilityを登録する。未登録・事後変更・条件選別・異なる入力混在・16件未満は判定不能。意味や目標達成は検証しない。
-candidate: problem,evidence（取得済みID2件以上）,behavior,evaluationで持続する挙動の実装へ。根拠と評価条件を揃える。
+experiment: 成熟した未評価仮説があれば新規実験・仮説・claimは予算不消費で拒否、先にevaluate。hypothesis=ID/別名（省略=探索、評価標本外）,action=許可入力番号(0始まり),duration=10..500ms,wait=10..2000ms,repeat=1..8。4計画/32入力。仮説付きはfindingsのaction/change_probability事前登録必須、未登録は計画/入力予算不消費で拒否。condition=画素mean_min/mean_max（省略=無条件）。完了Experience返却、次の実験前に結果IDをfindings等で検討（不明可）。PAUSE入力禁止、STOP再送禁止。
+evaluate: 登録入力の登録後・同一セッション・無条件標本16件以上の未評価仮説を先に評価し、記録後に制限解除。hypothesis,任意のchange_probability=0..1。省略時は既存の事前登録値を使用し、未登録なら実験根拠と理由を持つ保留にする。意味仮説に仮の確率を付けない。画像変化率を検証するなら実験前にfindings.actionとchange_probabilityを登録する。未登録・事後変更・条件選別・入力混在・16件未満は保留。意味・目的達成は未検証。
+candidate: problem,evidence（取得済みID2件以上）,behavior,evaluation。
 新規findings.idは毎回提示された候補から選ぶ。同じidへ別の主張や確率を再割当しない。既存仮説を使うだけならfindings=[]でactions.hypothesisへ既存ID/別名を指定する。目的・意味が未確認ならそのまま記録する。
 結果は同じJobへ。index.input_feedbackは実験結果の参照と配信状況。古い画像を新入力の結果と混同しない。1 Job最大10推論/24要求/600秒/画像4MiB。必要なら具体的actionsで続行、不要なら根拠・未確認事項を残して終了。'''
 
@@ -96,6 +97,14 @@ def record_findings(scientist,jid,payload,value):
                     if matching_target(old['id'],finding):existing=old['id'];break
             plan.append((finding,ids,ref,existing))
         for finding,ids,ref,existing in plan:
+            if existing is None and getattr(scientist,'experiments',None):
+                pending=scientist.experiments.mature_unevaluated(jid)
+                if pending:
+                    from .experiments import EvaluationRequired
+                    error=EvaluationRequired(pending)
+                    kind='claim' if 'action' in finding and 'change_probability' in finding else 'finding'
+                    record_evaluation_rejection(payload,kind,error,{'finding':finding})
+                    continue
             kid=existing if existing is not None else scientist.store.knowledge('hypothesis',finding['text'],'inferred','hypothesis',ids)
             if existing is None:
                 progress(payload)['new_hypotheses']+=1
@@ -103,13 +112,44 @@ def record_findings(scientist,jid,payload,value):
                 if type(action)==int and type(probability) in (float,int):
                     latest=scientist.store.db.execute('SELECT coalesce(max(id),0) FROM events').fetchone()[0]
                     scientist.store.claim(kid,scientist.keys[action],probability,max(max(ids),latest))
+                    if payload.get('preregistration_gate'):
+                        payload.setdefault('registrations_after_rejections',[]).append({'hypothesis':kid,'registered_at':time.time(),'after_rejected_hypotheses':sorted(int(k) for k in payload['preregistration_gate'])})
                 scientist.activity.record('HYPOTHESIS',f'job={jid} id={kid} pending evidence={ids}')
             else:
                 evidence=json.loads(scientist.store.db.execute('SELECT evidence FROM knowledge WHERE id=?',(kid,)).fetchone()[0])
                 with scientist.store.db:scientist.store.db.execute('UPDATE knowledge SET evidence=? WHERE id=?',(json.dumps(sorted(set(evidence+ids))),kid))
             if isinstance(ref,str) and 1<=len(ref)<=40:mappings[ref]=kid
             record_feedback_statement(payload,ids,'knowledge',kid)
+    refresh_preregistration_gate(scientist,payload)
+    refresh_evaluation_gate(scientist,jid,payload)
     scientist.store.set_job(jid,'running',payload)
+
+
+
+def record_evaluation_rejection(payload,kind,error,request):
+    gate=payload.setdefault('evaluation_gate',{'rejections':{},'events':[]})
+    gate['rejections'][kind]=gate['rejections'].get(kind,0)+1
+    gate['events'].append({'kind':kind,'at':time.time(),'step':payload.get('research_calls',0),
+                           'request':request,'pending':error.pending,'reasons':error.reasons,'evaluated_after':[]})
+    payload['mature_unevaluated']=error.pending
+
+
+def refresh_evaluation_gate(scientist,jid,payload):
+    if not getattr(scientist,'experiments',None):return
+    payload['mature_unevaluated']=scientist.experiments.mature_unevaluated(jid)
+    with scientist.store.lock:
+        for event in payload.get('evaluation_gate',{}).get('events',[]):
+            event['evaluated_after']=[dict(r) for item in event['pending'] for r in scientist.store.db.execute(
+                'SELECT id,hypothesis,created FROM research_evaluations WHERE job=? AND hypothesis=? AND created>=?',
+                (jid,item['hypothesis'],event['at']))]
+
+
+def refresh_preregistration_gate(scientist,payload):
+    with scientist.store.lock:
+        for kid,entry in payload.get('preregistration_gate',{}).items():
+            claim=scientist.store.db.execute('SELECT action,probability,after_id FROM claims WHERE knowledge=?',(int(kid),)).fetchone()
+            if claim and not entry.get('registered_after_rejection'):
+                entry.update(registered_after_rejection=True,registration_observed_at=time.time(),claim=dict(claim))
 
 
 def hypothesis_id(payload,request):
@@ -144,15 +184,16 @@ def execute(scientist,jid,payload,request,token):
         return result,None,None
     payload['research_phase']={'experiment':'experiment','evaluate':'evaluation','analyzer_create':'analyzer_creation','analyzer_evaluate':'evaluation','analyze':'analysis'}.get(op,'observation')
     if op=='experiment':
+        if getattr(scientist,'experiments',None):scientist.experiments.require_evaluation(jid)
+        hypothesis=hypothesis_id(payload,request)
+        if not getattr(scientist,'experiments',None):raise ValueError('Player experiment executor unavailable')
+        scientist.experiments.require_preregistration(hypothesis)
         discussed={int(i) for i in payload.get('feedback_statements',{})}
         pending={plan:ids for plan,ids in completed_feedback(payload).items() if not set(ids)&discussed}
         if pending:
             error=ValueError('Review completed input results before another experiment. Cite their actual event IDs in findings, a memory_note or research_report; unknown is valid. Observation methods remain your choice.')
             error.constraints={'completed_results_without_statement':pending,'required':'Record what is known or unknown with result Evidence IDs. Choose observe/compare if needed; old images are not new input results.'}
             raise error
-        if not getattr(scientist,'experiments',None):raise ValueError('Player experiment executor unavailable')
-        hypothesis=hypothesis_id(payload,request)
-        if hypothesis is None:raise ValueError('Experiment requires an explicit hypothesis ID or findings.id reference; Host will not infer one')
         identifier=scientist.experiments.submit(jid,token,request,hypothesis)
         scientist.activity.update(experiment=f'研究Job {jid[:8]}：Experiment {identifier[:8]} の結果待ち',next='Playerで許可入力を試し、同じ研究へ結果を返します')
         while not scientist.stop_event.wait(.05):
@@ -169,8 +210,17 @@ def execute(scientist,jid,payload,request,token):
         return result,None,None
     if op=='evaluate':
         if not getattr(scientist,'experiments',None):raise ValueError('Experiment evaluator unavailable')
-        result=scientist.experiments.evaluate(hypothesis_id(payload,request),request.get('change_probability'))
+        kid=hypothesis_id(payload,request)
+        context=experiment_context(scientist,jid)
+        eligible=sorted({r['hypothesis'] for r in context['experiments'] if r['completed']>0 and r['hypothesis'] is not None})
+        if kid not in eligible:
+            error=ValueError('evaluate requires completed experiment evidence for this hypothesis in this Job; use the returned hypothesis IDs, not a new finding.')
+            error.constraints={'evaluation_hypotheses':eligible,'aliases':{k:v for k,v in payload.get('hypotheses',{}).items() if v in eligible}}
+            raise error
+        result=scientist.experiments.evaluate(kid,request.get('change_probability'),job=jid)
         p['hypotheses_evaluated']+=1
+        if result['status'] in ('supported','refuted') and result['status']!=result['previous_status']:
+            p['hypotheses_updated']=p.get('hypotheses_updated',0)+1
         return result,None,None
     if op=='candidate':
         ids=request.get('evidence')
@@ -217,12 +267,23 @@ def canonical_request(request):
     return value
 
 
+def action_budget_used(payload):
+    """Bill the full journal except experiment refusals from gates A and B."""
+    def exempt(record):
+        result=record.get('result',{})
+        return (record.get('request',{}).get('op')=='experiment'
+                and record.get('state')=='error' and result.get('state')=='rejected'
+                and any(reason.get('code') in ('not_preregistered','evaluation_required')
+                        for reason in result.get('reasons',[])))
+    return sum(not exempt(record) for record in payload.get('action_history',[]))
+
+
 def run_actions(scientist,jid,payload,requests):
     ledger=payload.setdefault('action_history',[])
     for index,request in enumerate(requests):
         if not isinstance(request,dict):raise ValueError('Research action must be an object')
-        if len(ledger)>=MAX_ACTIONS or time.time()-payload.get('research_started',time.time())>MAX_SECONDS:
-            payload['research_limit']='actions' if len(ledger)>=MAX_ACTIONS else 'time';break
+        if action_budget_used(payload)>=MAX_ACTIONS or time.time()-payload.get('research_started',time.time())>MAX_SECONDS:
+            payload['research_limit']='actions' if action_budget_used(payload)>=MAX_ACTIONS else 'time';break
         token=f'{payload.get("research_calls",0)}:{index}'
         completed=next((r for r in ledger if r['action_id']==token and r['state'] in ('done','duplicate','error')),None)
         if completed:continue
@@ -249,8 +310,19 @@ def run_actions(scientist,jid,payload,requests):
             except InterruptedError:raise
             except (ValueError,OSError,KeyError,TypeError) as error:
                 record.update(state='error',result={'error':type(error).__name__,'detail':str(error)[:240]})
+                if getattr(error,'pending',None):
+                    record['result'].update(state='rejected',pending=error.pending,reasons=error.reasons)
+                    record_evaluation_rejection(payload,'experiment',error,request)
+                elif getattr(error,'reasons',None):
+                    record['result'].update(state='rejected',hypothesis=error.hypothesis,reasons=error.reasons)
+                    gate=payload.setdefault('preregistration_gate',{}).setdefault(str(error.hypothesis),{'rejections':0,'registered_after_rejection':False})
+                    gate['rejections']+=1
+                    gate.setdefault('first_rejected_at',time.time())
+                    gate['last_rejected_at']=time.time()
                 if getattr(error,'constraints',None):record['result']['constraints']=error.constraints
                 scientist.activity.record('RESEARCH',f'error job={jid} step={record["step"]} op={request.get("op","observe")} {str(error)[:100]}')
+        refresh_preregistration_gate(scientist,payload)
+        refresh_evaluation_gate(scientist,jid,payload)
         record['finished_at']=time.time();payload.pop('stream_draft',None)
         scientist.store.set_job(jid,'running',payload)
 
@@ -302,11 +374,72 @@ def experiment_prompt_context(summary):
         item={k:v for k,v in group.items() if k in ('hypothesis','evidence','by_action')}
         item['evaluation_requirements']={k:v for k,v in group.get('evaluation_requirements',{}).items() if k!='note'}
         result['hypotheses'].append(item)
-    result['note']='現在Jobのみ。入力別観測数は支持・反証ではない。未登録結果の事後転用禁止。evaluateは全Jobを再検査。'
+    result['note']='現在Jobのみ。入力別観測数は支持・反証ではない。未登録結果の事後転用禁止。evaluateは現在Jobを検査。'
     return result
 
 
-def history_context(payload,compact=False):
+# Model views are disposable. The payload remains the complete audit journal.
+HISTORY_VIEW_CHARS = 6000
+
+
+def rejection_view(gate):
+    events=gate.get('events',[])
+    latest={}
+    for event in events:
+        key=json.dumps({'pending':event.get('pending'), 'reasons':event.get('reasons')},sort_keys=True,ensure_ascii=False)
+        group=latest.pop(key,{'count':0})
+        latest[key]=group
+        latest[key].update({k:v for k,v in event.items() if k in ('kind','step','pending','reasons')})
+        latest[key]['count']+=1
+    return {'rejections':gate.get('rejections',{}),'latest':list(latest.values())[-1:]}
+
+
+def model_history_payload(payload):
+    # Select latest success and latest gate rejection separately; repeated errors
+    # must not displace the successful action that produced the evidence.
+    view=dict(payload)
+    ledger=payload.get('action_history',[])
+    selected=[]
+    for entry in reversed(ledger):
+        if entry.get('state')=='done':selected.append(entry);break
+    errors={}
+    for entry in ledger:
+        result=entry.get('result',{})
+        if result.get('state')=='rejected':
+            key='B' if any(r.get('code')=='evaluation_required' for r in result.get('reasons',[])) else 'A'
+            if key not in errors:errors[key]=[entry,0]
+            errors[key]=[entry,errors[key][1]+1]
+    for entry,count in list(errors.values())[-2:]:
+        item=dict(entry);item['result']=dict(entry['result'],repeated=count)
+        selected.append(item)
+    for entry in ledger[-2:]:
+        if not any(e.get('action_id')==entry.get('action_id') for e in selected):selected.append(entry)
+    view['action_history']=selected[-5:]
+    view['evaluation_gate']=rejection_view(payload.get('evaluation_gate',{}))
+    # Compute from the full ledger, not the selected model view.
+    view['_loop_gaps']=loop_gaps(payload)
+    view['_progress']=progress(payload)
+    return view
+
+
+def history_context(payload,compact=False,max_chars=HISTORY_VIEW_CHARS):
+    view=model_history_payload(payload)
+    result=json.loads(_history_context(view,compact))
+    result['loop_gaps']=view['_loop_gaps']
+    result['progress']=view['_progress']
+    result['latest_success']=[json.loads(_history_context(dict(view,action_history=[entry]),True))['actions'][-1] for entry in view['action_history'] if entry.get('state')=='done'][-1:]
+    # Latest gate A guidance is separate from the action tail.
+    rejected=[e for e in view['action_history'] if e.get('result',{}).get('state')=='rejected']
+    result['latest_action_rejection']=[{k:e.get(k) for k in ('request','result')} for e in rejected if not any(r.get('code')=='evaluation_required' for r in e.get('result',{}).get('reasons',[]))][-1:]
+    encode=lambda:json.dumps(result,ensure_ascii=False,separators=(',',':'))
+    for key in ('actions','index','hypotheses'):
+        if len(encode())<=max_chars:break
+        result[key]=[] if key=='actions' else {}
+    result['older_actions_omitted']=max(0,len(payload.get('action_history',[]))-len(result.get('actions',[])))
+    return encode()
+
+
+def _history_context(payload,compact=False):
     if payload.get('memory_mode')=='pull':
         recent=[]
         for entry in payload.get('action_history',[])[-2:]:
@@ -316,21 +449,45 @@ def history_context(payload,compact=False):
                 view['event_ids']=[r['id'] for r in result['events']]
                 if not compact:view['events']=[{k:v for k,v in r.items() if k in ('id','action','change','state')} for r in result['events']]
             recent.append({'action_id':entry['action_id'],'request':request,'state':entry['state'],'result':view})
-        return json.dumps({'job':payload.get('research_job'),'step':payload.get('research_calls',0),'phase':payload.get('research_phase'),'index':payload.get('memory_index',{}),'actions':recent,'redirect':payload.get('redirect','')},ensure_ascii=False,separators=(',',':'))
+        return json.dumps({'job':payload.get('research_job'),'step':payload.get('research_calls',0),'phase':payload.get('research_phase'),'index':payload.get('memory_index',{}),'actions':recent,'experiment_context':experiment_prompt_context(payload.get('experiment_context',{})),'evaluation_gate':payload.get('evaluation_gate',{}),'loop_gaps':loop_gaps(payload),'redirect':payload.get('redirect','')},ensure_ascii=False,separators=(',',':'))
     history=[]
     count=2 if compact else 4
     for entry in payload.get('action_history',[])[-count:]:
         result=entry.get('result',{})
-        safe={k:v for k,v in result.items() if k in ('state','error','detail','constraints','duplicate','completed','hypothesis','status','n','observed_probability','expected_probability','interval95','id','events','phase','original_step','pre_registered','required_samples','reasons','registered_target')}
+        safe={k:v for k,v in result.items() if k in ('state','error','detail','constraints','duplicate','completed','hypothesis','status','n','observed_probability','expected_probability','interval95','id','events','phase','original_step','pre_registered','required_samples','reasons','registered_target','repeated')}
         if compact:safe.pop('events',None)
         elif isinstance(safe.get('events'),list):safe['events']=[{k:v for k,v in row.items() if k in ('id','action','change','state')} for row in safe['events']]
-        history.append({k:entry[k] for k in ('action_id','step','state','request') if k in entry}|{'result':safe})
-    return json.dumps({'job':payload.get('research_job'),'step':payload.get('research_calls',0),'phase':payload.get('research_phase','observation'),'hypotheses':({k:v for k,v in payload.get('hypotheses',{}).items() if v in {h['id'] for h in payload.get('hypothesis_context',[])}} if compact else payload.get('hypotheses',{})),'progress':progress(payload),'actions':history,'experiment_context':experiment_prompt_context(payload.get('experiment_context',{})),'older_actions_omitted':max(0,len(payload.get('action_history',[]))-count),'redirect':payload.get('redirect','')},ensure_ascii=False,separators=(',',':'))
+        request={k:v for k,v in entry.get('request',{}).items() if k!='body'}
+        history.append({k:entry[k] for k in ('action_id','step','state') if k in entry}|{'request':request,'result':safe})
+    return json.dumps({'job':payload.get('research_job'),'step':payload.get('research_calls',0),'phase':payload.get('research_phase','observation'),'hypotheses':({k:v for k,v in payload.get('hypotheses',{}).items() if v in {h['id'] for h in payload.get('hypothesis_context',[])}} if compact else payload.get('hypotheses',{})),'progress':progress(payload),'actions':history,'experiment_context':experiment_prompt_context(payload.get('experiment_context',{})),'older_actions_omitted':max(0,len(payload.get('action_history',[]))-count),'evaluation_gate':payload.get('evaluation_gate',{}),'loop_gaps':loop_gaps(payload),'redirect':payload.get('redirect','')},ensure_ascii=False,separators=(',',':'))
 
 
 def made_progress(payload):
     p=progress(payload)
-    return any((p.get(k) or 0)>0 for k in ('new_evidence','hypotheses_evaluated','experiments','analysis_methods','candidates'))
+    if not ((p.get('experiments') or 0)>0 and (p.get('hypotheses_evaluated') or 0)>0):return False
+    history=payload.get('action_history',[])
+    experiments=[a['result'] for a in history if a.get('state')=='done' and a.get('request',{}).get('op')=='experiment' and a.get('result',{}).get('hypothesis') is not None and a.get('result',{}).get('completed',0)>0]
+    evaluations=[a['result'] for a in history if a.get('state')=='done' and a.get('request',{}).get('op')=='evaluate']
+    return any(e.get('hypothesis')==r.get('hypothesis') and r.get('experiment') in e.get('experiments',[]) and
+               bool(e.get('evidence')) and {x['id'] for x in r.get('events',[]) if x.get('state')=='complete'}<=set(e['evidence'])
+               for r in experiments for e in evaluations)
+
+
+def loop_gaps(payload):
+    """Procedural reminders only: never choose observations, keys or claims."""
+    history=payload.get('action_history',[])
+    experiments=[a['result'] for a in history if a.get('state')=='done' and a.get('request',{}).get('op')=='experiment' and a.get('result',{}).get('hypothesis') is not None and a.get('result',{}).get('completed',0)>0]
+    evaluations=[a['result'] for a in history if a.get('state')=='done' and a.get('request',{}).get('op')=='evaluate']
+    pending=[r['hypothesis'] for r in experiments if not any(e.get('hypothesis')==r['hypothesis'] and set(x['id'] for x in r.get('events',[]) if x.get('state')=='complete')<=set(e.get('evidence',[])) for e in evaluations)]
+    gaps=[]
+    if payload.get('mature_unevaluated'):gaps.append('成熟した未評価仮説（evaluateが未実行）：'+str(payload['mature_unevaluated'])+'。先にevaluate。全件の評価記録後に新規実験・仮説・claimの制限解除。')
+    missing=[int(k) for k,v in payload.get('preregistration_gate',{}).items() if not v.get('registered_after_rejection')]
+    if missing:gaps.append('事前登録不足で実験拒否：仮説ID '+str(sorted(missing))+'。findingsにactionとchange_probabilityを登録してから再要求する。既存IDに追加できない場合は新しいfindings.idで登録する。')
+    if not experiments:gaps.append('仮説IDに紐付く実機experimentが未完了。観測に基づき仮説と入力計画を自分で選ぶ。')
+    if pending:gaps.append('実験結果のevaluateが未実行：仮説ID '+str(sorted(set(pending)))+'。未登録・標本不足は保留として理由を保存し、支持・反証を作らない。')
+    if evaluations and not any(a.get('state')=='done' and a.get('request',{}).get('op')=='research_report' and a.get('result',{}).get('evaluation_ids') for a in history):
+        gaps.append('評価を含むresearch_reportが未生成。評価結果と未確認事項を報告する。')
+    return gaps
 
 
 def context_entry(entry,older=False):
@@ -411,7 +568,7 @@ def experiment_context(scientist,jid):
                 'registered_target':{'action':scientist.keys.index(claim['action']),'change_probability':claim['probability'],'after_id':claim['after_id']} if claim else None,
                 'matching_post_registration_samples':len(eligible),'missing_samples':max(0,16-len(eligible)),
                 'blocking_reasons':reasons,
-                'note':'現在Jobの集計であり評価結果ではない。未登録の過去経験は標本へ転用できない。evaluateは同じ仮説に紐づく全Jobを再検査する。'}
+                'note':'現在Jobの集計であり評価結果ではない。未登録の過去経験は標本へ転用できない。evaluateは現在Jobの同じ仮説に紐づく実験だけを検査する。'}
             result['hypotheses'].append(group)
     result['plans_remaining']=max(0,result['plan_limit']-result['plans_used'])
     result['inputs_remaining']=max(0,result['input_limit']-result['requested_inputs'])
