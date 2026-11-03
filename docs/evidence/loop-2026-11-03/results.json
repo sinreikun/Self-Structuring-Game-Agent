@@ -1,0 +1,164 @@
+{
+  "connection_status": "verified",
+  "scope": "This real-model, real-game session only; no game-goal achievement claim",
+  "session": "726ffdd132e64cc4857f8cbd73430a5e",
+  "job": "4cdeefdd5f83420cbf2ab111c7aafd2a",
+  "individual": "83033161627448e9b6f22eed693ea66d",
+  "verified_chain_count": 2,
+  "counts": {
+    "hypotheses_evaluated": 1,
+    "hypotheses_updated": 0,
+    "reports": 1
+  },
+  "job_outcome": "research_limit",
+  "job_limit": "calls",
+  "remaining_gaps": [],
+  "chains": [
+    {
+      "job": "4cdeefdd5f83420cbf2ab111c7aafd2a",
+      "session": "726ffdd132e64cc4857f8cbd73430a5e",
+      "observation_event": 8,
+      "hypothesis": 8,
+      "hypothesis_created": 1793662266.420617,
+      "experiment": "121352a29858252d03c9973b48b3078a",
+      "experiment_completed": 1793662267.3850486,
+      "events": [
+        9
+      ],
+      "evaluation": {
+        "evaluation_id": 1,
+        "evidence": [
+          9,
+          10
+        ],
+        "expected_probability": 0.8,
+        "experiments": [
+          "121352a29858252d03c9973b48b3078a",
+          "d0e7ebb96ca96a39523c4d587a6de23d"
+        ],
+        "hypothesis": 8,
+        "interval95": null,
+        "job": "4cdeefdd5f83420cbf2ab111c7aafd2a",
+        "limitation": "Image change reproducibility only; game meaning/causality unverified",
+        "n": 2,
+        "observed_probability": 0.0,
+        "pre_registered": false,
+        "previous_status": "inconclusive",
+        "reasons": [
+          {
+            "code": "not_preregistered",
+            "detail": "新しい仮説IDのfindingsにactionとchange_probabilityを先に登録し、その後に新しい実験を実行してください。既存結果へ事後登録はできません。"
+          },
+          {
+            "code": "insufficient_samples",
+            "detail": "完了経験は2件です。同じ登録済み仮説と入力で16件以上が必要です。"
+          }
+        ],
+        "registered_target": null,
+        "required_samples": 16,
+        "sessions": [
+          "726ffdd132e64cc4857f8cbd73430a5e"
+        ],
+        "status": "inconclusive"
+      },
+      "evaluation_created": 1793662298.290198,
+      "report": 1,
+      "report_created": 1793662355.1244211
+    },
+    {
+      "job": "4cdeefdd5f83420cbf2ab111c7aafd2a",
+      "session": "726ffdd132e64cc4857f8cbd73430a5e",
+      "observation_event": 8,
+      "hypothesis": 8,
+      "hypothesis_created": 1793662266.420617,
+      "experiment": "d0e7ebb96ca96a39523c4d587a6de23d",
+      "experiment_completed": 1793662287.2901251,
+      "events": [
+        10
+      ],
+      "evaluation": {
+        "evaluation_id": 1,
+        "evidence": [
+          9,
+          10
+        ],
+        "expected_probability": 0.8,
+        "experiments": [
+          "121352a29858252d03c9973b48b3078a",
+          "d0e7ebb96ca96a39523c4d587a6de23d"
+        ],
+        "hypothesis": 8,
+        "interval95": null,
+        "job": "4cdeefdd5f83420cbf2ab111c7aafd2a",
+        "limitation": "Image change reproducibility only; game meaning/causality unverified",
+        "n": 2,
+        "observed_probability": 0.0,
+        "pre_registered": false,
+        "previous_status": "inconclusive",
+        "reasons": [
+          {
+            "code": "not_preregistered",
+            "detail": "新しい仮説IDのfindingsにactionとchange_probabilityを先に登録し、その後に新しい実験を実行してください。既存結果へ事後登録はできません。"
+          },
+          {
+            "code": "insufficient_samples",
+            "detail": "完了経験は2件です。同じ登録済み仮説と入力で16件以上が必要です。"
+          }
+        ],
+        "registered_target": null,
+        "required_samples": 16,
+        "sessions": [
+          "726ffdd132e64cc4857f8cbd73430a5e"
+        ],
+        "status": "inconclusive"
+      },
+      "evaluation_created": 1793662298.290198,
+      "report": 1,
+      "report_created": 1793662355.1244211
+    }
+  ],
+  "source_files": {
+    "src\\selfstruct\\__init__.py": "5cbf8ac24c33a732142901b51b55390abd6bcb625853fddc32de9ad98233b993",
+    "src\\selfstruct\\__main__.py": "67b3806ee5fa29aa0934f0c5ec8f51e2e2f101ec57f2da76d3558b4df1d51451",
+    "src\\selfstruct\\activity.py": "a47e5f84bb4fed4b0a1b3e9c6a909d700c56e7e891a3faab01034d6225efdbe2",
+    "src\\selfstruct\\capabilities.py": "8af8501871ac082a6984bfc96d1ad8e253bb9af65ef9e5ba50d4477d860fec9b",
+    "src\\selfstruct\\config.py": "36e33ddfb9fc7fd2611190a8faabfe52a6473f68a54e51091598eb5255f4abb3",
+    "src\\selfstruct\\diagnostics.py": "471562ed4c91c92810b25ba413ed22c548e9c08efc34ff5fa2119b207e6b4640",
+    "src\\selfstruct\\engine.py": "03afb300d691f2fafa81c8493962093793fe80afa68321563e912f765c16bdae",
+    "src\\selfstruct\\evaluation.py": "5c8c4e034bee2381a525d2289edf33bbc7e6ca2f33737ab0201ab6932498fd8c",
+    "src\\selfstruct\\experiments.py": "2f3c901aea782457f8a96f2f1158282213f472e1510c56fbde2c4d84636c6343",
+    "src\\selfstruct\\gui.py": "15f74b2181ae608da907edfa6be242de921c38d7d8eeac708fe45452fb334284",
+    "src\\selfstruct\\gui_lifecycle.py": "af933a2e60308d5e7927ec6343eb3978b2f3bed9a706b890e08a53be56e2252d",
+    "src\\selfstruct\\individuals.py": "6d384012e9d44647b49221483b8de1539ab26ccc22da5f60f9062e541879de3b",
+    "src\\selfstruct\\inspection.py": "d1cc880343b8759b491d1054873ec44a3cf154a709947319778a9083d34b7b23",
+    "src\\selfstruct\\launch_runtime.py": "d0817752053578a15cf963c691156779df649c61cfe8aedeaa16826c300bf99a",
+    "src\\selfstruct\\launcher_smoke.py": "de4a2c88b74e2b8d0d06adb028ee2020d77b6600b9653db1e12b43cad968a141",
+    "src\\selfstruct\\layout.py": "3c81cb99fb7cd2904c88577f1003a97a8acb886481370c5b4bf7b943d2eba01a",
+    "src\\selfstruct\\management_gui.py": "07b0b673e01298588bc78078d765eac15b41e4c787f8998a168e4b8598eecaca",
+    "src\\selfstruct\\model_browser.py": "a6841403c1c8adb9e0775f66435e62046e880e9b7ade0473901c6164ba396c99",
+    "src\\selfstruct\\model_catalog.py": "23ec5eca810b5195ebe4cee37a661ac3c36a679a992f482ea5802cbea5605cc6",
+    "src\\selfstruct\\model_library.py": "5bfcd7366b664fd216a180007ed52c1941504b7d1ad2a338f4009a1859d398bc",
+    "src\\selfstruct\\model_vision.py": "043bc9d4af5d1c5abb3bba1b79a1c1fcf85d6acfa1ec3dbe48251fc941186622",
+    "src\\selfstruct\\owned_process.py": "239b6022234636a5baf833c0605289ed82b84ac07fac74fe2b34e32cc74da6ba",
+    "src\\selfstruct\\performance.py": "57083337e0fd9ff0f9f01b52e8b6027ead92757b4f93df8bc04303d513d750dd",
+    "src\\selfstruct\\presentation.py": "8422ea463f17b2bad6900317ce77b5ddc11982b913e79247569836572c8e97a7",
+    "src\\selfstruct\\process_picker.py": "6fadda0052386f1975e8cd62167c4164d3804f7927064e7d314e49abad3dffc0",
+    "src\\selfstruct\\processes.py": "0b52360ae88de31827645fc181ae3acace8414764fb80296c2dfe9662c26c619",
+    "src\\selfstruct\\release.py": "6bf51af86d31838bcbf7cb44463b723db30e10b136df63cd767d180705389d7a",
+    "src\\selfstruct\\research.py": "a50ef65ab2733c0dd753e91bbb4901e64a0e15741b382ae388b221ab0afc64cb",
+    "src\\selfstruct\\research_actions.py": "44afa0c9bf23ee746547d31655371633a30a65792ca0accd8d9c5d1be7d9fd4c",
+    "src\\selfstruct\\research_memory.py": "d634aed13a1474293a06ecadca2986b126f5e3157b62c274d4c32b69a9c70c0f",
+    "src\\selfstruct\\research_mission.py": "82424acb5a5af71867dd3ba0694cc066621eff62cf13ce06f9f35ea80e52620d",
+    "src\\selfstruct\\research_schema.py": "fde1be3d5d99f7cf1852f873e1dee52ef498c757654f9d17a64e4721e3cecdb5",
+    "src\\selfstruct\\resources.py": "6b2af64f943c85e67e7e4d67b359f45a196c329356aecdd84be5641857ff2f01",
+    "src\\selfstruct\\sandbox.py": "81009f9833d081ffb6623419831ca001e22293fb26fe3e538661b43e6fcd74b6",
+    "src\\selfstruct\\smoke.py": "ffd6b041fdf8272244870fd12502234477144675052b913bbd5a22a31a2c14cc",
+    "src\\selfstruct\\store.py": "b6aadd5af051ae73587411f1b394b487afe5ae96ad913555b99003aebf4a5513",
+    "src\\selfstruct\\update.py": "263d14cc1068f5d6cffd983fdc8aaf635a848a3f76390a34c8409cecfd3abac9",
+    "src\\selfstruct\\vision.py": "f0e7902ff34019804f985a932413790c562e40efac17a6d57a59e5a1d10a23d4",
+    "src\\selfstruct\\visual_libraries.py": "9a7300ebca557072accc31aff245d1a18757f01a38808e27c7de3e000384fa62",
+    "src\\selfstruct\\windows.py": "e50324cfe5b56510bd469d060a570f525effc58ece83197ecb7c504494dc8272"
+  },
+  "scripted_model_decisions": false,
+  "human_intervention_after_start": false
+}
