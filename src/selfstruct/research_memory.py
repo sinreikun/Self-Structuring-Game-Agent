@@ -252,7 +252,17 @@ def report(scientist,jid,payload,request,*,producer='llm'):
 def finish_report(scientist,jid,payload):
     """Close the factual handoff even when the model spends its budget elsewhere."""
     store=scientist.store
+    # Reuse the Scientist maturity gate and evaluator; never create claims/evidence.
     with store.lock:
+        experiments=getattr(scientist,'experiments',None)
+        for pending in experiments.mature_unevaluated(jid) if experiments is not None else []:
+            result=experiments.evaluate(pending['hypothesis'],job=jid,
+                executor='host_statistical_gate',automatic=True)
+            payload.setdefault('terminal_evaluations',[]).append(result)
+            progress=payload.setdefault('progress',{})
+            progress['hypotheses_evaluated']=progress.get('hypotheses_evaluated',0)+1
+            if result['status'] in ('supported','refuted') and result['status']!=result['previous_status']:
+                progress['hypotheses_updated']=progress.get('hypotheses_updated',0)+1
         ids={r['id'] for r in store.db.execute('SELECT id,result FROM research_evaluations WHERE job=?',(jid,)) if json.loads(r['result']).get('n',0)>0}
         if not ids:return
         for row in store.db.execute('SELECT evaluations FROM research_reports WHERE job=?',(jid,)):
@@ -278,7 +288,7 @@ def render_report(doc):
     lines.append('\n評価結果（保存時点の実測記録）')
     if not evaluations:lines.append('- 評価未実行。接続未確認。')
     for e in evaluations:
-        lines.append('- 仮説 '+str(e['hypothesis'])+'：'+e['status']+' ／ 評価 '+str(e['evaluation_id'])+' ／ 実験 '+str(e['experiments'])+' ／ 根拠 '+str(e['evidence'])+' ／ n='+str(e['n']))
+        lines.append('- 仮説 '+str(e['hypothesis'])+'：'+e['status']+' ／ 評価 '+str(e['evaluation_id'])+' ／ 実験 '+str(e['experiments'])+' ／ 根拠 '+str(e['evidence'])+' ／ n='+str(e['n'])+' ／ executor='+e.get('executor','scientist')+' ／ automatic='+str(e.get('automatic',False)))
         lines.append('  判定根拠：'+encoded({'reasons':e['reasons'],'interval95':e['interval95'],'expected_probability':e['expected_probability'],'observed_probability':e['observed_probability'],'limitation':e['limitation']}))
     lines+=['\n未確認事項',*('- '+x for x in doc['unknowns']),'\n次の方針',*('- '+x for x in doc['next_steps'])]
     return '\n'.join(lines)

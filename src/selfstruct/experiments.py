@@ -173,7 +173,7 @@ class Experiments:
         pending=self.mature_unevaluated(job)
         if pending:raise EvaluationRequired(pending)
 
-    def evaluate(self,hypothesis,probability=None,job=None):
+    def evaluate(self,hypothesis,probability=None,job=None,*,executor="scientist",automatic=False):
         if type(hypothesis)!=int or (probability is not None and (type(probability) not in (float,int) or not math.isfinite(probability) or not 0<=probability<=1)):raise ValueError('Expected hypothesis ID and optional change_probability')
         with self.store.lock,self.store.db:
             hypothesis_row=self.store.db.execute("SELECT * FROM knowledge WHERE id=? AND kind='hypothesis'",(hypothesis,)).fetchone()
@@ -199,7 +199,7 @@ class Experiments:
                 status='supported' if interval[0]<=probability<=interval[1] else 'refuted'
             evidence=list(dict.fromkeys(json.loads(hypothesis_row['evidence'])+[r['id'] for r in rows]))
             self.store.db.execute('UPDATE knowledge SET validation=?,evidence=? WHERE id=?',(status,json.dumps(evidence),hypothesis))
-            result={'job':job,'hypothesis':hypothesis,'status':status,'n':n,'observed_probability':p,'expected_probability':probability,'interval95':interval,'pre_registered':registered,'required_samples':16,'reasons':reasons,'registered_target':{'action':self.keys.index(claim['action']),'change_probability':claim['probability'],'after_id':claim['after_id']} if claim else None,'experiments':experiment_ids,'sessions':sorted({r['session'] for r in rows}),'evidence':[r['id'] for r in rows],'previous_status':hypothesis_row['validation'],'limitation':'Image change reproducibility only; game meaning/causality unverified'}
+            result={'executor':executor,'automatic':automatic,'job':job,'hypothesis':hypothesis,'status':status,'n':n,'observed_probability':p,'expected_probability':probability,'interval95':interval,'pre_registered':registered,'required_samples':16,'reasons':reasons,'registered_target':{'action':self.keys.index(claim['action']),'change_probability':claim['probability'],'after_id':claim['after_id']} if claim else None,'experiments':experiment_ids,'sessions':sorted({r['session'] for r in rows}),'evidence':[r['id'] for r in rows],'previous_status':hypothesis_row['validation'],'limitation':'Image change reproducibility only; game meaning/causality unverified'}
             result['evaluation_id']=self.store.db.execute('INSERT INTO research_evaluations(job,hypothesis,result,created) VALUES(?,?,?,?)',(job,hypothesis,json.dumps(result),time.time())).lastrowid
         self.activity.record('EVAL',f'job={job} evaluation={result["evaluation_id"]} hypothesis={hypothesis} {status} n={n}')
         return result
