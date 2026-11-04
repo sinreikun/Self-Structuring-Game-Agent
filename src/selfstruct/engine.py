@@ -84,7 +84,8 @@ class Controller:
         except Exception:
             self.instance_lock.close()
             raise
-        self.store = Store(self.experiment, config.quota_bytes)
+        self.store = Store(self.experiment, config.quota_bytes, record_locks=True)
+        self.diagnostic_lock = self.store.lock.output_lock
         self.store.account_root = self.root
         self.revisions = Revisions(self.experiment / "agents" / "revisions")
         self.agent = self.revisions.load()

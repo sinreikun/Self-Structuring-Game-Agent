@@ -9,7 +9,9 @@ from selfstruct.store import CapacityError
 
 
 def records(c):
-    return [json.loads(line) for line in (c.experiment/'host/diagnostics.jsonl').read_text(encoding='utf-8').splitlines()]
+    with c.diagnostic_lock:
+        rows = [json.loads(line) for line in (c.experiment/'host/diagnostics.jsonl').read_text(encoding='utf-8').splitlines()]
+    return [r for r in rows if not r['kind'].startswith('store_lock_')]
 
 
 @pytest.fixture

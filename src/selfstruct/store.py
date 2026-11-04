@@ -25,11 +25,13 @@ VALIDATION = {"unknown", "hypothesis", "supported", "reproduced", "disputed", "r
 
 
 class Store:
-    def __init__(self, root: Path, quota: int):
+    def __init__(self, root: Path, quota: int, *, record_locks: bool = False):
         self.root = root
         self.account_root = root
         self.quota = quota
-        self.lock = threading.RLock()
+        from .lock_diagnostics import ObservedRLock
+        self.lock = (ObservedRLock(root / 'host' / 'diagnostics.jsonl')
+                     if record_locks else threading.RLock())
         self._usage_bytes = 0
         self._usage_at = 0.
         self._tracked_db_bytes = 0.
@@ -506,3 +508,5 @@ class Store:
     def close(self) -> None:
         with self.lock:
             self.db.close()
+        if hasattr(self.lock, 'flush'):
+            self.lock.flush()
