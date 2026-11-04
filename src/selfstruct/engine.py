@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
+import sys
+import traceback
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import queue
@@ -59,6 +62,10 @@ class Controller:
         self.started = time.monotonic()
         self.steps = 0
         self.last_progress = time.monotonic()
+        self.step_stage = None
+        self.step_sequence = 0
+        self.diagnostic_lock = threading.Lock()
+        self.pause_record_lock = threading.Lock()
         self.stopped = threading.Event()
         self.paused = threading.Event()
         self.cancel_input = threading.Event()
@@ -193,13 +200,60 @@ class Controller:
         self.thread.start()
         threading.Thread(target=self.watchdog, name="watchdog", daemon=True).start()
 
-    def pause(self):
-        self.paused.set()
-        self.cancel_input.set()
-        if self.game:
-            self.game.release()
-        self.status = "一時停止中"
-        self.activity.update(phase=self.status)
+    def diagnostic(self, kind, **data):
+        """Host evidence only: never acquire Store/Scientist locks or update progress."""
+        try:
+            record = dict(kind=kind, wall_time=time.time(), monotonic=time.monotonic(),
+                          thread=threading.current_thread().name, session=self.session,
+                          step=self.step_sequence, stage=self.step_stage,
+                          job_id=getattr(self.scientist, 'current_job', None),
+                          experiment_id=self.current_experiment, **data)
+            with self.diagnostic_lock:
+                with (self.experiment / 'host' / 'diagnostics.jsonl').open('a', encoding='utf-8') as stream:
+                    stream.write(json.dumps(record, ensure_ascii=False) + '\n')
+        except Exception:
+            log.exception('Diagnostic evidence could not be saved')
+
+    @contextmanager
+    def timed_stage(self, name):
+        previous = self.step_stage
+        self.step_stage = name
+        started = time.monotonic()
+        self.diagnostic('stage_start')
+        outcome = 'complete'
+        try:
+            yield
+        except BaseException:
+            outcome = 'error'
+            raise
+        finally:
+            self.diagnostic('stage_end', duration=time.monotonic()-started, outcome=outcome)
+            self.step_stage = previous
+
+    def pause(self, reason='explicit'):
+        with self.pause_record_lock:
+            first = not self.paused.is_set()
+            self.paused.set()
+            self.cancel_input.set()
+            at = time.time()
+            mono = time.monotonic()
+            stage = self.step_stage
+            age = mono-self.last_progress
+            job = getattr(self.scientist, "current_job", None)
+            experiment = self.current_experiment
+            frame = sys._current_frames().get(self.thread.ident) if self.thread else None
+            stack = traceback.format_stack(frame) if first and frame else []
+        try:
+            if self.game:
+                self.game.release()
+            self.status = "一時停止中"
+            self.activity.update(phase=self.status)
+        finally:
+            if first:
+                self.diagnostic('pause', reason=reason, flag_wall_time=at,
+                                flag_monotonic=mono, progress_age=age, pause_job_id=job, pause_experiment_id=experiment,
+                                pause_stage=stage,
+                                io_stack=stack)
 
     def stop(self):
         self.stopped.set()
@@ -255,7 +309,7 @@ class Controller:
                     if time.monotonic() - self.last_progress > 5:
                         self.game.release()
                     if time.monotonic() - self.last_progress > 30 and not self.paused.is_set() and not self.recovering.is_set() and self.activity.snapshot().connection=="接続済み":
-                        self.pause()
+                        self.pause("watchdog")
                         self.notify("観測が応答しないため入力を解放しました。接続状態を確認してください。")
             except Exception:
                 log.exception("Watchdog release failed")
@@ -301,7 +355,7 @@ class Controller:
                     self.status = str(exc)
                     self.stopped.wait(.25)
                 except CapacityError as exc:
-                    self.pause()
+                    self.pause("capacity")
                     self.notify(str(exc))
                 except GameUnavailable:
                     log.exception("Game connection lost")
@@ -386,113 +440,140 @@ class Controller:
         finally:self.recovering.clear()
 
     def step(self) -> float:
+        self.step_sequence += 1
+        with self.timed_stage('step'):
+            return self._step()
+
+    def _step(self) -> float:
         if self.halted_step():return 0
         started = time.perf_counter()
-        if self.revisions.active != self.agent_id:
-            self.agent = self.revisions.load()
-            self.agent_id = self.revisions.active
-            self.generation_number=self.store.revision_number(self.agent_id)
-            self.confirm_steps = 0
-            self._restore_learning()
-        before = self.game.capture()
-        # Host observation on the sole I/O thread; Player policy is unchanged.
-        from . import transitions
-        with self.store.lock:
-            jobs=[r[0] for r in self.store.db.execute("SELECT id FROM jobs WHERE kind='research' AND state IN ('pending','running')")]
-            queued=self.store.db.execute("SELECT job FROM research_experiments WHERE state IN ('queued','running') ORDER BY created LIMIT 1").fetchone()
-            state,base=transitions.baseline_for(self.store,before)
-        new_jobs=[j for j in jobs if j not in self.baseline_jobs]
-        if new_jobs or (queued and state is not None and base is None):
-            frames=[before];self.game.release()
-            for _ in range(4):
-                if self.cancel_input.wait(.5) or self.halted_step():return 0
-                frames.append(self.game.capture())
+        with self.timed_stage("revision"):
+            if self.revisions.active != self.agent_id:
+                self.agent = self.revisions.load()
+                self.agent_id = self.revisions.active
+                self.generation_number=self.store.revision_number(self.agent_id)
+                self.confirm_steps = 0
+                self._restore_learning()
+        with self.timed_stage("capture_before"):
+            before = self.game.capture()
+        with self.timed_stage("baseline"):
+            # Host observation on the sole I/O thread; Player policy is unchanged.
+            from . import transitions
             with self.store.lock:
-                baseline=transitions.save_baseline(self.store,new_jobs[0] if new_jobs else queued[0],frames)
-            self.baseline_jobs.update(new_jobs)
-            self.activity.record('BASELINE',f'id={baseline} frames=5 no_input_seconds=2')
-            before=frames[-1]
-        with self.store.lock:
-            _,base=transitions.baseline_for(self.store,before)
-        if self.halted_step():return 0
-        self.activity.record("OBS",f"frame={self.steps} region=full")
-        feature, raw = features(before)
-        self.agent.pixels(raw)
-        trial = self.scientist.trial_agent(self.steps)
-        revision, agent = trial if trial else (self.agent_id, self.agent)
-        agent.pixels(raw)
-        self.activity.update(phase="観測中",revision=revision)
-        with self.visual_condition:
-            self.visual_frame = before.copy()
-            self.visual_version += 1
-            self.visual_condition.notify_all()
-        def observe(request):
-            # A fresh call here is already on the sole game-I/O thread.
-            frame = before
-            if request.get("fresh"):
-                frame = self.game.capture()
-                request = {**request, "fresh": False}
-            return self.visual.eyes.query(request, current=frame)[0]
-        agent.requests(self.files, lambda n:self.store.reserve(n,critical=False), observe, lambda request:self.dispatch(request,revision))
-        if "research_due" in agent.exports:
-            self.scientist.automatic = bool(agent.call("research_due", self.steps))
-        index, duration, wait, pred = agent.action(feature, len(self.config.keys))
-        experiment=self.experiments.next(before) if not trial and not self.scientist.live and not self.revisions.state['trial'] else None
-        self.current_experiment=experiment['id'] if experiment else None
-        if experiment:
-            plan=experiment['plan'];index=plan['action'];duration=plan['duration']/1000;wait=plan['wait']/1000
-            raw_prediction=agent.call('predict',feature,index);pred=-1 if raw_prediction<0 else raw_prediction/1000
-            self.activity.record('EXPERIMENT',f"execute job={experiment['job']} id={experiment['id']} action={index}")
-        if self.halted_step():return 0
-        self.activity.update(phase="入力中", action=self.config.keys[index],duration=duration,prediction=pred,
-                             next="入力後の画面を観測します")
-        self.activity.record("PRED",f"p(change)={pred:.4f}")
-        before_hash = self.store.image(before,critical=time.time()<self.protect_until or bool(self.scientist.live) or self.revisions.state["trial"])
-        eid = self.store.begin(self.session, before_hash, self.config.keys[index], duration,
-                               self.game.generation, revision, feature, pred)
-        if experiment and not self.experiments.link(experiment['id'],eid):
-            self.store.interrupt(eid);self.current_experiment=None;return 0
-        if self.halted_step(eid):return 0
-        try:
-            self.game.act(self.config.keys[index], duration, self.cancel_input, lambda timestamp: self.record_sent(eid,timestamp,self.config.keys[index],duration))
-        except BaseException:
-            self.store.interrupt(eid)
-            if self.current_experiment:self.experiments.finish(self.current_experiment,'interrupted');self.current_experiment=None
-            raise
-        if self.halted_step(eid):return 0
-        self.cancel_input.wait(wait)
-        if self.halted_step(eid):return 0
-        after_image = self.game.capture()
-        if self.halted_step(eid):return 0
-        after, after_raw = features(after_image)
-        after_hash = self.store.image(after_image,critical=time.time()<self.protect_until or bool(self.scientist.live) or self.revisions.state["trial"])
-        change = difference(before, after_image)
-        self.store.finish(eid, after_hash, change, time.perf_counter() - started)
-        transitions.grow(self.store,eid,'before','experiment' if experiment else 'observation')
-        transitions.grow(self.store,eid,'after','experiment' if experiment else 'observation')
-        if experiment and base is not None:transitions.correct(self.store,eid,base)
-        if experiment:self.experiments.completed(experiment['id']);self.current_experiment=None
-        self.activity.record("DIFF",f"score={change:.4f}")
-        self.activity.record("STORE",f"event={eid}")
-        if time.time()<self.protect_until:self.store.pin([eid],"error-after")
-        self.activity.update(phase="結果を確認中",change=change,last_observed=time.time(),next="次の入力と予測を選びます")
-        self.activity.emit("change" if change>.01 else "unchanged")
-        self.agent.pixels(after_raw, 1024)
-        if not self.scientist.live:
-            self.agent.call("learn", feature, index, after, int(change > .01))
-            self.activity.record("LEARN",f"feature={feature}")
-        self.scientist.trial_result({"id": eid, "action": self.config.keys[index], "feature": feature, "change": change,"arm":"agent" if trial else "base","cost":time.perf_counter()-started}, raw, after_raw, after)
-        self.latest_before, self.latest = before, after_image
-        self.steps += 1
-        self.last_eid = eid
-        self.confirm_steps += 1
-        if self.revisions.state["trial"] and self.confirm_steps >= 64:
-            self.revisions.confirm()
-        if self.steps % 64 == 0:
-            self.checkpoint()
-        self.last_progress = time.monotonic()
-        self.scientist.tick()
-        return change
+                jobs=[r[0] for r in self.store.db.execute("SELECT id FROM jobs WHERE kind='research' AND state IN ('pending','running')")]
+                queued=self.store.db.execute("SELECT job FROM research_experiments WHERE state IN ('queued','running') ORDER BY created LIMIT 1").fetchone()
+                state,base=transitions.baseline_for(self.store,before)
+            new_jobs=[j for j in jobs if j not in self.baseline_jobs]
+            if new_jobs or (queued and state is not None and base is None):
+                frames=[before];self.game.release()
+                for _ in range(4):
+                    if self.cancel_input.wait(.5) or self.halted_step():return 0
+                    frames.append(self.game.capture())
+                with self.store.lock:
+                    baseline=transitions.save_baseline(self.store,new_jobs[0] if new_jobs else queued[0],frames)
+                self.baseline_jobs.update(new_jobs)
+                self.activity.record('BASELINE',f'id={baseline} frames=5 no_input_seconds=2')
+                before=frames[-1]
+            with self.store.lock:
+                _,base=transitions.baseline_for(self.store,before)
+            if self.halted_step():return 0
+        with self.timed_stage("features_trial_agent"):
+            self.activity.record("OBS",f"frame={self.steps} region=full")
+            feature, raw = features(before)
+            self.agent.pixels(raw)
+            trial = self.scientist.trial_agent(self.steps)
+            revision, agent = trial if trial else (self.agent_id, self.agent)
+            agent.pixels(raw)
+            self.activity.update(phase="観測中",revision=revision)
+            with self.visual_condition:
+                self.visual_frame = before.copy()
+                self.visual_version += 1
+                self.visual_condition.notify_all()
+            def observe(request):
+                # A fresh call here is already on the sole game-I/O thread.
+                frame = before
+                if request.get("fresh"):
+                    frame = self.game.capture()
+                    request = {**request, "fresh": False}
+                return self.visual.eyes.query(request, current=frame)[0]
+        with self.timed_stage("policy"):
+            agent.requests(self.files, lambda n:self.store.reserve(n,critical=False), observe, lambda request:self.dispatch(request,revision))
+            if "research_due" in agent.exports:
+                self.scientist.automatic = bool(agent.call("research_due", self.steps))
+            index, duration, wait, pred = agent.action(feature, len(self.config.keys))
+            experiment=self.experiments.next(before) if not trial and not self.scientist.live and not self.revisions.state['trial'] else None
+            self.current_experiment=experiment['id'] if experiment else None
+            if experiment:
+                plan=experiment['plan'];index=plan['action'];duration=plan['duration']/1000;wait=plan['wait']/1000
+                raw_prediction=agent.call('predict',feature,index);pred=-1 if raw_prediction<0 else raw_prediction/1000
+                self.activity.record('EXPERIMENT',f"execute job={experiment['job']} id={experiment['id']} action={index}")
+            if self.halted_step():return 0
+            self.activity.update(phase="入力中", action=self.config.keys[index],duration=duration,prediction=pred,
+                                 next="入力後の画面を観測します")
+            self.activity.record("PRED",f"p(change)={pred:.4f}")
+        with self.timed_stage("image_before"):
+            before_hash = self.store.image(before,critical=time.time()<self.protect_until or bool(self.scientist.live) or self.revisions.state["trial"])
+        with self.timed_stage("store_begin"):
+            eid = self.store.begin(self.session, before_hash, self.config.keys[index], duration,
+                                   self.game.generation, revision, feature, pred)
+            if experiment and not self.experiments.link(experiment['id'],eid):
+                self.store.interrupt(eid);self.current_experiment=None;return 0
+            if self.halted_step(eid):return 0
+        with self.timed_stage("act"):
+            try:
+                self.game.act(self.config.keys[index], duration, self.cancel_input, lambda timestamp: self.record_sent(eid,timestamp,self.config.keys[index],duration))
+            except BaseException:
+                self.store.interrupt(eid)
+                if self.current_experiment:self.experiments.finish(self.current_experiment,'interrupted');self.current_experiment=None
+                raise
+            if self.halted_step(eid):return 0
+        with self.timed_stage("wait"):
+            self.cancel_input.wait(wait)
+            if self.halted_step(eid):return 0
+        with self.timed_stage("capture_after"):
+            after_image = self.game.capture()
+            if self.halted_step(eid):return 0
+        with self.timed_stage("features_after"):
+            after, after_raw = features(after_image)
+        with self.timed_stage("image_after"):
+            after_hash = self.store.image(after_image,critical=time.time()<self.protect_until or bool(self.scientist.live) or self.revisions.state["trial"])
+        with self.timed_stage("difference"):
+            change = difference(before, after_image)
+        with self.timed_stage("store_finish"):
+            self.store.finish(eid, after_hash, change, time.perf_counter() - started)
+        with self.timed_stage("grow_before"):
+            transitions.grow(self.store,eid,'before','experiment' if experiment else 'observation')
+        with self.timed_stage("grow_after"):
+            transitions.grow(self.store,eid,'after','experiment' if experiment else 'observation')
+        with self.timed_stage("experiment_result"):
+            if experiment and base is not None:transitions.correct(self.store,eid,base)
+            if experiment:self.experiments.completed(experiment['id']);self.current_experiment=None
+        with self.timed_stage("diff_store"):
+            self.activity.record("DIFF",f"score={change:.4f}")
+            self.activity.record("STORE",f"event={eid}")
+            if time.time()<self.protect_until:self.store.pin([eid],"error-after")
+            self.activity.update(phase="結果を確認中",change=change,last_observed=time.time(),next="次の入力と予測を選びます")
+            self.activity.emit("change" if change>.01 else "unchanged")
+        with self.timed_stage("learn"):
+            self.agent.pixels(after_raw, 1024)
+            if not self.scientist.live:
+                self.agent.call("learn", feature, index, after, int(change > .01))
+                self.activity.record("LEARN",f"feature={feature}")
+        with self.timed_stage("trial_result"):
+            self.scientist.trial_result({"id": eid, "action": self.config.keys[index], "feature": feature, "change": change,"arm":"agent" if trial else "base","cost":time.perf_counter()-started}, raw, after_raw, after)
+        with self.timed_stage("finalize"):
+            self.latest_before, self.latest = before, after_image
+            self.steps += 1
+            self.last_eid = eid
+            self.confirm_steps += 1
+            if self.revisions.state["trial"] and self.confirm_steps >= 64:
+                self.revisions.confirm()
+            if self.steps % 64 == 0:
+                self.checkpoint()
+            self.last_progress = time.monotonic()
+            self.scientist.tick()
+            return change
+
 
     def current_visual_frame(self):
         with self.visual_lock:
