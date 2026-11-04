@@ -10,3 +10,4 @@ dist/
 # Publisher keys belong outside the checkout.
 *.pem
 *.key
+.codegraph/
