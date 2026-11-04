@@ -208,6 +208,7 @@ def overview(scientist,jid,payload):
             'visual_limits':{'max_pixels':MAX_PIXELS,'max_values_per_request':MAX_VALUES},
             'research_budget':{'calls_including_this_turn':max(0,MAX_CALLS-payload.get('research_calls',0)),'actions_remaining':max(0,MAX_ACTIONS-action_budget_used(payload))},'seed_experience_ids':[r['id'] for r in payload.get('research_rows',[])[-3:]],
             'active_hypotheses':active,
+            'state_transitions':summary.get('state_transitions',{}),
             'continuation':{'recent_notes':recent_notes,'previous_research':prior,'note_status':'Unverified working notes; retrieve only needed records and compare with current observations/API constraints'},
             'input_feedback':input_feedback(payload),
             'current_target_goal':goal_view,
@@ -231,7 +232,7 @@ def report(scientist,jid,payload,request,*,producer='llm'):
         pending=[];linked=[]
         for experiment in completed:
             events={r['id'] for r in experiment.get('events',[]) if r.get('state')=='complete'}
-            matches=[e for e in evaluations if e['hypothesis']==experiment['hypothesis'] and experiment['experiment'] in e.get('experiments',[]) and events<=set(e['evidence'])]
+            matches=[e for e in evaluations if e['hypothesis']==experiment['hypothesis'] and experiment['experiment'] in e.get('experiments',[]) and (events<=set(e['evidence']) or e.get('claim_type')=='transition')]
             if matches:linked.append(experiment)
             else:pending.append({'hypothesis':experiment['hypothesis'],'experiment':experiment['experiment'],'evidence':sorted(events)})
         if completed and not linked:

@@ -100,19 +100,22 @@ def test_model_pulls_memory_then_eyes_experiment_evaluation_and_persistent_note(
             if n==5:
                 assert 'similarity' in prompt
                 return json.dumps({'findings':[{'id':'r5_1','text':'同じ入力後の画像差分の再現性のみを検証する','evidence':[eid,older],'action':1,'change_probability':1}],
-                    'actions':[{'op':'experiment','hypothesis':'r5_1','action':1,'duration':10,'wait':10,'repeat':8} for _ in range(2)]})
+                    'actions':[{'op':'observe','event':eid,'output':'statistics'}]})
             if n==6:
+                return json.dumps({
+                    'actions':[{'op':'experiment','hypothesis':'r5_1','claim':{'type':'change_rate','probability':1},'action':1,'duration':10,'wait':10,'repeat':8} for _ in range(2)]})
+            if n==7:
                 assert 'event_ids' in prompt and '"completed":8' in prompt
                 return json.dumps({'actions':[{'op':'evaluate','hypothesis':'r5_1','change_probability':1}]})
-            if n==7:
+            if n==8:
                 assert '"status":"supported"' in prompt
                 return json.dumps({'actions':[{'op':'memory_note','title':'研究を続けるための未確認事項','body':'画像変化の再現性は評価済み。ゲーム内の意味と有効な能力は未確認。','evidence':[eid,older]}]})
-            if n==8:
+            if n==9:
                 assert '"status":"saved"' in prompt
                 return json.dumps({'actions':[{'op':'research_report','title':'対象の目的を理解するための途中結果','target_goal':'未確認','goal_status':'unknown','goal_evidence':[],
                     'findings':[{'text':'同じ入力に画像差分が再現する統計結果を得た。対象の目的を達成した証拠ではない。','status':'observation','evidence':[eid,older]}],
                     'unknowns':['対象で達成すべき目的と画像の意味は未確認'],'next_steps':['目的に関する表示を自分で観測する']}]})
-            assert n==9 and '"status":"saved"' in prompt
+            assert n==10 and '"status":"saved"' in prompt
             return '{"findings":[],"actions":[],"wat":""}'
     client=Client();client.vision=vision;c.scientist.client=client;errors=[]
     def run():
@@ -123,7 +126,7 @@ def test_model_pulls_memory_then_eyes_experiment_evaluation_and_persistent_note(
         while worker.is_alive() and time.monotonic()<deadline:c.step();time.sleep(.005)
         worker.join(1);assert not worker.is_alive() and not errors,errors
         final=json.loads(c.store.get_job(job)['payload'])
-        assert client.calls==9 and final['memory_mode']=='pull' and not final.get('initial_visual_evidence')
+        assert client.calls==10 and final['memory_mode']=='pull' and not final.get('initial_visual_evidence')
         assert final['progress']['memory_reads']==1 and final['progress']['memory_searches']==1
         assert final['progress']['experiments']==2 and final['progress']['hypotheses_evaluated']==1
         assert final['progress']['reports']==1 and '目的' in c.store.note_rows('研究結果',1)[0]['text']
