@@ -47,6 +47,8 @@ def test_watchdog_thresholds(controller,monkeypatch,age,connected,recovering,pau
     if recovering:c.recovering.set()
     released=[];c.game.release=lambda:released.append(True)
     c.last_progress=100
+    c.active_stage=("capture_before",100)
+    c.step_stage="capture_before"
     monkeypatch.setattr(engine.time,'monotonic',lambda:100+age)
     calls=[]
     monkeypatch.setattr(c.stopped,'wait',lambda _:bool(calls) or calls.append(True) or False)
@@ -93,3 +95,75 @@ def test_pause_records_active_stage_and_io_stack(controller):
     assert r['pause_stage']=='store_finish' and any('test_pause_records' in line for line in r['io_stack'])
     c.thread=None
 
+
+
+def watchdog_once(c, monkeypatch):
+    calls=[]
+    monkeypatch.setattr(c.stopped,'wait',lambda _:bool(calls) or calls.append(True) or False)
+    c.watchdog()
+
+
+def test_completed_stages_allow_long_step(controller,monkeypatch):
+    from selfstruct import engine
+    c=controller;clock=[100.]
+    c.activity.update(connection='接続済み')
+    monkeypatch.setattr(engine.time,'monotonic',lambda:clock[0])
+    with c.timed_stage('step'):
+        for name in ('capture_before','store_finish','learn'):
+            with c.timed_stage(name):
+                clock[0]+=20
+                watchdog_once(c,monkeypatch)
+                assert not c.paused.is_set()
+            assert c.last_progress==clock[0]
+        assert clock[0]==160
+        watchdog_once(c,monkeypatch)
+        assert not c.paused.is_set()
+    clock[0]+=60
+    watchdog_once(c,monkeypatch)
+    assert not c.paused.is_set() and c.active_stage is None
+
+
+def test_unreturned_stage_records_timeout(controller,monkeypatch):
+    from selfstruct import engine
+    c=controller;clock=[100.]
+    c.activity.update(connection='接続済み');c.last_progress=100
+    c.scientist.current_job='running-research'
+    monkeypatch.setattr(engine.time,'monotonic',lambda:clock[0])
+    with c.timed_stage('capture_after'):
+        clock[0]=130;watchdog_once(c,monkeypatch)
+        assert not c.paused.is_set()
+        clock[0]=130.001;watchdog_once(c,monkeypatch)
+        assert c.paused.is_set()
+    r=next(r for r in records(c) if r['kind']=='pause')
+    assert r['reason']=='watchdog' and r['pause_stage']=='capture_after'
+    assert r['active_stage']==['capture_after',100]
+
+
+def test_baseline_internal_completions(controller,monkeypatch):
+    from selfstruct import engine
+    c=controller;clock=[100.];captures=[]
+    c.activity.update(connection='接続済み')
+    c.store.job('research',{})
+    original=c.game.capture
+    monkeypatch.setattr(engine.time,'monotonic',lambda:clock[0])
+    def capture():
+        captures.append(c.last_progress)
+        clock[0]+=10
+        watchdog_once(c,monkeypatch)
+        assert not c.paused.is_set()
+        return original()
+    monkeypatch.setattr(c.game,'capture',capture)
+    c.step()
+    assert len(captures)==6 and captures[4]>captures[1]
+    rows=[r for r in records(c) if r['kind']=='stage_end' and r['stage']=='baseline_capture']
+    assert len(rows)==4 and all(r['last_progress']==r['monotonic'] for r in rows)
+    assert not c.paused.is_set()
+
+
+def test_failed_stage_is_not_progress(controller,monkeypatch):
+    from selfstruct import engine
+    c=controller;c.last_progress=100
+    monkeypatch.setattr(engine.time,'monotonic',lambda:150)
+    with pytest.raises(ValueError),c.timed_stage('capture_before'):
+        raise ValueError('no response')
+    assert c.last_progress==100 and c.active_stage is None

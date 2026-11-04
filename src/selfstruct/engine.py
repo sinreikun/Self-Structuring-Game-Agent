@@ -62,6 +62,8 @@ class Controller:
         self.started = time.monotonic()
         self.steps = 0
         self.last_progress = time.monotonic()
+        self.progress_lock = threading.RLock()
+        self.active_stage = None
         self.step_stage = None
         self.step_sequence = 0
         self.diagnostic_lock = threading.Lock()
@@ -205,7 +207,7 @@ class Controller:
         try:
             record = dict(kind=kind, wall_time=time.time(), monotonic=time.monotonic(),
                           thread=threading.current_thread().name, session=self.session,
-                          step=self.step_sequence, stage=self.step_stage,
+                          step=self.step_sequence, stage=data.pop("stage", self.step_stage),
                           job_id=getattr(self.scientist, 'current_job', None),
                           experiment_id=self.current_experiment, **data)
             with self.diagnostic_lock:
@@ -216,9 +218,13 @@ class Controller:
 
     @contextmanager
     def timed_stage(self, name):
-        previous = self.step_stage
-        self.step_stage = name
-        started = time.monotonic()
+        with self.progress_lock:
+            previous = self.step_stage
+            previous_active = self.active_stage
+            self.step_stage = name
+            started = time.monotonic()
+            # The enclosing step is a timer, not an unfinished I/O operation.
+            if name != 'step':self.active_stage = (name, started)
         self.diagnostic('stage_start')
         outcome = 'complete'
         try:
@@ -227,8 +233,14 @@ class Controller:
             outcome = 'error'
             raise
         finally:
-            self.diagnostic('stage_end', duration=time.monotonic()-started, outcome=outcome)
-            self.step_stage = previous
+            with self.progress_lock:
+                completed = time.monotonic()
+                if outcome == 'complete':self.last_progress = completed
+                # Resume the parent's unfinished work after a completed substage.
+                self.active_stage = ((previous_active[0], completed) if previous_active and outcome == 'complete' else previous_active)
+                self.step_stage = previous
+            self.diagnostic('stage_end', duration=completed-started, outcome=outcome, stage=name,
+                            last_progress=self.last_progress)
 
     def pause(self, reason='explicit'):
         with self.pause_record_lock:
@@ -252,7 +264,7 @@ class Controller:
             if first:
                 self.diagnostic('pause', reason=reason, flag_wall_time=at,
                                 flag_monotonic=mono, progress_age=age, pause_job_id=job, pause_experiment_id=experiment,
-                                pause_stage=stage,
+                                pause_stage=stage, active_stage=self.active_stage,
                                 io_stack=stack)
 
     def stop(self):
@@ -308,9 +320,13 @@ class Controller:
                         self.game.release_due()
                     if time.monotonic() - self.last_progress > 5:
                         self.game.release()
-                    if time.monotonic() - self.last_progress > 30 and not self.paused.is_set() and not self.recovering.is_set() and self.activity.snapshot().connection=="接続済み":
-                        self.pause("watchdog")
-                        self.notify("観測が応答しないため入力を解放しました。接続状態を確認してください。")
+                    # Serialize the timeout decision with stage completion: a stale
+                    # watchdog sample must not pause a newly completed operation.
+                    with self.progress_lock:
+                        active = self.active_stage
+                        if active is not None and time.monotonic() - active[1] > 30 and not self.paused.is_set() and not self.recovering.is_set() and self.activity.snapshot().connection=="接続済み":
+                            self.pause("watchdog")
+                            self.notify("観測が応答しないため入力を解放しました。接続状態を確認してください。")
             except Exception:
                 log.exception("Watchdog release failed")
 
@@ -337,7 +353,6 @@ class Controller:
             self.activity.update(connection="接続済み")
             unchanged = 0
             while not self.stopped.is_set():
-                self.last_progress = time.monotonic()
                 if self.paused.is_set():
                     self.status='一時停止中';self.activity.update(phase=self.status)
                     self.stopped.wait(.1)
@@ -459,22 +474,25 @@ class Controller:
         with self.timed_stage("baseline"):
             # Host observation on the sole I/O thread; Player policy is unchanged.
             from . import transitions
-            with self.store.lock:
-                jobs=[r[0] for r in self.store.db.execute("SELECT id FROM jobs WHERE kind='research' AND state IN ('pending','running')")]
-                queued=self.store.db.execute("SELECT job FROM research_experiments WHERE state IN ('queued','running') ORDER BY created LIMIT 1").fetchone()
-                state,base=transitions.baseline_for(self.store,before)
+            with self.timed_stage("baseline_lookup"):
+                with self.store.lock:
+                    jobs=[r[0] for r in self.store.db.execute("SELECT id FROM jobs WHERE kind='research' AND state IN ('pending','running')")]
+                    queued=self.store.db.execute("SELECT job FROM research_experiments WHERE state IN ('queued','running') ORDER BY created LIMIT 1").fetchone()
+                    state,base=transitions.baseline_for(self.store,before)
             new_jobs=[j for j in jobs if j not in self.baseline_jobs]
             if new_jobs or (queued and state is not None and base is None):
                 frames=[before];self.game.release()
                 for _ in range(4):
-                    if self.cancel_input.wait(.5) or self.halted_step():return 0
-                    frames.append(self.game.capture())
-                with self.store.lock:
+                    with self.timed_stage("baseline_wait"):
+                        if self.cancel_input.wait(.5) or self.halted_step():return 0
+                    with self.timed_stage("baseline_capture"):
+                        frames.append(self.game.capture())
+                with self.timed_stage("baseline_save"), self.store.lock:
                     baseline=transitions.save_baseline(self.store,new_jobs[0] if new_jobs else queued[0],frames)
                 self.baseline_jobs.update(new_jobs)
                 self.activity.record('BASELINE',f'id={baseline} frames=5 no_input_seconds=2')
                 before=frames[-1]
-            with self.store.lock:
+            with self.timed_stage("baseline_recheck"), self.store.lock:
                 _,base=transitions.baseline_for(self.store,before)
             if self.halted_step():return 0
         with self.timed_stage("features_trial_agent"):
@@ -570,7 +588,6 @@ class Controller:
                 self.revisions.confirm()
             if self.steps % 64 == 0:
                 self.checkpoint()
-            self.last_progress = time.monotonic()
             self.scientist.tick()
             return change
 
