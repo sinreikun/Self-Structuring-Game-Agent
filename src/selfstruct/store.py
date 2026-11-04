@@ -86,6 +86,7 @@ class Store:
             self.db.execute("INSERT INTO meta VALUES ('events_lifetime',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(str(lifetime),))
             for report in self.db.execute('SELECT id,metrics FROM reports').fetchall():
                 self.pin(self.metric_evidence(json.loads(report['metrics'])), 'report-'+str(report['id']))
+        self.usage(force=True)
 
     @staticmethod
     def metric_evidence(value):
@@ -98,6 +99,10 @@ class Store:
         return ids
 
     def usage(self, force: bool = False) -> int:
+        # Callers inside a transaction use the last completed filesystem sample.
+        # Never release an enclosing caller's lock/transaction to refresh it.
+        native = getattr(self.lock, '_native', self.lock)
+        nested = native._is_owned()
         with self.lock:
             database=self.root/'host'/'experience.sqlite3'
             db_bytes=0
@@ -106,19 +111,31 @@ class Store:
                 except FileNotFoundError:pass
             self._usage_bytes+=db_bytes-self._tracked_db_bytes
             self._tracked_db_bytes=db_bytes
-            if force or time.monotonic() - self._usage_at > 5:
-                total = 0
-                for path in self.account_root.rglob("*"):
-                    try:
-                        if path.is_file() and not path.is_symlink(): total += path.stat().st_size
-                    except FileNotFoundError: pass
-                self._usage_bytes = total
-                self._usage_at = time.monotonic()
+            refresh = not nested and (force or time.monotonic() - self._usage_at > 5)
+            started = time.monotonic()
+        if refresh:
+            total = 0
+            for path in self.account_root.rglob("*"):
+                try:
+                    if path.is_file() and not path.is_symlink(): total += path.stat().st_size
+                except FileNotFoundError: pass
+            with self.lock:
+                # An older concurrent scan must not overwrite a newer sample.
+                if self._usage_at <= started:
+                    self._usage_bytes = total
+                    self._usage_at = time.monotonic()
+                    db_bytes = 0
+                    for suffix in ('', '-wal', '-shm'):
+                        try: db_bytes += Path(str(database)+suffix).stat().st_size
+                        except FileNotFoundError: pass
+                    self._tracked_db_bytes = db_bytes
+        with self.lock:
             return self._usage_bytes
 
     def storage_snapshot(self) -> dict:
+        used = self.usage()
         with self.lock:
-            return {"used": self.usage(), "quota": self.quota, "stage": self.storage_state,
+            return {"used": used, "quota": self.quota, "stage": self.storage_state,
                     "reserved": int(self.quota*self.emergency_fraction)}
 
     def storage_breakdown(self) -> dict:
@@ -167,16 +184,37 @@ class Store:
         reference, first transition representatives and bounded unusual outcomes.
         Metadata is compacted into condition/outcome counts, never relabelled.
         """
+        native = getattr(self.lock, '_native', self.lock)
+        nested = native._is_owned()
+        used = self.usage(force=force)
         with self.lock:
-            used = self.usage(force=force)
             ratio = used/max(1,self.quota)
             self.storage_state = ("重要根拠専用" if ratio>=self.gc_thresholds[3] else
                 "低価値画像を抑制" if ratio>=self.gc_thresholds[2] else
                 "積極的に自動整理" if ratio>=self.gc_thresholds[1] else
                 "自動整理中" if ratio>=self.gc_thresholds[0] else "通常")
             count=self.db.execute("SELECT count(*) FROM events WHERE state='complete'").fetchone()[0]
-            if not force and ((ratio < self.gc_thresholds[0] and count<=4096) or time.monotonic()-self._gc_at < 2):return 0
+            if not force and not getattr(self, '_gc_pending', False) and ((ratio < self.gc_thresholds[0] and count<=4096) or time.monotonic()-self._gc_at < 2):return 0
             self._gc_at = time.monotonic()
+            self._gc_pending = nested
+        # Enumeration/stat may take seconds. Only candidate paths/sizes are
+        # sampled here; current references are checked under lock below.
+        freed = 0
+        images = []
+        if not nested:
+            for path in (self.account_root/'assets').rglob('*.part'):
+                try:
+                    if not path.is_symlink() and time.time()-path.stat().st_mtime>7*86400:
+                        size = path.stat().st_size
+                        path.unlink()
+                        freed += size
+                except OSError: pass
+            for path in (self.root/'evidence').glob('*.png'):
+                try:
+                    if time.time()-path.stat().st_mtime>60:
+                        images.append((path, path.stat().st_size))
+                except OSError: pass
+        with self.lock:
             protected = {r[0] for r in self.db.execute("SELECT event FROM evidence_pins")}
             for row in self.db.execute("SELECT evidence FROM knowledge"):
                 protected.update(json.loads(row[0]))
@@ -208,16 +246,11 @@ class Store:
                 refs={r[0] for r in self.db.execute("SELECT before_hash FROM events WHERE before_hash IS NOT NULL UNION SELECT after_hash FROM events WHERE after_hash IS NOT NULL UNION SELECT image_hash FROM observations")}
             # Commit archival metadata before removing files. A failed unlink must
             # never roll back rows into references to images already removed.
-            freed=0;deleted=[]
-            for partial in (self.account_root/'assets').rglob('*.part'):
-                try:
-                    if not partial.is_symlink() and time.time()-partial.stat().st_mtime>7*86400:
-                        size=partial.stat().st_size;partial.unlink();freed+=size
-                except OSError:pass
-            for path in (self.root/'evidence').glob('*.png'):
+            deleted=[]
+            for path, size in images:
                 try:
                     if path.stem not in refs and time.time()-path.stat().st_mtime>60:
-                        size=path.stat().st_size;path.unlink();freed+=size;deleted.append((path.stem,))
+                        path.unlink();freed+=size;deleted.append((path.stem,))
                 except OSError:pass
                 if len(deleted)>=128:break
             with self.db:
@@ -226,16 +259,20 @@ class Store:
             if not self.db.in_transaction:
                 self.db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
             self._usage_at=0
-            self.usage(force=True)
-            return freed
+            if nested:
+                # File collection is deferred to the next monitor/outer call.
+                self._gc_at=0
+        self.usage(force=True)
+        return freed
 
     def reserve(self, amount: int, critical: bool = True) -> None:
+        used = self.usage()
+        limit = self.quota if critical else int(self.quota*(1-self.emergency_fraction))
+        if used+amount+65536 > limit or used/self.quota>=self.gc_thresholds[0]:
+            self.collect()
         with self.lock:
             limit = self.quota if critical else int(self.quota*(1-self.emergency_fraction))
             used=self.usage()
-            if used+amount+65536 > limit or used/self.quota>=self.gc_thresholds[0]:
-                self.collect()
-                used=self.usage()
             if used+amount+65536 > limit:
                 raise CapacityError("重要な研究根拠の保存枠も不足しています。診断情報を保持して一時停止しました。")
 
