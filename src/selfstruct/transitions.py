@@ -167,6 +167,17 @@ def samples(store,claim,rows):
     return result
 
 def context(store,experiments,job):
+    if not getattr(store, 'context_snapshot', False):
+        from .context_snapshot import snapshot
+        import copy
+        view = snapshot(store, job)
+        try:
+            detached = copy.copy(experiments)
+            if detached is not None: detached.store = view
+            return context(view, detached, job)
+        finally:
+            view.db.close()
+
     refs=representatives(store);distribution={}
     for row in store.db.execute("SELECT id FROM events WHERE state='complete' ORDER BY id DESC LIMIT 64"):
         try:state=identify(store,store.observed_image(row['id'],'after'),refs)

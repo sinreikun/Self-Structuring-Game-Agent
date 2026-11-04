@@ -716,6 +716,15 @@ def hypothesis_context(scientist,payload):
 
 
 def experiment_context(scientist,jid):
+    from .context_snapshot import snapshot, scientist_view
+    view = snapshot(scientist.store, jid)
+    try:
+        return _experiment_context(scientist_view(scientist, view), jid)
+    finally:
+        view.db.close()
+
+
+def _experiment_context(scientist,jid):
     """Compact factual ledger for this Job, independent of recent action history."""
     result={'scope':'current_job','experiments':[],'hypotheses':[],'plans_used':0,'plan_limit':4,'requested_inputs':0,'input_limit':32,'required_evaluation_samples':16}
     with scientist.store.lock:
