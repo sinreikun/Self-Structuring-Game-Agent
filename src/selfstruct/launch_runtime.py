@@ -1,3 +1,4 @@
+from . import usage_index as accounting
 """Stable bootstrap. Application code is never imported by the launcher."""
 import json
 import os
@@ -77,7 +78,7 @@ class Launcher:
         keep={self.state.get(k) for k in ('current','last-known-good','previous-known-good','pending')}
         for folder in (self.root/'versions').iterdir():
             if folder.name in keep or folder.is_symlink() or not folder.is_dir():continue
-            try:shutil.rmtree(folder)
+            try:accounting.rmtree(folder)
             except OSError:pass  # A version still running on Windows is retained.
 
     def install(self, envelope):
@@ -90,12 +91,12 @@ class Launcher:
         artifact=Gateway(self.root,2*1024**3).download(item,'update')
         folder=self.root/'versions'/identity;folder.mkdir(parents=True,exist_ok=True)
         binary=folder/'SelfStruct.exe'
-        shutil.copyfile(artifact,binary.with_suffix('.pending'))
+        accounting.copy2(artifact,binary.with_suffix('.pending'))
         if Gateway.digest(binary.with_suffix('.pending'))!=item['sha256']:raise ValueError('Staging digest mismatch')
-        os.replace(binary.with_suffix('.pending'),binary)
+        accounting.replace(binary.with_suffix('.pending'),binary)
         write_json(folder/'manifest.json',envelope)
         # Download cache is regenerable. Version executables never overwritten in use.
-        artifact.unlink(missing_ok=True)
+        accounting.unlink(artifact,missing_ok=True)
         return identity
 
     def launch(self, identity):
@@ -114,7 +115,7 @@ class Launcher:
                 time.sleep(.1)
             return False
         finally:
-            marker.unlink(missing_ok=True)
+            accounting.unlink(marker,missing_ok=True)
             if healthy and hasattr(child,'detach'):child.detach()
             if not healthy and child.poll() is None:
                 stop_owned_process(child)

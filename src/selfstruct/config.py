@@ -8,16 +8,20 @@ from pathlib import Path
 
 
 def atomic_write(path: Path, data: bytes) -> None:
+    from .usage_index import changed, watch
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp = tempfile.mkstemp(dir=path.parent, prefix=".pending-")
+    watch(temp)
     try:
         with os.fdopen(fd, "wb") as out:
             out.write(data)
             out.flush()
             os.fsync(out.fileno())
         os.replace(temp, path)
+        changed(temp, path)
     finally:
         Path(temp).unlink(missing_ok=True)
+        changed(temp)
 
 
 def write_json(path: Path, obj: object) -> None:
@@ -110,6 +114,12 @@ class RootFiles:
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.max_bytes = max_bytes
+        from .usage_index import covering
+        self._index = covering(self.root)
+        # Standalone brokers have no Store. Bootstrap once, then account locally.
+        self._files = ({p: p.stat().st_size for p in self.root.rglob('*')
+                        if p.is_file() and not p.is_symlink()}
+                       if self._index is None else {})
 
     def path(self, relative: str) -> Path:
         rel = Path(relative)
@@ -127,11 +137,13 @@ class RootFiles:
 
     def write(self, relative: str, data: bytes) -> None:
         dest = self.path(relative)
-        used = sum(p.stat().st_size for p in self.root.rglob("*") if p.is_file())
+        used = (self._index.subtree_total(self.root) if self._index is not None
+                else sum(self._files.values()))
         old = dest.stat().st_size if dest.exists() else 0
         if used - old + len(data) > self.max_bytes:
             raise OSError("作業領域の保存容量が不足しています。")
         atomic_write(dest, data)
+        self._files[dest] = len(data)
 
     def read(self, relative: str) -> bytes:
         target = self.path(relative)
@@ -144,7 +156,9 @@ class RootFiles:
         if target.is_dir():
             target.rmdir()
         else:
-            target.unlink(missing_ok=True)
+            from .usage_index import unlink
+            unlink(target, missing_ok=True)
+            self._files.pop(target, None)
 
     def mkdir(self, relative: str) -> None:
         self.path(relative).mkdir(parents=True, exist_ok=True)
@@ -160,6 +174,8 @@ class InstanceLock:
         if self.file.tell() == 0:
             self.file.write(b"0")
             self.file.flush()
+            from .usage_index import changed
+            changed(path)
         self.file.seek(0)
         try:
             if os.name == "nt":

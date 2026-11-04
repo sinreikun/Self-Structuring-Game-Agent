@@ -1,4 +1,5 @@
 from __future__ import annotations
+from . import usage_index as accounting
 
 import json
 import os
@@ -39,7 +40,7 @@ class Updater:
             raise ValueError("本体の自動更新はWindows配布版で利用できます。")
         original = Path(sys.executable).resolve()
         helper = self.root / "updates" / "update-helper.exe"
-        shutil.copy2(original, helper)
+        accounting.copy2(original, helper)
         ticket = self.root / "updates" / "ticket.json"
         write_json(ticket, {**prepared, "original": str(original), "parent": os.getpid(),
                             "public_key": self.public_key, "envelope": json.loads((self.root / "updates" / "manifest.json").read_text(encoding="utf-8"))})
@@ -72,20 +73,20 @@ def apply_update(ticket: Path) -> bool:
             kernel.CloseHandle(handle)
     backup = original.with_suffix(".previous.exe")
     staging = original.with_suffix(".pending.exe")
-    shutil.copy2(source, staging)
+    accounting.copy2(source, staging)
     if Gateway.digest(staging) != manifest["application"]["sha256"]:
         raise ValueError("Staged update integrity failure")
-    shutil.copy2(original, backup)
-    os.replace(staging, original)
+    accounting.copy2(original, backup)
+    accounting.replace(staging, original)
     marker = ticket.parent / "healthy"
-    marker.unlink(missing_ok=True)
+    accounting.unlink(marker,missing_ok=True)
     try:
         # Marker is written only after GUI/DB/Wasmtime initialization succeeds.
         child = subprocess.Popen([str(original), "--health-marker", str(marker)])
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             if marker.exists() and child.poll() is None:
-                ticket.unlink(missing_ok=True)
+                accounting.unlink(ticket,missing_ok=True)
                 return True
             if child.poll() is not None:
                 break
@@ -95,7 +96,7 @@ def apply_update(ticket: Path) -> bool:
             child.wait(timeout=10)
     except Exception:
         pass
-    os.replace(backup, original)
+    accounting.replace(backup, original)
     atomic_write(ticket.parent / "rollback.txt", "新しい版の起動に失敗したため、前の安定版へ戻しました。".encode())
     subprocess.Popen([str(original)])
     return False

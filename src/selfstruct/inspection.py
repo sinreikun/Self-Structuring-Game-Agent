@@ -14,6 +14,7 @@ from .store import Store
 
 class ReadOnlyRecords:
     usage=Store.usage
+    reconcile_usage=Store.reconcile_usage
     storage_snapshot=Store.storage_snapshot
     storage_breakdown=Store.storage_breakdown
     note_rows=Store.note_rows
@@ -26,7 +27,9 @@ class ReadOnlyRecords:
     def __init__(self,root,account_root,quota):
         self.root=Path(root);self.account_root=Path(account_root);self.quota=quota
         self.lock=threading.RLock()
-        self._usage_bytes=0;self._usage_at=0.;self._tracked_db_bytes=0
+        self._usage_bytes=0
+        from .usage_index import for_root
+        self._usage_index=for_root(self.account_root,snapshot=True)
         self.storage_state='停止中の保存記録';self.emergency_fraction=.05
         self.db=sqlite3.connect((self.root/'host'/'experience.sqlite3').as_uri()+'?mode=ro',uri=True,check_same_thread=False)
         self.db.row_factory=sqlite3.Row

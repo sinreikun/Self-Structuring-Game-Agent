@@ -33,8 +33,6 @@ class Store:
         self.lock = (ObservedRLock(root / 'host' / 'diagnostics.jsonl')
                      if record_locks else threading.RLock())
         self._usage_bytes = 0
-        self._usage_at = 0.
-        self._tracked_db_bytes = 0.
         self._gc_at = 0.
         self.storage_state = "通常"
         self.gc_thresholds = (.80, .90, .95, .98)
@@ -86,7 +84,7 @@ class Store:
             self.db.execute("INSERT INTO meta VALUES ('events_lifetime',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(str(lifetime),))
             for report in self.db.execute('SELECT id,metrics FROM reports').fetchall():
                 self.pin(self.metric_evidence(json.loads(report['metrics'])), 'report-'+str(report['id']))
-        self.usage(force=True)
+        self.reconcile_usage()
 
     @staticmethod
     def metric_evidence(value):
@@ -98,39 +96,50 @@ class Store:
             for child in value:ids.update(Store.metric_evidence(child))
         return ids
 
+    @property
+    def account_root(self):
+        return self._account_root
+
+    @account_root.setter
+    def account_root(self, root):
+        root = Path(root)
+        if getattr(self, '_account_root', None) != root:
+            self._account_root = root
+            self._usage_index = None
+            if hasattr(self, "db"):
+                self.reconcile_usage()
+
+    def reconcile_usage(self):
+        from .usage_index import for_root
+        native = getattr(self.lock, '_native', self.lock)
+        if native._is_owned():
+            raise RuntimeError('Usage reconciliation requires an outer call')
+        if self._usage_index is None:
+            self._usage_index = for_root(self.account_root, startup=True)
+            self._usage_index.watch(self.root/"host"/"diagnostics.jsonl")
+        else:
+            self._usage_index.reconcile()
+        return self.usage()
+
     def usage(self, force: bool = False) -> int:
-        # Callers inside a transaction use the last completed filesystem sample.
-        # Never release an enclosing caller's lock/transaction to refresh it.
+        # force is API compatibility only; GC must never force a scan.
+        from .usage_index import RECONCILE_SECONDS
         native = getattr(self.lock, '_native', self.lock)
         nested = native._is_owned()
-        with self.lock:
-            database=self.root/'host'/'experience.sqlite3'
-            db_bytes=0
-            for suffix in ('','-wal','-shm'):
-                try:db_bytes+=Path(str(database)+suffix).stat().st_size
-                except FileNotFoundError:pass
-            self._usage_bytes+=db_bytes-self._tracked_db_bytes
-            self._tracked_db_bytes=db_bytes
-            refresh = not nested and (force or time.monotonic() - self._usage_at > 5)
-            started = time.monotonic()
-        if refresh:
-            total = 0
-            for path in self.account_root.rglob("*"):
-                try:
-                    if path.is_file() and not path.is_symlink(): total += path.stat().st_size
-                except FileNotFoundError: pass
-            with self.lock:
-                # An older concurrent scan must not overwrite a newer sample.
-                if self._usage_at <= started:
-                    self._usage_bytes = total
-                    self._usage_at = time.monotonic()
-                    db_bytes = 0
-                    for suffix in ('', '-wal', '-shm'):
-                        try: db_bytes += Path(str(database)+suffix).stat().st_size
-                        except FileNotFoundError: pass
-                    self._tracked_db_bytes = db_bytes
-        with self.lock:
-            return self._usage_bytes
+        if self._usage_index is None:
+            if nested:
+                raise RuntimeError('Initialize accounting before acquiring Store')
+            return self.reconcile_usage()
+        if not nested and time.monotonic()-self._usage_index.last_reconcile >= RECONCILE_SECONDS:
+            self.reconcile_usage()
+        database = self.root/'host'/'experience.sqlite3'
+        index = self._usage_index
+        with index.lock:
+            for suffix in ('', '-wal', '-shm'):
+                key = index.key(Path(str(database)+suffix))
+                if key is not None: index.mutable.add(key)
+        self._usage_bytes = index.total()
+        return self._usage_bytes
 
     def storage_snapshot(self) -> dict:
         used = self.usage()
@@ -139,25 +148,8 @@ class Store:
                     "reserved": int(self.quota*self.emergency_fraction)}
 
     def storage_breakdown(self) -> dict:
-        result={}
-        for path in self.account_root.rglob('*'):
-            try:
-                if not path.is_file() or path.is_symlink():continue
-                parts=path.relative_to(self.account_root).parts
-                if path.name.endswith('.part'):category='partial_downloads'
-                elif len(parts)>1 and parts[:2]==('assets','model'):category='models'
-                elif len(parts)>1 and parts[:2]==('assets','engine'):
-                    category='engine_runtime' if 'expanded' in parts else 'engine_archives'
-                elif 'evidence' in parts:category='evidence_images'
-                elif '.sqlite3' in path.name:category='database_and_wal'
-                elif path.name.startswith('checkpoint-'):category='checkpoint_cache'
-                elif 'agents' in parts:category='agent_files'
-                elif parts[0]=='exports':category='exports'
-                elif parts[0]=='runtime':category='application_runtime'
-                else:category='settings_logs_other'
-                result[category]=result.get(category,0)+path.stat().st_size
-            except OSError:continue
-        return result
+        self.usage()
+        return self._usage_index.breakdown()
 
     def pin(self, events, reason: str):
         with self.lock, self.db:
@@ -197,23 +189,23 @@ class Store:
             if not force and not getattr(self, '_gc_pending', False) and ((ratio < self.gc_thresholds[0] and count<=4096) or time.monotonic()-self._gc_at < 2):return 0
             self._gc_at = time.monotonic()
             self._gc_pending = nested
-        # Enumeration/stat may take seconds. Only candidate paths/sizes are
-        # sampled here; current references are checked under lock below.
+        from .usage_index import unlink
         freed = 0
         images = []
         if not nested:
-            for path in (self.account_root/'assets').rglob('*.part'):
-                try:
-                    if not path.is_symlink() and time.time()-path.stat().st_mtime>7*86400:
-                        size = path.stat().st_size
-                        path.unlink()
-                        freed += size
-                except OSError: pass
-            for path in (self.root/'evidence').glob('*.png'):
-                try:
-                    if time.time()-path.stat().st_mtime>60:
-                        images.append((path, path.stat().st_size))
-                except OSError: pass
+            for path, size, mtime_ns, kind in self._usage_index.candidates():
+                if kind == 'partial_downloads' and path.is_relative_to(self.account_root/'assets'):
+                    if time.time()-mtime_ns/1e9 > 7*86400:
+                        try:
+                            current = path.lstat()
+                            if current.st_mtime_ns == mtime_ns and not path.is_symlink():
+                                unlink(path)
+                                freed += current.st_size
+                        except FileNotFoundError:
+                            self._usage_index.record(path)
+                        except OSError: pass
+                elif path.parent == self.root/'evidence' and path.suffix == '.png' and time.time()-mtime_ns/1e9 > 60:
+                    images.append((path, size, mtime_ns))
         with self.lock:
             protected = {r[0] for r in self.db.execute("SELECT event FROM evidence_pins")}
             for row in self.db.execute("SELECT evidence FROM knowledge"):
@@ -247,10 +239,14 @@ class Store:
             # Commit archival metadata before removing files. A failed unlink must
             # never roll back rows into references to images already removed.
             deleted=[]
-            for path, size in images:
+            for path, size, mtime_ns in images:
                 try:
-                    if path.stem not in refs and time.time()-path.stat().st_mtime>60:
-                        path.unlink();freed+=size;deleted.append((path.stem,))
+                    if path.stem not in refs:
+                        current = path.lstat()
+                        if current.st_mtime_ns != mtime_ns or path.is_symlink():
+                            self._usage_index.record(path)
+                            continue
+                        unlink(path);freed+=current.st_size;deleted.append((path.stem,))
                 except OSError:pass
                 if len(deleted)>=128:break
             with self.db:
@@ -258,7 +254,6 @@ class Store:
                 self.db.execute("INSERT INTO gc_history(created,stage,freed,events) VALUES(?,?,?,?)",(time.time(),self.storage_state,freed,len(stale)))
             if not self.db.in_transaction:
                 self.db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
-            self._usage_at=0
             if nested:
                 # File collection is deferred to the next monitor/outer call.
                 self._gc_at=0
@@ -291,7 +286,6 @@ class Store:
                     self.reserve(0,critical=True)
                     return ""  # A summarized action is still counted; never invent an image.
                 atomic_write(path, data)
-                self._usage_bytes += len(data)
                 with self.db:
                     self.db.execute("INSERT OR IGNORE INTO image_inventory VALUES(?,?,?)",(digest,len(data),time.time()))
         return digest
@@ -540,7 +534,9 @@ class Store:
                             if path.exists() and path.relative_to(self.root).as_posix() not in out.namelist():
                                 out.write(path, path.relative_to(self.root))
             finally:
-                temp.unlink(missing_ok=True)
+                from .usage_index import changed, unlink
+                unlink(temp, missing_ok=True)
+                changed(destination)
 
     def close(self) -> None:
         with self.lock:

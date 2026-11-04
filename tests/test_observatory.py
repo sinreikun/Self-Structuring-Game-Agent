@@ -35,7 +35,7 @@ def test_gc_protects_knowledge_pins_and_replay_but_compacts_old_repetition(tmp_p
     kid=store.knowledge('hypothesis','同条件を再確認します。','inferred','hypothesis',[rows[5][0]])
     store.pin([rows[6][0]],'evaluation')
     for p in (tmp_path/'evidence').glob('*'):os.utime(p,(1,1))
-    before=store.usage(True)
+    before=store.reconcile_usage()
     freed=store.collect(True)
     assert 400-len(list((tmp_path/'evidence').glob('*.png')))<=128
     freed+=store.collect(True)+store.collect(True)
@@ -57,6 +57,7 @@ def test_emergency_reserve_and_pressure_continue_with_summarized_actions(tmp_pat
         add(store,sid,img)
         if i%16==0:
             for p in (tmp_path/'evidence').glob('*'):os.utime(p,(1,1))
+            store.reconcile_usage()
     assert len(store.rows())>=48
     assert store.db.execute('SELECT count(*) FROM gc_history').fetchone()[0]>0
     # Exact boundary: ordinary evidence cannot take the last 5%; research can.
@@ -65,7 +66,7 @@ def test_emergency_reserve_and_pressure_continue_with_summarized_actions(tmp_pat
     store=Store(tmp_path/'boundary',64*1024**2)
     asset=store.root/'protected-model'
     with asset.open('wb') as f:f.truncate(8*1024**2)
-    used=store.usage(True);store.quota=used+200000
+    used=store.reconcile_usage();store.quota=used+200000
     with pytest.raises(CapacityError):store.reserve(100000,critical=False)
     store.reserve(100000,critical=True)
     store.report('seed',False,'緊急診断を保存しました。',{'error':'test'})
@@ -207,6 +208,7 @@ def test_ten_gib_budget_under_pressure_starts_research_and_gc(tmp_path):
             f.truncate(int(store.quota*.94))
     except OSError:
         store.close();pytest.skip('Filesystem does not support sparse accounting fixture')
+    store.reconcile_usage()
     sid=store.session('Newborn',False)
     for i in range(120):add(store,sid,Image.new('RGB',(32,32),(i,0,0)))
     activity=Activity();calls=[]
@@ -265,6 +267,7 @@ def test_gc_unlink_failure_keeps_live_references_consistent_and_lifetime_count(t
     store=Store(tmp_path,64*1024**2);sid=store.session('Newborn',False)
     for i in range(200):add(store,sid,Image.new('RGB',(16,16),(i,0,0)))
     for p in (tmp_path/'evidence').glob('*.png'):os.utime(p,(1,1))
+    store.reconcile_usage()
     original=Path.unlink;attempts=[]
     def unlink(path,*args,**kwargs):
         if path.suffix=='.png':
@@ -286,6 +289,7 @@ def test_storage_breakdown_separates_models_evidence_runtime_and_archives(tmp_pa
     for path,size in [('assets/model/hash/artifact',2000),('assets/engine/hash/artifact',1000),('assets/engine/hash/expanded/server.exe',3000)]:
         dest=tmp_path/path;dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(b'x'*size)
     store.image(Image.new('RGB',(16,16)))
+    store.reconcile_usage()
     result=store.storage_breakdown()
     assert result['models']==2000 and result['engine_archives']==1000 and result['engine_runtime']==3000
     assert result['evidence_images']>0 and result['database_and_wal']>0

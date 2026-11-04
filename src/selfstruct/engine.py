@@ -1,4 +1,5 @@
 from __future__ import annotations
+from . import usage_index as accounting
 
 import logging
 from contextlib import contextmanager
@@ -112,6 +113,7 @@ class Controller:
         self.baseline_jobs=set()
         self.visual.eyes.cancel = self.scientist.stop_event
         self.scientist.client.context = config.llm_context
+        accounting.watch(*(self.experiment/"host"/name for name in ("host.log", "host.log.1", "host.log.2")))
         handler = RotatingFileHandler(self.experiment / "host" / "host.log", maxBytes=2 * 1024**2, backupCount=2, encoding="utf-8")
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
         self.log_handler = handler
@@ -161,9 +163,9 @@ class Controller:
         atomic_write(folder / name, raw)
         write_json(folder / "checkpoint.json", {"revision": self.agent_id, "event": self.last_eid, "file": name, "hash": digest})
         # These are replaceable caches, not primary evidence or revision history.
-        for old in folder.glob("checkpoint-*.bin"):
-            if old.name != name:
-                old.unlink()
+        for old in self.store._usage_index.paths_under(folder):
+            if old.parent == folder and old.name.startswith("checkpoint-") and old.suffix == ".bin" and old.name != name:
+                accounting.unlink(old)
 
     def _experiment(self) -> Path:
         from .individuals import Individuals

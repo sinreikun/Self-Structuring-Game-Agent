@@ -9,42 +9,34 @@ import pytest
 from selfstruct.store import CapacityError, Store
 
 
-@pytest.mark.parametrize('phase', ['usage', 'partials', 'images', 'post_usage'])
+@pytest.mark.parametrize('phase', ['explicit', 'startup', 'scheduled', 'root_change'])
 def test_collect_scans_allow_other_thread_to_acquire(tmp_path, monkeypatch, phase):
     store = Store(tmp_path, 64*1024**2, record_locks=True)
     entered, proceed = threading.Event(), threading.Event()
-    original_rglob, original_glob = Path.rglob, Path.glob
-    scans = 0
+    original_rglob = Path.rglob
     errors = []
-
-    def pause():
-        entered.set()
-        assert proceed.wait(5)
-
+    target = tmp_path/'other' if phase == 'root_change' else tmp_path
     def rglob(path, pattern):
-        nonlocal scans
-        if path == tmp_path and pattern == '*':
-            scans += 1
-            if phase == 'usage' and scans == 1 or phase == 'post_usage' and scans == 2:
-                pause()
-        if path == tmp_path/'assets' and phase == 'partials':
-            pause()
+        if path == target and pattern == '*':
+            entered.set()
+            assert proceed.wait(5)
         yield from original_rglob(path, pattern)
-
-    def glob(path, pattern):
-        if path == tmp_path/'evidence' and phase == 'images':
-            pause()
-        yield from original_glob(path, pattern)
-
     monkeypatch.setattr(Path, 'rglob', rglob)
-    monkeypatch.setattr(Path, 'glob', glob)
-
     def monitor():
         try:
-            store.collect(True)
+            if phase == 'startup':
+                other = Store(tmp_path, 64*1024**2)
+                other.close()
+            elif phase == 'scheduled':
+                from selfstruct.usage_index import RECONCILE_SECONDS
+                store._usage_index.last_reconcile = time.monotonic()-RECONCILE_SECONDS-1
+                store.usage()
+            elif phase == 'root_change':
+                store.account_root = target
+            else:
+                store.reconcile_usage()
         except BaseException as exc:
             errors.append(exc)
-
     worker = threading.Thread(target=monitor, name='telemetry')
     worker.start()
     try:
@@ -65,14 +57,14 @@ def test_usage_refresh_quota_and_gc(tmp_path):
     path = tmp_path/'external'
     path.write_bytes(b'x'*200000)
     assert store.usage() < before+200000
-    store._usage_at = 0
+    store.reconcile_usage()
     assert store.usage() >= before+200000
     path.unlink()
-    assert store.usage(True) < before+200000
+    assert store.reconcile_usage() < before+200000
     orphan = tmp_path/'evidence'/'orphan.png'
     orphan.write_bytes(b'x'*100000)
     os.utime(orphan, (1, 1))
-    used = store.usage(True)
+    used = store.reconcile_usage()
     store.quota = int(used/.85)
     assert store.collect() == 100000
     assert not orphan.exists()
@@ -102,6 +94,7 @@ def test_deferred_gc_survives_ratio_and_count_drop(tmp_path):
     orphan = tmp_path/'evidence'/'orphan.png'
     orphan.write_bytes(b'x'*1000)
     os.utime(orphan, (1, 1))
+    store.reconcile_usage()
     with store.lock:
         store.collect(True)
         assert orphan.exists()
@@ -139,9 +132,9 @@ def test_large_tree_telemetry_hold_instrumentation(tmp_path, monkeypatch):
     records = [json.loads(line) for line in store.lock.path.read_text().splitlines()]
     holds = [r['hold_seconds'] for r in records if r['kind']=='store_lock_release'
              and r['thread']=='telemetry' and r['depth']==0]
-    assert elapsed > 1
+    assert elapsed < 5
     assert holds and max(holds) < .5
-    evidence = Path('outputs/usage-unlock-evidence')
+    evidence = Path('outputs/usage-index-evidence')
     evidence.mkdir(parents=True, exist_ok=True)
     (evidence/'large-tree-locks.jsonl').write_text('\n'.join(json.dumps(r) for r in records)+'\n')
     (evidence/'large-tree-summary.json').write_text(json.dumps(dict(

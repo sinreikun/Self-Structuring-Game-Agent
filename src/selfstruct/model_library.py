@@ -1,3 +1,4 @@
+from . import usage_index as accounting
 """Shared model inventory; individual references never own the model binaries."""
 import json
 from pathlib import Path
@@ -138,9 +139,9 @@ class ModelLibrary:
                 raise ValueError('使用中・スタンバイ中のモデルは削除できません。先に停止してください。')
             record=self.record_path(identifier)
             state=self.get(identifier);folder=self.root/'assets'/'model'/identifier
-            list(safe_files(folder));shutil.rmtree(folder);record.unlink()
+            list(safe_files(folder));accounting.rmtree(folder);accounting.unlink(record)
             selection=self.root/'host'/'llm.json'
             if selection.is_file():
                 saved=json.loads(selection.read_text(encoding='utf-8'))
-                if saved.get('model_sha256')==identifier:selection.unlink()
+                if saved.get('model_sha256')==identifier:accounting.unlink(selection)
             # Individual profiles and runtime assets are intentionally independent.

@@ -1,5 +1,6 @@
 """Host-only acquisition gateway; generated agents never receive this interface."""
 from __future__ import annotations
+from . import usage_index as accounting
 
 import base64
 import hashlib
@@ -68,6 +69,7 @@ class Gateway:
         self.hosts = hosts or TRUSTED_HOSTS
         self.lock = threading.Lock()
         self.root.mkdir(parents=True, exist_ok=True)
+        self.usage_index = accounting.for_root(self.root)
 
     def download(self, item: dict, kind: str, progress=lambda done, total: None,
                  cancel: threading.Event | None = None) -> Path:
@@ -89,9 +91,9 @@ class Gateway:
                 return dest
             offset = partial.stat().st_size if partial.exists() else 0
             if offset > size:
-                partial.unlink()
+                accounting.unlink(partial)
                 offset = 0
-            used = sum(p.stat().st_size for p in self.root.rglob("*") if p.is_file())
+            used = accounting.for_root(self.root).total()
             if used + (size - offset) + 4 * 1024**2 > int(self.quota*.95) or shutil.disk_usage(folder).free < size - offset + 4 * 1024**2:
                 raise OSError("取得に必要な保存容量がありません。")
             headers = {"User-Agent": "SelfStruct/0.1", "Accept-Encoding": "identity"}
@@ -103,7 +105,7 @@ class Gateway:
                     offset = 0
                 elif not reply.headers.get("Content-Range", "").startswith(f"bytes {offset}-"):
                     raise ValueError("ダウンロード再開位置を検証できません。")
-                with partial.open("ab" if offset else "wb") as out:
+                with accounting.writing(partial, "ab" if offset else "wb") as out:
                     done = offset
                     while True:
                         if cancel and cancel.is_set():
@@ -119,9 +121,9 @@ class Gateway:
                     out.flush()
                     os.fsync(out.fileno())
             if partial.stat().st_size != size or self.digest(partial,cancel) != digest:
-                partial.unlink(missing_ok=True)
+                accounting.unlink(partial,missing_ok=True)
                 raise ValueError("配布ファイルの完全性を確認できません。取得物は使用しません。")
-            os.replace(partial, dest)
+            accounting.replace(partial, dest)
             write_json(folder / "receipt.json", {**item, "kind": kind, "acquired": time.time()})
             return dest
 
@@ -143,16 +145,16 @@ class Gateway:
             files = json.loads(inventory.read_text(encoding="utf-8"))
             if all((dest / name).resolve().is_relative_to(dest.resolve()) and
                    self.digest(dest / name) == digest for name, digest in files.items()):
-                servers = list(dest.rglob(expected_name))
+                servers = [dest/name for name in files if Path(name).name == expected_name]
                 if len(servers) == 1:
                     return servers[0]
         if dest.exists():
-            shutil.rmtree(dest)
+            accounting.rmtree(dest)
         zipped = zipfile.is_zipfile(artifact)
         with (zipfile.ZipFile(artifact) if zipped else tarfile.open(artifact)) as archive:
             infos = archive.infolist() if zipped else archive.getmembers()
             total = sum(info.file_size if zipped else info.size for info in infos)
-            used = sum(p.stat().st_size for p in self.root.rglob("*") if p.is_file())
+            used = accounting.for_root(self.root).total()
             if total > 2 * 1024**3 or used + total > int(self.quota*.95):
                 raise ValueError("展開容量が上限を超えています。")
             for info in infos:
@@ -161,9 +163,15 @@ class Gateway:
                 if path.is_absolute() or ".." in path.parts or ":" in str(path) or link:
                     raise ValueError("展開先が不正です。")
             if zipped:
-                archive.extractall(dest)
+                try:
+                    archive.extractall(dest)
+                finally:
+                    accounting.changed(*(dest/info.filename for info in infos if not info.is_dir()))
             else:
-                archive.extractall(dest, members=[i for i in infos if i.isfile() or i.isdir()], filter="data")
+                try:
+                    archive.extractall(dest, members=[i for i in infos if i.isfile() or i.isdir()], filter="data")
+                finally:
+                    accounting.changed(*(dest/info.name for info in infos if info.isfile()))
                 # Official Linux builds use library symlinks. Materialize only
                 # internal regular-file targets, leaving no runtime link escape.
                 members = {i.name: i for i in infos}
@@ -181,16 +189,17 @@ class Gateway:
                         if current is None:
                             raise ValueError("共有ライブラリの参照先がありません。")
                         if current.isfile():
-                            if sum(p.stat().st_size for p in self.root.rglob("*") if p.is_file()) + target_path.stat().st_size > int(self.quota*.95):
+                            if accounting.for_root(self.root).total() + target_path.stat().st_size > int(self.quota*.95):
                                 raise ValueError("展開容量が上限を超えています。")
-                            shutil.copy2(target_path, dest / info.name)
+                            accounting.copy2(target_path, dest / info.name)
                             break
                     else:
                         raise ValueError("共有ライブラリの参照が循環しています。")
-        servers = list(dest.rglob(expected_name))
+        extracted = self.usage_index.paths_under(dest)
+        servers = [path for path in extracted if path.name == expected_name]
         if len(servers) != 1:
             raise ValueError("推論エンジンが含まれていません。")
-        write_json(inventory, {str(p.relative_to(dest)): self.digest(p) for p in dest.rglob("*") if p.is_file()})
+        write_json(inventory, {str(p.relative_to(dest)): self.digest(p) for p in extracted})
         return servers[0]
 
 
@@ -273,16 +282,16 @@ class ManagedLLM:
             model_item={'name':source.name,'sha256':digest,'size':source.stat().st_size,'license':'ユーザー指定・要確認'}
             model=self.root/'assets'/'model'/digest/'artifact'
             model.parent.mkdir(parents=True,exist_ok=True)
-            if source.stat().st_size+sum(p.stat().st_size for p in self.root.rglob('*') if p.is_file())>self.quota*.95:
+            if source.stat().st_size+accounting.for_root(self.root).total()>self.quota*.95:
                 raise OSError('取得に必要な保存容量がありません。')
             partial=model.with_suffix('.part')
-            with source.open('rb') as src,partial.open('wb') as dst:
+            with source.open('rb') as src,accounting.writing(partial) as dst:
                 done=0
                 while chunk:=src.read(1024**2):
                     if cancel.is_set():raise InterruptedError('導入を中断しました。')
                     dst.write(chunk);done+=len(chunk);progress(done,model_item['size'])
             if Gateway.digest(partial,cancel)!=digest:raise ValueError('モデルの完全性を確認できません。')
-            os.replace(partial,model)
+            accounting.replace(partial,model)
             write_json(model.parent/'receipt.json',model_item)
         else:
             from .model_catalog import ModelCatalog
@@ -395,8 +404,9 @@ class ManagedLLM:
         log_path = self.root / "host" / "llm.log"
         # Bound logs across restarts.
         if log_path.exists() and log_path.stat().st_size > 4 * 1024**2:
-            log_path.unlink()
+            accounting.unlink(log_path)
         log_path.parent.mkdir(parents=True,exist_ok=True)
+        accounting.watch(log_path, Path(str(log_path)+".1"), Path(str(log_path)+".2"))
         self.log = RotatingFileHandler(log_path, maxBytes=1024**2, backupCount=2, encoding="utf-8")
         command=[str(engine), '-m', str(model), '--host', '127.0.0.1', '--port', '8766',
                  '--alias','local','-c',str(state.get('context',8192)),'--parallel','1','-lv','4']

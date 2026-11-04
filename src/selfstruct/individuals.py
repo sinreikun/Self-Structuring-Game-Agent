@@ -1,3 +1,4 @@
+from . import usage_index as accounting
 """Durable individuals. Existing experiment directories remain in place (no image copies).
 
 Profiles/settings belong to an individual; engines, models and UI settings never do.
@@ -184,23 +185,24 @@ class Individuals:
             identifier_new=uuid.uuid4().hex;target=self.path(identifier_new)
             staging=self.folder/('.copy-'+identifier_new)
             try:
-                shutil.copytree(source,staging)
+                accounting.copytree(source,staging)
                 # SQLite backup includes committed WAL pages. Never copy stale lock/WAL files.
                 dbpath=source/'host'/'experience.sqlite3'
                 if dbpath.exists():
-                    for suffix in ('-wal','-shm'): (staging/'host'/('experience.sqlite3'+suffix)).unlink(missing_ok=True)
+                    for suffix in ('-wal','-shm'): accounting.unlink(staging/'host'/('experience.sqlite3'+suffix),missing_ok=True)
                     with closing(sqlite3.connect(dbpath.as_uri()+'?mode=ro',uri=True)) as src,closing(sqlite3.connect(staging/'host'/'experience.sqlite3')) as dst: src.backup(dst)
+                    accounting.changed(staging/'host'/'experience.sqlite3')
                 now=time.time();profile.update(id=identifier_new,name=profile['name']+'（複製）',parent=identifier,creation='full-copy',created=now,last_used=now)
-                write_json(staging/'profile.json',profile);staging.rename(target)
+                write_json(staging/'profile.json',profile);accounting.replace(staging,target)
             finally:
-                if staging.exists(): shutil.rmtree(staging)
+                if staging.exists(): accounting.rmtree(staging)
             return identifier_new
 
     def delete(self, identifier):
         with self.exclusive():
             if identifier==self.active(): raise ValueError('現在ロード中の個体は削除できません。別の個体をロードしてください。')
             path=self.path(identifier);self.profile(identifier);list(safe_files(path))
-            shutil.rmtree(path)
+            accounting.rmtree(path)
 
     def export(self, identifier, destination):
         destination=Path(destination)
@@ -219,8 +221,8 @@ class Individuals:
                                 with closing(sqlite3.connect(p.as_uri()+'?mode=ro',uri=True)) as src,closing(sqlite3.connect(backup)) as dst: src.backup(dst)
                                 out.write(backup,'host/experience.sqlite3')
                         else: out.write(p,p.relative_to(folder))
-                temporary.replace(destination)
-            finally: temporary.unlink(missing_ok=True)
+                accounting.replace(temporary,destination)
+            finally: accounting.unlink(temporary,missing_ok=True)
 
     def summary(self, identifier):
         folder=self.path(identifier);profile=self.profile(identifier);settings=self.settings(identifier)

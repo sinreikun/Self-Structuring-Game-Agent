@@ -1,3 +1,4 @@
+from . import usage_index as accounting
 """Bounded, allowlisted, redacted application diagnostics; never upload automatically."""
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
@@ -210,9 +211,9 @@ def create_diagnostics(root: Path, store=None, config=None, activity=None, gui=N
                         except ValueError: data='[invalid metadata]'
                     put('host/'+name,redact(data))
             put('README.txt','診断専用の件数制限付きDBです。全経験の復元用ではありません。モデル・推論エンジン・認証情報は収集しません。画像にはゲーム内の個人情報が表示される場合があります。送信前に内容をご確認ください。')
-        os.replace(tmp,destination)
+        accounting.replace(tmp,destination)
     finally:
-        tmp.unlink(missing_ok=True)
+        accounting.unlink(tmp,missing_ok=True)
     return destination
 
 
