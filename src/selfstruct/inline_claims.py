@@ -57,6 +57,10 @@ def accept(scientist,jid,payload,request,token,hypothesis):
                         from .research_actions import allowed_evidence
                         if not set(ids)<=set(allowed_evidence(payload)):raise ValueError('evidence must be available in this Job')
                         for eid in ids:store.observed_image(eid,value['phase'])
+                    elif type(value) is str:
+                        from .situation_candidates import validate_claim_reference
+                        validate_claim_reference(store,payload,value)
+                        value=payload.get('adopted_situation_candidates',{}).get(value,value)
                     elif type(value)!=int or value not in defined:raise ValueError('Unknown state reference: '+repr(value)+'; requires existing state ID or inline {text,evidence,phase}')
                     normalized[field]=value
                 except (ValueError,OSError,KeyError,TypeError) as error:errors.append({'field':'claim.'+field,'reason':str(error)})
@@ -79,7 +83,9 @@ def accept(scientist,jid,payload,request,token,hypothesis):
                 for field in ('from_state','to_state') if kind=='transition' else ():
                     value=normalized[field]
                     if isinstance(value,dict):normalized[field]=transitions.register_state(store,value['text'],value['evidence'],value['phase'])
-                if kind=='transition':transitions.register_claim(store,hypothesis,scientist.keys[request['action']],normalized)
+                if kind=='transition':
+                    from .situation_candidates import register_bundled_claim
+                    normalized=register_bundled_claim(store,payload,jid,hypothesis,scientist.keys[request['action']],normalized)
                 else:
                     latest=store.db.execute('SELECT coalesce(max(id),0) FROM events').fetchone()[0]
                     store.claim(hypothesis,scientist.keys[request['action']],probability,latest)

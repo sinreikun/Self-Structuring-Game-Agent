@@ -1,4 +1,4 @@
-"""Bounded numeric seeds; only model adoption creates knowledge."""
+"""Bounded numeric seeds; model adoption or model claims create knowledge."""
 from . import transitions
 from .context_snapshot import snapshot
 
@@ -68,3 +68,75 @@ def adopt(store, payload, finding):
     state = transitions.register_state(store, finding['text'], candidate['frames'])
     adopted[candidate['id']] = state
     return state
+
+
+def claim_candidates(payload):
+    return {c['id']: c for c in payload.get('situation_candidates', [])}
+
+
+def validate_claim_reference(store, payload, value):
+    if type(value) is str and value in claim_candidates(payload):
+        for event in claim_candidates(payload)[value]['frames']:
+            store.observed_image(event, 'before')
+        return
+    if type(value) is not int or value not in {r['state'] for r in transitions.representatives(store)}:
+        raise ValueError('Unknown transition state: '+repr(value))
+
+
+def register_bundled_claim(store, payload, job, kid, action, claim):
+    """Validate first; adoption, provenance and frozen claim share one savepoint.
+
+    Existing Store helpers use connection context managers internally. The local
+    facade suppresses their nested commits, without changing Store or its locks.
+    Payload references are published only after the savepoint succeeds.
+    """
+    if not any(type(claim.get(k)) is str for k in ('from_state', 'to_state')):
+        transitions.register_claim(store, kid, action, claim)
+        return dict(claim)
+    import copy
+    import json
+    import math
+    import time
+    probability = claim.get('probability')
+    if type(probability) not in (int, float) or not math.isfinite(probability) or not 0 <= probability <= 1:
+        raise ValueError('Invalid transition probability')
+    class Connection:
+        def __getattr__(self, key):return getattr(store.db, key)
+        def __enter__(self):return self
+        def __exit__(self, *args):return False
+    with store.lock:
+        for field in ('from_state', 'to_state'):
+            validate_claim_reference(store, payload, claim[field])
+        if not store.db.execute("SELECT 1 FROM knowledge WHERE id=? AND kind='hypothesis'", (kid,)).fetchone():
+            raise ValueError('Unknown hypothesis')
+        store.reserve(8192 * 2)
+        view = copy.copy(store)
+        view.db = Connection()
+        adopted = dict(payload.get('adopted_situation_candidates', {}))
+        normalized = dict(claim)
+        store.db.execute('SAVEPOINT candidate_claim')
+        try:
+            store.db.execute("""CREATE TABLE IF NOT EXISTS candidate_adoptions(
+                job TEXT, candidate TEXT, state INTEGER, via TEXT, created REAL,
+                PRIMARY KEY(job,candidate))""")
+            for field in ('from_state', 'to_state'):
+                value = normalized[field]
+                if type(value) is not str:continue
+                if value not in adopted:
+                    frames = claim_candidates(payload)[value]['frames']
+                    # No semantic text is manufactured for a model-selected candidate.
+                    sid = store.db.execute("INSERT INTO knowledge(kind,text,provenance,validation,evidence,created) VALUES('state','','self_generated_model','hypothesis',?,?)",
+                                           (json.dumps(frames), time.time())).lastrowid
+                    transitions.register_state(view, '', frames, state=sid)
+                    store.db.execute('INSERT INTO candidate_adoptions VALUES(?,?,?,?,?)',
+                                     (job, value, sid, 'claim_bundle', time.time()))
+                    adopted[value] = sid
+                normalized[field] = adopted[value]
+            transitions.register_claim(view, kid, action, normalized)
+            store.db.execute('RELEASE candidate_claim')
+        except BaseException:
+            store.db.execute('ROLLBACK TO candidate_claim')
+            store.db.execute('RELEASE candidate_claim')
+            raise
+        payload['adopted_situation_candidates'] = adopted
+        return normalized

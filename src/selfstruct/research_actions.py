@@ -75,6 +75,7 @@ def record_findings(scientist,jid,payload,value):
     from .research import parse_proposal
     proposal=parse_proposal(json.dumps(value,ensure_ascii=False),allowed_evidence(payload),scientist.keys)
     from . import transitions
+    from .situation_candidates import claim_candidates, register_bundled_claim
     state_findings=[f for f in proposal['findings'] if f.get('state') is True]
     for f in state_findings:
         if scientist.experiments:scientist.experiments.require_evaluation(jid)
@@ -97,7 +98,7 @@ def record_findings(scientist,jid,payload,value):
             if 'transition' in finding:
                 c=scientist.store.db.execute('SELECT * FROM transition_claims WHERE knowledge=?',(kid,)).fetchone()
                 t=finding['transition']
-                return bool(c and all(c[k]==t[k] for k in ('from_state','to_state','probability')) and c['action']==scientist.keys[t['action']])
+                return bool(c and all(c[k]==payload.get('adopted_situation_candidates',{}).get(t[k],t[k]) for k in ('from_state','to_state','probability')) and c['action']==scientist.keys[t['action']])
             if scientist.store.db.execute('SELECT 1 FROM transition_claims WHERE knowledge=?',(kid,)).fetchone():return False
             claim=scientist.store.db.execute('SELECT action,probability FROM claims WHERE knowledge=?',(kid,)).fetchone()
             if 'action' in finding and 'change_probability' in finding:
@@ -130,7 +131,7 @@ def record_findings(scientist,jid,payload,value):
                     continue
             kid=existing if existing is not None else scientist.store.knowledge('hypothesis',finding['text'],'inferred','hypothesis',ids)
             if 'transition' in finding:
-                defined={r['state'] for r in transitions.representatives(scientist.store)}
+                defined={r['state'] for r in transitions.representatives(scientist.store)} | set(claim_candidates(payload))
                 if any(finding['transition'][k] not in defined for k in ('from_state','to_state')):
                     if ref:mappings[ref]=kid
                     route_registration(scientist,jid,payload,None,'finding-'+str(kid),kid,{'claim_type':'transition',**finding['transition']})
@@ -138,7 +139,7 @@ def record_findings(scientist,jid,payload,value):
             if existing is None:
                 progress(payload)['new_hypotheses']+=1
                 if 'transition' in finding:
-                    transitions.register_claim(scientist.store,kid,scientist.keys[finding['transition']['action']],finding['transition'])
+                    register_bundled_claim(scientist.store,payload,jid,kid,scientist.keys[finding['transition']['action']],finding['transition'])
                 action,probability=finding.get('action'),finding.get('change_probability')
                 if type(action)==int and type(probability) in (float,int):
                     latest=scientist.store.db.execute('SELECT coalesce(max(id),0) FROM events').fetchone()[0]
@@ -249,6 +250,7 @@ def route_registration(scientist,jid,payload,request,token,hypothesis,claim=None
 
 def complete_registration(scientist,jid,payload,request,token):
     from . import transitions
+    from .situation_candidates import claim_candidates, register_bundled_claim
     route=payload.get('registration_routes',{}).get(request['route'])
     if not route:raise ValueError('Unknown registration route')
     if route['status']!='pending':return {'state':route['status'],'route':route['id']},None,None
@@ -300,7 +302,7 @@ def complete_registration(scientist,jid,payload,request,token):
             if type(value) not in (int,float) or not math.isfinite(value) or not 0<=value<=1:
                 errors.append(('probability',field,'Expected a number from 0 to 1'));continue
         elif field in ('from_state','to_state'):
-            defined={r['state'] for r in transitions.representatives(scientist.store)}
+            defined={r['state'] for r in transitions.representatives(scientist.store)} | set(claim_candidates(payload))
             if isinstance(value,dict):
                 try:
                     from .research_schema import STATE_CHOICE,validate
@@ -314,7 +316,7 @@ def complete_registration(scientist,jid,payload,request,token):
                 route.setdefault('defined_states',[]).append(sid)
                 payload.setdefault('defined_states',[]).append(sid)
                 route['states']=[dict(r) for r in scientist.store.db.execute("SELECT id,text,evidence FROM knowledge WHERE kind='state'")]
-            elif type(value)!=int or value not in defined:
+            elif type(value) not in (int,str) or value not in defined:
                 errors.append(('state_definition',field,'Undefined state; choose an existing state or define it'));continue
         claim[field]=value
     if errors:
@@ -325,7 +327,7 @@ def complete_registration(scientist,jid,payload,request,token):
     for field in ['probability']+(['from_state','to_state'] if kind=='transition' else []):
         if field not in claim:return pending(field)
     if kind=='transition':
-        transitions.register_claim(scientist.store,route['hypothesis'],scientist.keys[route['action']],{**claim,'action':route['action']})
+        claim=register_bundled_claim(scientist.store,payload,jid,route['hypothesis'],scientist.keys[route['action']],{**claim,'action':route['action']})
     else:
         latest=scientist.store.db.execute('SELECT coalesce(max(id),0) FROM events').fetchone()[0]
         scientist.store.claim(route['hypothesis'],scientist.keys[route['action']],claim['probability'],latest)

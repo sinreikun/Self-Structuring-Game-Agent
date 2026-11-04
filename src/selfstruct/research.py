@@ -53,7 +53,7 @@ PROPOSAL_SCHEMA={
                 'state_id':{'type':'integer'},
                 'candidate_id':{'type':'string','maxLength':40},
                 'phase':{'type':'string','enum':['before','after']},
-                'transition':{'type':'object','additionalProperties':False,'required':['from_state','action','to_state','probability'],'properties':{'from_state':{'type':'integer'},'to_state':{'type':'integer'},'action':{'type':'integer'},'probability':{'type':'number','minimum':0,'maximum':1}}},
+                'transition':{'type':'object','additionalProperties':False,'required':['from_state','action','to_state','probability'],'properties':{'from_state':{'anyOf':[{'type':'integer'},{'type':'string'}]},'to_state':{'anyOf':[{'type':'integer'},{'type':'string'}]},'action':{'type':'integer'},'probability':{'type':'number','minimum':0,'maximum':1}}},
                 'change_probability':{'type':'number','minimum':0,'maximum':1}}}},
         'actions':{'type':'array','maxItems':4,'items':{'type':'object'}},
         'visual_requests':{'type':'array','maxItems':4,'items':{'type':'object'}},
@@ -79,7 +79,7 @@ def parse_proposal(response,allowed,keys):
         transition=finding.get('transition')
         if transition is not None:
             import math
-            if not isinstance(transition,dict) or set(transition)!={'from_state','action','to_state','probability'} or any(type(transition[k])!=int for k in ('from_state','to_state','action')) or not 0<=transition['action']<len(keys) or type(transition['probability']) not in (int,float) or not math.isfinite(transition['probability']) or not 0<=transition['probability']<=1 or 'change_probability' in finding or finding.get('state'):raise ResearchRepairNeeded('Invalid transition claim')
+            if not isinstance(transition,dict) or set(transition)!={'from_state','action','to_state','probability'} or (type(transition['action'])!=int or any(type(transition[k]) not in (int,str) for k in ('from_state','to_state'))) or not 0<=transition['action']<len(keys) or type(transition['probability']) not in (int,float) or not math.isfinite(transition['probability']) or not 0<=transition['probability']<=1 or 'change_probability' in finding or finding.get('state'):raise ResearchRepairNeeded('Invalid transition claim')
         evidence=finding.get('evidence')
         if not isinstance(evidence,list) or not evidence or len(evidence)>64 or any(type(e)!=int or e not in allowed for e in evidence):
             raise ResearchRepairNeeded('evidenceには今回提示した経験IDの整数だけを指定してください。')
@@ -873,7 +873,7 @@ class Scientist:
             prefix+='\n根拠IDはExperience IDのみ。observation IDは観測参照用で、findings.evidenceへ混ぜません。許可Evidence IDs：'+json.dumps(sorted(allowed_evidence(payload)))
             prefix+='\n参照中の仮説（保存された主張と事前登録。変更は別IDへ）：'+json.dumps(payload['hypothesis_context'][-2:] if payload.get('memory_mode')=='pull' else payload['hypothesis_context'],ensure_ascii=False,separators=(',',':'))
             prefix+='\n今回の新規findings.id候補：'+json.dumps(new_ids)+'。既存仮説を使うだけならfindingsを空にしてactions.hypothesisへ既存の別名／IDを指定する。主張・事前登録を変更するなら新規IDで別仮説を定義する。'
-            prefix+='\n状況候補agenda：'+json.dumps(agenda(payload),separators=(',',':'))+'。候補は未定義でクレームから参照できません。代表経験をobserveで確認し、採用する場合はfindingsにstate=true、candidate_id、モデル自身のtext、evidence=[代表経験ID]、phase="before"を指定する。通常状態IDは次の呼出しで使えます。採否・意味は自分で選びます。'
+            prefix+='\n状況候補agenda：'+json.dumps(agenda(payload),separators=(',',':'))+'。遷移クレーム（findings.transitionまたはexperiment.claim）のfrom_state/to_stateには候補IDを直接指定できます。登録成功時に候補束がテキスト無しの通常状態として採用され、クレームは通常状態IDへ解決・凍結されます。別途の採用操作は不要です。代表経験はobserveで確認できます。独立した採用は従来どおりfindingsにstate=true、candidate_id、モデル自身のtext、evidence=[代表経験ID]、phase="before"を指定できます。採否・意味・遷移・確率は自分で選びます。'
             compact_history=False
             history_chars=6000
             omitted_visual_results=0

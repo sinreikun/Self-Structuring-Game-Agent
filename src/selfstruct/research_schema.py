@@ -36,9 +36,11 @@ ACTION_FIELDS={
 # Procedure contents are supplied by the model, never completed by Host.
 STATE_CHOICE={'anyOf':[integer(1),obj({'state':{'type':'boolean','enum':[True]},'text':{**string(1000),'minLength':1},'evidence':array(integer(1),1,16),'phase':{'type':'string','enum':['before','after']}},['state','text','evidence','phase'])]}
 INLINE_STATE={'anyOf':[integer(1),obj({'text':{**string(1000),'minLength':1},'evidence':array(integer(1),1,16),'phase':{'type':'string','enum':['before','after']}},['text','evidence','phase'])]}
+INLINE_STATE['anyOf'].append({**string(40),'minLength':1})
+STATE_CHOICE['anyOf'].append({**string(40),'minLength':1})
 CLAIM_FIELDS={'type':{'type':'string','enum':['transition','change_rate']},'probability':{'type':'number','minimum':0,'maximum':1},'from_state':INLINE_STATE,'to_state':INLINE_STATE}
 # Disjoint branches compile to grammar constraints, including conditional required fields.
-EXPERIMENT_CLAIM={'description':'Model preregistration saved before input. States resolve to existing IDs or inline model definitions; receipt returns IDs. Repeat the same claim for reuse.', 'anyOf':[
+EXPERIMENT_CLAIM={'description':'Model preregistration saved before input. States resolve to existing IDs, current candidate IDs (adopted without text at registration), or inline model definitions; receipt returns IDs. Repeat the same claim for reuse.', 'anyOf':[
     obj({**CLAIM_FIELDS,'type':{'type':'string','enum':['transition']}},['type','probability','from_state','to_state']),
     obj({k:v for k,v in CLAIM_FIELDS.items() if k not in ('from_state','to_state')} | {'type':{'type':'string','enum':['change_rate']}},['type','probability'])]}
 ACTION_FIELDS['experiment'][0]['claim']=EXPERIMENT_CLAIM
@@ -128,10 +130,20 @@ def response_schema(base,keys,allowed,new_ids=None,aliases=None,domain=None):
                         for field in ('from_state','to_state'):
                             if field in branch['properties']:
                                 choices=[deepcopy(INLINE_STATE['anyOf'][1])]
+                                if domain.get('candidates'):choices.append({'type':'string','enum':domain['candidates']})
                                 if domain['states']:choices.insert(0,{'type':'integer','enum':domain['states']})
                                 branch['properties'][field]={'anyOf':choices}
                 variants.append(variant)
             schema['properties'][name]['items']['anyOf']=variants
+    if domain is not None:
+        refs={'anyOf':[{'type':kind,'enum':values} for kind,values in [('integer',domain['states']),('string',domain.get('candidates',[]))] if values]}
+        for field in ('from_state','to_state'):
+            if refs['anyOf']:finding['transition']['properties'][field]=deepcopy(refs)
+            for name in ('actions','visual_requests'):
+                for variant in schema['properties'][name]['items']['anyOf']:
+                    if variant['properties']['op']['enum']==['registration']:
+                        variant['properties'][field]['anyOf']=[v for v in variant['properties'][field]['anyOf'] if v.get('type')!='string']
+                        if domain.get('candidates'):variant['properties'][field]['anyOf'].append({'type':'string','enum':domain['candidates']})
     # A valid database row is not necessarily a reference presented to this Job.
     # Historical references remain available through explicit memory retrieval.
     events=sorted(allowed)
@@ -172,4 +184,4 @@ def reference_domain(store,payload):
         valid={r[0] for r in store.db.execute("SELECT id FROM knowledge WHERE kind='hypothesis' AND provenance='inferred'")}
         aliases={k:v for k,v in payload.get('hypotheses',{}).items() if v in valid}
         states=[r[0] for r in store.db.execute("SELECT DISTINCT k.id FROM knowledge k JOIN state_frames s ON s.state=k.id WHERE k.kind='state' AND k.provenance='self_generated_model' ORDER BY k.id")]
-    return {'hypotheses':[*sorted(aliases),*sorted(set(aliases.values()))],'states':states}
+    return {'hypotheses':[*sorted(aliases),*sorted(set(aliases.values()))],'states':states,'candidates':[c['id'] for c in payload.get('situation_candidates',[])]}
