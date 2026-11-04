@@ -20,19 +20,14 @@ def test_gate_rejection_budget_persistence_and_new_id_adaptation(tmp_path):
         budget=experiment_context(c.scientist,job)
         assert budget['plans_remaining']==4 and budget['inputs_remaining']==32
         saved=json.loads(c.store.get_job(job)['payload'])
-        assert saved['preregistration_gate'][str(kid)]['rejections']==3
+        assert not saved.get('registration_routes')
         assert action_budget_used(saved)==0 and len(saved['action_history'])==3
         result=saved['action_history'][-1]['result']
-        assert result['state']=='rejected' and result['hypothesis']==kid
-        assert result['reasons'][0]['code']=='not_preregistered'
-        assert 'action と change_probability' in result['reasons'][0]['detail']
-        p['action_history']=[] # reminder survives truncation of recent action history
-        assert str(kid) in history_context(p) and any('事前登録不足' in s for s in loop_gaps(p))
-        # Registration mechanism remains unchanged: use a supplied new ID.
+        assert result['state']=='claim_required' and result['hypothesis']==kid
+        assert {v['field'] for v in result['fields']}=={'claim.type','claim.probability'}
+        # Existing direct pre-registration remains available as well.
         record_findings(c.scientist,job,p,{'findings':[{**finding,'id':'h2','action':0,'change_probability':1}]})
         registered=p['hypotheses']['h2'];assert registered!=kid
-        assert p['registrations_after_rejections'][0]['hypothesis']==registered
-        assert not p['preregistration_gate'][str(kid)]['registered_after_rejection']
         plan=c.experiments.submit(job,'registered',{'action':0,'repeat':8},registered)
         assert c.experiments.get(plan)['hypothesis']==registered
         free=c.experiments.submit(job,'explore',{'action':0},None)

@@ -49,6 +49,10 @@ PROPOSAL_SCHEMA={
                 'text':{'type':'string','maxLength':2000},
                 'evidence':{'type':'array','minItems':1,'maxItems':64,'items':{'type':'integer'}},
                 'action':{'type':'integer','minimum':0},
+                'state':{'type':'boolean'},
+                'state_id':{'type':'integer'},
+                'phase':{'type':'string','enum':['before','after']},
+                'transition':{'type':'object','additionalProperties':False,'required':['from_state','action','to_state','probability'],'properties':{'from_state':{'type':'integer'},'to_state':{'type':'integer'},'action':{'type':'integer'},'probability':{'type':'number','minimum':0,'maximum':1}}},
                 'change_probability':{'type':'number','minimum':0,'maximum':1}}}},
         'actions':{'type':'array','maxItems':4,'items':{'type':'object'}},
         'visual_requests':{'type':'array','maxItems':4,'items':{'type':'object'}},
@@ -69,6 +73,10 @@ def parse_proposal(response,allowed,keys):
     if not isinstance(findings,list) or len(findings)>8:raise ResearchRepairNeeded('findingsは最大8件のオブジェクト配列にしてください。')
     for finding in findings:
         if not isinstance(finding,dict) or not isinstance(finding.get('text'),str) or not 1<=len(finding['text'])<=2000:raise ResearchRepairNeeded('各findingにはtext文字列とevidence整数配列が必要です。')
+        transition=finding.get('transition')
+        if transition is not None:
+            import math
+            if not isinstance(transition,dict) or set(transition)!={'from_state','action','to_state','probability'} or any(type(transition[k])!=int for k in ('from_state','to_state','action')) or not 0<=transition['action']<len(keys) or type(transition['probability']) not in (int,float) or not math.isfinite(transition['probability']) or not 0<=transition['probability']<=1 or 'change_probability' in finding or finding.get('state'):raise ResearchRepairNeeded('Invalid transition claim')
         evidence=finding.get('evidence')
         if not isinstance(evidence,list) or not evidence or len(evidence)>64 or any(type(e)!=int or e not in allowed for e in evidence):
             raise ResearchRepairNeeded('evidenceには今回提示した経験IDの整数だけを指定してください。')
@@ -320,7 +328,7 @@ actionとchange_probabilityは指定入力の後に画像が変化する確率�
 任意のrequest()->i32をexportすると、memoryの4096からJSON要求を返せます。0は要求なし、最大8192バイト。
 許可操作はop=write/read/delete/mkdir/list、相対path、writeにはtext。応答は16384に長さ4バイトlittle endian、その後JSON。
 これはAgent専用作業領域だけを扱います。自分のagent.watを書いても本番世代には直接反映されず、候補評価が必要です。
-op=observeはbox=[左,上,右,下]、size=[幅,高さ]またはnative/fit、mode=L/RGBで原画像を調べます。eventとphase=before/after/diffで過去画像、未指定は現在、fresh=trueで再観測。pixelsはoffset/limitで分割取得し、grayは互換用です。ゲーム意味は与えません。
+op=observeはbox=[左,上,右,下]、size=[幅,高さ]またはnative/fit、mode=L/RGBで原画像を調べます。eventとphase=before/after/diffで過去画像、未指定は現在、fresh=trueで再観測、resend=trueで配送済み画像を再送。pixelsはoffset/limitで分割取得し、grayは互換用です。ゲーム意味は与えません。
 op=describe,nodes=[{{id,description,role,input,output,uses,active,effectiveness,created_generation,status}}],edges=[[id,id]]で自分が構成した能力と接続を日本語で報告できます。権限やゲーム意味は追加しません。未報告の能力をHostが推測して表示することはありません。
 op=research,prompt=研究指示で非同期LLM作業を依頼し、返されたjobをop=job,id=jobで確認できます。op=candidate,path=作業領域のWATファイルで自分の改善候補を提出できます。任意のresearch_due(経験数:i32)->i32をexportし0を返すと初期の自動研究役を停止し、独自の役割分割・研究指示で内部構造を置き換えられます。
 評価器は時間順Replayでlearnを実行し、未確認予測はBrier損失0.25。
@@ -798,6 +806,8 @@ class Scientist:
             if self.stop_event.is_set():
                 raise InterruptedError("研究を中断しました。")
             images = []
+            image_candidates = {}
+            suppressed_images = []
             # Earlier numeric payloads stay durably journaled and can be requested
             # again by exact ID. Keep current context focused on the latest turn.
             visible = []
@@ -812,8 +822,17 @@ class Scientist:
                     try:
                         _, attachment = self.visual.handle(entry["request"], pin=pin, native=True)
                         if attachment:
-                            item["attachment_index"] = len(images)
-                            images.append(attachment)
+                            from .image_delivery import delivery_key
+                            key=delivery_key(item.get('result',{}).get('evidence',{}),attachment)
+                            first=payload.get('image_deliveries',{}).get(key)
+                            resend=entry['request'].get('resend',False) and entry.get('step')==payload.get('research_calls',0)
+                            if first is not None and not resend:
+                                item['image_already_delivered']={'first_step':first,'resend':'resend=true'}
+                                suppressed_images.append({'key':key,'first_step':first,'bytes':len(attachment.encode())})
+                            else:
+                                item["attachment_index"] = len(images)
+                                images.append(attachment)
+                                image_candidates[key]=attachment
                     except (ValueError, OSError):
                         item["attachment_error"] = "Source image unavailable"
                 visible.append(item)
@@ -863,7 +882,7 @@ class Scientist:
                 if payload.get('memory_mode')=='pull':payload['memory_index']['input_feedback']=input_feedback(payload,current_views())
                 delivered={item['action_id'] for item in visible if 'action_id' in item}
                 omitted_memory=[{'action_id':item['action_id'],'request':{k:v for k,v in item.get('request',{}).items() if k in ('op','collection','ref','revision','offset','limit','query')}} for item in payload.get('memory_results',[]) if item.get('step')==payload.get('research_calls',0) and item['action_id'] not in delivered]
-                return prefix+'\n研究履歴：'+history_context(payload,compact=compact_history,max_chars=history_chars)+"\n追加観測結果（attachment_indexは画像添付の0始まり番号。古い結果はJob履歴へ保持し必要なら再要求）:"+json.dumps(visible, ensure_ascii=False, separators=(",", ":"))+"\n省略情報："+json.dumps({"older_results_omitted":omitted_visual_results,"attachment_omitted":omitted_attachments,"omitted_memory":omitted_memory})+ '\n今回の手順：観察後、状態条件なしの単一入力の画像変化率仮説を1つ選び、findingsにid,text,evidence,action,change_probabilityを実験前に登録。入力・確率は自分で選ぶ。意味仮説には確率を付けない。同じ登録ID・入力でconditionなしrepeat=8を2計画。間に全結果IDをmemory_noteで検討し、新規仮説へ移らず標本蓄積。experiment_contextの不足数を確認。16件でevaluate（確率省略）→research_report。'
+                return prefix+'\n研究履歴：'+history_context(payload,compact=compact_history,max_chars=history_chars)+"\n追加観測結果（attachment_indexは画像添付の0始まり番号。古い結果はJob履歴へ保持し必要なら再要求）:"+json.dumps(visible, ensure_ascii=False, separators=(",", ":"))+"\n省略情報："+json.dumps({"older_results_omitted":omitted_visual_results,"attachment_omitted":omitted_attachments,"omitted_memory":omitted_memory})+ '\n今回の手順：観察から状態を定義し、遷移または画像変化率の仮説を事前登録。意味・状態名・入力・確率は自分で選ぶ。同じ登録ID・入力で標本蓄積。結果IDを検討し、experiment_contextの不足数を確認。16件でevaluate（確率省略）→research_report。from_state未出現・unknown除外で不足なら未評価と報告。'
             text = render()
             # Context pressure must be recoverable, never cause an endless retry
             # with the same oversized pixels. Expose exact replayable references.
@@ -946,16 +965,22 @@ class Scientist:
                     raise ResearchInputLimit("追加視覚観測がモデルの入力枠を超えました。保存済み結果を保持します。")
             if len(text.encode()) > 100000:
                 raise ResearchInputLimit("視覚研究の入力予算を超えました。")
-            options = {"max_tokens": output_budget, "json_mode": True, "schema": response_schema(PROPOSAL_SCHEMA,self.keys,allowed_evidence(payload),new_ids,payload.get('hypotheses',{})), "on_progress": journal}
+            from .research_schema import reference_domain
+            domain=reference_domain(self.store,payload)
+            call_schema=response_schema(PROPOSAL_SCHEMA,self.keys,allowed_evidence(payload),new_ids,payload.get('hypotheses',{}),domain=domain)
+            options = {"max_tokens": output_budget, "json_mode": True, "schema": call_schema, "on_progress": journal}
             if images:
                 options["images"] = images
             image_bytes=sum(len(i.encode()) for i in images)
             if payload.get('image_bytes',0)+image_bytes>MAX_IMAGE_BYTES:
                 payload['research_limit']='image_bytes';continue
+            from .image_delivery import record_delivery
+            record_delivery(payload,images,image_candidates,suppressed_images,payload.get('research_calls',0)+1)
             payload['image_bytes']=payload.get('image_bytes',0)+image_bytes
             payload['research_calls']=payload.get('research_calls',0)+1
             step={'step':payload['research_calls'],'phase':('repair' if implementation_repair else 'protocol_repair') if payload.get('repair_response') else payload.get('research_phase','observation'),
                   'started_at':time.time(),'consumed_actions':[r['action_id'] for r in payload.get('action_history',[]) if r['state'] in ('done','duplicate','error')], 'image_count':len(images),'delivered_memory_actions':[{'action_id':item['action_id'],**{k:v for k,v in item.get('result',{}).items() if k in ('collection','ref','revision','offset','next_offset','content_sha256','status','source_revision','source_changed')}} for item in visible if 'action_id' in item]}
+            step['reference_domain']=domain
             step['context_budget']=dict(payload.get('context_budget',{}))
             step['delivered_visual_evidence']=current_views()
             step['input_feedback']=payload.get('memory_index',{}).get('input_feedback',[])
@@ -971,8 +996,15 @@ class Scientist:
             except (ValueError, TypeError):
                 return response  # Existing proposal repair retains invalid output.
             if not isinstance(value,dict):return response
-            try:record_findings(self,jid,payload,value)
+            try:
+                from .research_schema import validate_experiment
+                for request in value.get('actions',[])+value.get('visual_requests',[]):validate_experiment(request,len(self.keys),call_schema['properties']['actions']['items'])
+                record_findings(self,jid,payload,value)
             except (ValueError,TypeError,KeyError,ResearchRepairNeeded) as error:
+                from .research_schema import SchemaViolation
+                if isinstance(error,SchemaViolation):
+                    payload.setdefault('schema_violations',[]).append({'at':time.time(),'response':response,'error':str(error)})
+                    self.activity.record('RESEARCH',f'schema_violation job={jid} {error}')
                 payload['repair_response']=response;payload['repair_kind']='protocol';payload['repair_error']=str(error)[:500]
                 self.store.proposal(jid,response)
                 self.store.set_job(jid,'pending',payload)
@@ -1087,6 +1119,10 @@ class Scientist:
             allowed.update(evidence_ids(entry.get('result', {}).get('evidence', {})))
         try:proposal=parse_proposal(response,allowed,self.keys)
         except (ValueError,TypeError,KeyError,ResearchRepairNeeded) as error:
+            from .research_schema import SchemaViolation
+            if isinstance(error,SchemaViolation):
+                payload.setdefault('schema_violations',[]).append({'at':time.time(),'response':response,'error':str(error)})
+                self.activity.record('RESEARCH',f'schema_violation job={jid} {error}')
             payload['repair_response']=response;payload['repair_kind']='protocol';payload['repair_error']=str(error)[:500]
             self.store.set_job(jid,'pending',payload)
             raise ResearchRepairNeeded(str(error)) from error

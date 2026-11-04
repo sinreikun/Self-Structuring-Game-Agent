@@ -12,7 +12,8 @@ MAX_ACTIONS=24
 MAX_SECONDS=600
 MAX_IMAGE_BYTES=4*1024*1024
 
-INSTRUCTIONS='''研究応答JSON: {"findings":[{"id":"供給された新規ID","text":"主張","evidence":[ID]}],"actions":[],"problem":"","reason":"","wat":""}。WATは任意。actionsは最大4件、opは操作名だけで引数は別フィールド。
+INSTRUCTIONS='''実験の登録形式はschema参照。States/samples: index.state_transitions。findings.state=trueで状態を保存。
+研究応答JSON: {"findings":[{"id":"供給された新規ID","text":"主張","evidence":[ID]}],"actions":[],"problem":"","reason":"","wat":""}。WATは任意。actionsは最大4件、opは操作名だけで引数は別フィールド。
 例 {"op":"observe","event":1,"phase":"before","size":[32,32],"mode":"RGB","output":"pixels","limit":64}。例のIDは今回の索引・許可入力へ置換する。
 索引から必要な記録・画像を要求。型はschemaに従う。
 memory_search: collection=experience/knowledge/experiment/visual/research/note/report,query（文字列検索）またはref（既知ID）,limit=1..8,cursor,watermark。索引にref/revisionを返す。
@@ -21,8 +22,8 @@ memory_note: title,body,evidenceで短い課題・計画・不明点を外部保
 目的ループ：観察→仮説ID→experiment→evaluate→research_report。loop_gapsの不足段へ進む。評価は自動添付。未達は未確認。
 research_report: title,target_goal,goal_status=unknown/hypothesis/observed,goal_evidence,findings=[{text,status:observation/hypothesis,evidence}],unknowns,next_steps。日本語で報告。
 observe/compare/analyze: eventは実ID（行番号ではない）。索引外はmemory_search(collection=experience)で取得。eventまたはobservation,phase,box=[左,上,右,下],size,mode,output,operations,offset,limit。必要な場所・方法は自分で選ぶ。compareに第2参照を指定。詳細は視覚API説明。
-experiment: 成熟した未評価仮説があれば新規実験・仮説・claimは予算不消費で拒否、先にevaluate。hypothesis=ID/別名（省略=探索、評価標本外）,action=許可入力番号(0始まり),duration=10..500ms,wait=10..2000ms,repeat=1..8。4計画/32入力。仮説付きはfindingsのaction/change_probability事前登録必須、未登録は計画/入力予算不消費で拒否。condition=画素mean_min/mean_max（省略=無条件）。完了Experience返却、次の実験前に結果IDをfindings等で検討（不明可）。PAUSE入力禁止、STOP再送禁止。
-evaluate: 登録入力の登録後・同一セッション・無条件標本16件以上の未評価仮説を先に評価し、記録後に制限解除。hypothesis,任意のchange_probability=0..1。省略時は既存の事前登録値を使用し、未登録なら実験根拠と理由を持つ保留にする。意味仮説に仮の確率を付けない。画像変化率を検証するなら実験前にfindings.actionとchange_probabilityを登録する。未登録・事後変更・条件選別・入力混在・16件未満は保留。意味・目的達成は未検証。
+experiment: mature unevaluated hypotheses block new experiments/findings/claims without budget charge; evaluate first. hypothesis=ID/alias,action=allowed input index,duration=10..500ms,wait=10..2000ms,repeat=1..8. 4 plans/32 inputs. condition=mean_min/mean_max(optional). Review returned Experience IDs before next experiment; unknown is valid. No PAUSE or STOP resend.
+evaluate: hypothesis,任意のchange_probability=0..1（省略=登録値）。登録後・同一入力・同一セッション・16標本以上が必要。未登録・事後変更・条件選別・入力混在・不足は保留。成熟未評価を先に評価。記述の意味は未検証。
 candidate: problem,evidence（取得済みID2件以上）,behavior,evaluation。
 新規findings.idは毎回提示された候補から選ぶ。同じidへ別の主張や確率を再割当しない。既存仮説を使うだけならfindings=[]でactions.hypothesisへ既存ID/別名を指定する。目的・意味が未確認ならそのまま記録する。
 結果は同じJobへ。index.input_feedbackは実験結果の参照と配信状況。古い画像を新入力の結果と混同しない。1 Job最大10推論/24要求/600秒/画像4MiB。必要なら具体的actionsで続行、不要なら根拠・未確認事項を残して終了。'''
@@ -72,10 +73,27 @@ def record_feedback_statement(payload, ids, collection, ref):
 def record_findings(scientist,jid,payload,value):
     from .research import parse_proposal
     proposal=parse_proposal(json.dumps(value,ensure_ascii=False),allowed_evidence(payload),scientist.keys)
+    from . import transitions
+    state_findings=[f for f in proposal['findings'] if f.get('state') is True]
+    for f in state_findings:
+        if scientist.experiments:scientist.experiments.require_evaluation(jid)
+        aliases=payload.setdefault('state_aliases',{})
+        prior=aliases.get(f.get('id'))
+        if prior and prior['finding']!=f:raise ValueError('State reference cannot be rebound')
+        sid=prior['state'] if prior else transitions.register_state(scientist.store,f['text'],f['evidence'],f.get('phase','before'),f.get('state_id'))
+        if f.get('id'):aliases[f['id']]={'state':sid,'finding':f}
+        payload.setdefault('defined_states',[]).append(sid)
+        record_feedback_statement(payload,f['evidence'],'knowledge',sid)
+    proposal['findings']=[f for f in proposal['findings'] if f not in state_findings]
     mappings=payload.setdefault('hypotheses',{})
     plan=[];batch={}
     with scientist.store.lock:
         def matching_target(kid,finding):
+            if 'transition' in finding:
+                c=scientist.store.db.execute('SELECT * FROM transition_claims WHERE knowledge=?',(kid,)).fetchone()
+                t=finding['transition']
+                return bool(c and all(c[k]==t[k] for k in ('from_state','to_state','probability')) and c['action']==scientist.keys[t['action']])
+            if scientist.store.db.execute('SELECT 1 FROM transition_claims WHERE knowledge=?',(kid,)).fetchone():return False
             claim=scientist.store.db.execute('SELECT action,probability FROM claims WHERE knowledge=?',(kid,)).fetchone()
             if 'action' in finding and 'change_probability' in finding:
                 return bool(claim and claim['action']==scientist.keys[finding['action']] and claim['probability']==finding['change_probability'])
@@ -102,12 +120,20 @@ def record_findings(scientist,jid,payload,value):
                 if pending:
                     from .experiments import EvaluationRequired
                     error=EvaluationRequired(pending)
-                    kind='claim' if 'action' in finding and 'change_probability' in finding else 'finding'
+                    kind='claim' if 'action' in finding and 'change_probability' in finding or 'transition' in finding else 'finding'
                     record_evaluation_rejection(payload,kind,error,{'finding':finding})
                     continue
             kid=existing if existing is not None else scientist.store.knowledge('hypothesis',finding['text'],'inferred','hypothesis',ids)
+            if 'transition' in finding:
+                defined={r['state'] for r in transitions.representatives(scientist.store)}
+                if any(finding['transition'][k] not in defined for k in ('from_state','to_state')):
+                    if ref:mappings[ref]=kid
+                    route_registration(scientist,jid,payload,None,'finding-'+str(kid),kid,{'claim_type':'transition',**finding['transition']})
+                    continue
             if existing is None:
                 progress(payload)['new_hypotheses']+=1
+                if 'transition' in finding:
+                    transitions.register_claim(scientist.store,kid,scientist.keys[finding['transition']['action']],finding['transition'])
                 action,probability=finding.get('action'),finding.get('change_probability')
                 if type(action)==int and type(probability) in (float,int):
                     latest=scientist.store.db.execute('SELECT coalesce(max(id),0) FROM events').fetchone()[0]
@@ -155,18 +181,174 @@ def refresh_preregistration_gate(scientist,payload):
 def hypothesis_id(payload,request):
     value=request.get('hypothesis')
     if isinstance(value,str):
-        if value not in payload.get('hypotheses',{}):raise ValueError('Unknown hypothesis reference')
+        if value not in payload.get('hypotheses',{}):raise ValueError('Unknown hypothesis reference: '+repr(request.get('hypothesis')))
         value=payload['hypotheses'][value]
-    if value is not None and type(value)!=int:raise ValueError('Unknown hypothesis reference')
+    if value is not None and type(value)!=int:raise ValueError('Unknown hypothesis reference: '+repr(request.get('hypothesis')))
     return value
+
+
+def procedure_view(scientist,payload,route):
+    claim=route.get('claim') or {}
+    kind=claim.get('claim_type')
+    fields=['probability']+(['from_state','to_state'] if kind=='transition' else [])
+    missing=[k for k in fields if k not in claim]
+    stage=route.get('stage') or ('claim_type' if not route.get('type_confirmed') else (missing[0] if missing else 'registration'))
+    form={'op':'registration','route':route['id'],'decision':['complete','withdraw'],
+          'action':route['action'],'submitted':dict(route.get('submitted_values',claim)),
+          'required':['claim_type'] if stage=='claim_type' else missing[:1]}
+    if stage=='claim_type':form['claim_type']=kind or ['change_rate','transition']
+    if route.get('field_error'):form['required']=[route['field_error']['field']]
+    if stage=='state_definition':
+        form['required']=[route['invalid_field']]
+        form['state_definition_fields']=['state=true','text','evidence','phase']
+    result={'route':route['id'],'state':'registration_required','stage':stage,
+            'hypothesis':route['hypothesis'],'original_request':route.get('request'),
+            'form':form,'submitted_claim':dict(claim),
+            'next':'Confirm claim_type, then fill only the next required field; complete resumes experiment. withdraw cancels.'}
+    if route.get('field_error'):result['field_error']=route['field_error']
+    if kind=='transition':result.update(candidate_frames=route['candidates'],existing_states=route['states'])
+    return result
+
+
+def route_registration(scientist,jid,payload,request,token,hypothesis,claim=None):
+    routes=payload.setdefault('registration_routes',{})
+    route=next((r for r in routes.values() if r['status']=='pending' and r['hypothesis']==hypothesis and r.get('request')==request),None)
+    if route is None and request:
+        route=next((r for r in routes.values() if r['status']=='pending' and r['hypothesis']==hypothesis and r.get('request') is None),None)
+        if route:route.update(request=request,token=token)
+    if route is None:
+        rid='registration-'+str(len(routes)+1)
+        candidates=[]
+        for event in sorted(allowed_evidence(payload),reverse=True)[:8]:
+            for phase in ('before','after'):
+                try:scientist.store.observed_image(event,phase)
+                except (ValueError,OSError):continue
+                candidates.append({'event':event,'phase':phase})
+        states=[dict(r) for r in scientist.store.db.execute("SELECT id,text,evidence FROM knowledge WHERE kind='state'")]
+        route={'id':rid,'hypothesis':hypothesis,'request':request,'token':token,'action':request['action'] if request else claim['action'],
+               'status':'pending','created':time.time(),'candidates':candidates,'states':states}
+        routes[rid]=route
+        scientist.store.pin([r['event'] for r in candidates],'registration-'+jid+'-'+rid)
+    if claim is not None:
+        route['claim']=dict(claim)
+        route['submitted_values']=dict(claim)
+        if 'from_state' in claim or 'to_state' in claim:route['claim']['claim_type']='transition'
+    if claim is not None:
+        route['unvalidated_claim']=dict(route['claim'])
+        route['claim']={k:v for k,v in route['claim'].items() if k not in ('from_state','to_state')}
+    route.setdefault('stage','claim_type')
+    route['presentations']=route.get('presentations',0)+1
+    scientist.store.set_job(jid,'running',payload)
+    return procedure_view(scientist,payload,route)
+
+
+def complete_registration(scientist,jid,payload,request,token):
+    from . import transitions
+    route=payload.get('registration_routes',{}).get(request['route'])
+    if not route:raise ValueError('Unknown registration route')
+    if route['status']!='pending':return {'state':route['status'],'route':route['id']},None,None
+    if request['decision']=='withdraw':
+        route.update(status='withdrawn',finished=time.time())
+        scientist.store.unpin('registration-'+jid+'-'+route['id'])
+        return {'state':'withdrawn','route':route['id'],'experiment_executed':False},None,None
+    scientist.experiments.require_evaluation(jid)
+    import math
+    claim=dict(route.get('claim') or {})
+    supplied={k:request[k] for k in ('claim_type','probability','from_state','to_state') if k in request}
+    supplied={**route.pop('unvalidated_claim',{}),**supplied}
+    route.setdefault('submitted_values',{}).update(supplied)
+    route.pop('field_error',None)
+    def pending(stage,field=None,reason=None):
+        route.update(claim=claim,stage=stage)
+        if field:route['invalid_field']=field
+        if reason:
+            route['field_error']={'field':field,'reason':reason}
+            route['field_returns']=route.get('field_returns',0)+1
+        route['presentations']=route.get('presentations',0)+1
+        scientist.store.set_job(jid,'running',payload)
+        return procedure_view(scientist,payload,route),None,None
+    mixed=supplied.get('claim_type')=='change_rate' and any(k in supplied for k in ('from_state','to_state'))
+    if mixed:
+        route['unvalidated_claim']={**supplied,'claim_type':'transition'}
+        claim['claim_type']='transition'
+        route['type_confirmed']=False
+        return pending('claim_type','claim_type','State fields require transition; confirm type or withdraw')
+    if 'claim_type' in request:
+        kind=supplied['claim_type']
+        if kind not in ('transition','change_rate'):return pending('claim_type','claim_type','Unknown claim type')
+        if kind=='change_rate' and any(k in claim for k in ('from_state','to_state')):
+            return pending('claim_type','claim_type','State fields require transition; confirm transition or withdraw')
+        claim['claim_type']=kind;route['type_confirmed']=True
+    if any(k in supplied for k in ('from_state','to_state')) and claim.get('claim_type')!='transition':
+        route['unvalidated_claim']={**supplied,'claim_type':'transition'}
+        claim['claim_type']='transition';route['type_confirmed']=False
+        return pending('claim_type','claim_type','Confirm transition or withdraw')
+    if not route.get('type_confirmed'):
+        route['unvalidated_claim']=supplied
+        return pending('claim_type')
+    kind=claim['claim_type']
+    # Validate each submitted value now, retaining other accepted fields.
+    errors=[]
+    for field,value in supplied.items():
+        if field=='claim_type':continue
+        if field=='probability':
+            if type(value) not in (int,float) or not math.isfinite(value) or not 0<=value<=1:
+                errors.append(('probability',field,'Expected a number from 0 to 1'));continue
+        elif field in ('from_state','to_state'):
+            defined={r['state'] for r in transitions.representatives(scientist.store)}
+            if isinstance(value,dict):
+                try:
+                    from .research_schema import STATE_CHOICE,validate
+                    validate(STATE_CHOICE,value)
+                    if value.get('state') is not True or not value.get('evidence') or not value.get('text'):raise ValueError('State definition requires model text and evidence')
+                    if any({'event':eid,'phase':value['phase']} not in route['candidates'] for eid in value['evidence']):raise ValueError('Choose a presented evidence frame')
+                    sid=transitions.register_state(scientist.store,value['text'],value['evidence'],value['phase'])
+                except (ValueError,KeyError,TypeError) as error:
+                    errors.append(('state_definition',field,str(error)));continue
+                value=sid
+                route.setdefault('defined_states',[]).append(sid)
+                payload.setdefault('defined_states',[]).append(sid)
+                route['states']=[dict(r) for r in scientist.store.db.execute("SELECT id,text,evidence FROM knowledge WHERE kind='state'")]
+            elif type(value)!=int or value not in defined:
+                errors.append(('state_definition',field,'Undefined state; choose an existing state or define it'));continue
+        claim[field]=value
+    if errors:
+        route['field_returns']=route.get('field_returns',0)+len(errors)-1
+        route['field_errors']=[{'field':f,'reason':r} for _,f,r in errors]
+        stage,field,reason=errors[0]
+        return pending(stage,field,reason)
+    for field in ['probability']+(['from_state','to_state'] if kind=='transition' else []):
+        if field not in claim:return pending(field)
+    if kind=='transition':
+        transitions.register_claim(scientist.store,route['hypothesis'],scientist.keys[route['action']],{**claim,'action':route['action']})
+    else:
+        latest=scientist.store.db.execute('SELECT coalesce(max(id),0) FROM events').fetchone()[0]
+        scientist.store.claim(route['hypothesis'],scientist.keys[route['action']],claim['probability'],latest)
+    route.update(status='registered',claim=claim,finished=time.time())
+    scientist.store.set_job(jid,'running',payload)
+    scientist.store.unpin('registration-'+jid+'-'+route['id'])
+    if route.get('request'):
+        result=execute(scientist,jid,payload,route['request'],route['token']+'-registered')
+        route['experiment_result']=result[0]
+        # Keep resumed input feedback in the same experiment journal format.
+        payload.setdefault('action_history',[]).append({'action_id':route['token']+'-registered','fingerprint':'resumed-'+route['id'],
+            'request':route['request'],'state':'done','step':payload.get('research_calls',0),'result':result[0]})
+        return result
+    return {'state':'registered','route':route['id'],'hypothesis':route['hypothesis']},None,None
 
 
 def execute(scientist,jid,payload,request,token):
     if not isinstance(request,dict):raise ValueError('Research action must be an object')
     if len(json.dumps(request).encode())>12000:raise ValueError('Research action too large')
     from .research_schema import action_schema,validate
-    validate(action_schema(len(scientist.keys)),request)
+    if request.get('op')=='registration':
+        # Keep the envelope strict; field errors belong to the persistent form.
+        envelope={k:v for k,v in request.items() if k not in ('probability','from_state','to_state','claim_type')}
+        validate(action_schema(len(scientist.keys)),envelope)
+    elif request.get('op')=='experiment':validate(action_schema(len(scientist.keys),experiment_required=False),{k:v for k,v in request.items() if k!='claim'})
+    else:validate(action_schema(len(scientist.keys)),request)
     op=request.get('op','observe');p=progress(payload)
+    if op=='registration':return complete_registration(scientist,jid,payload,request,token)
     if op in ('memory_search','memory_read','memory_note','research_report'):
         from .research_memory import search,read,note,report
         result={'memory_search':search,'memory_read':read,'memory_note':note,'research_report':report}[op](scientist,jid,payload,request)
@@ -185,15 +367,19 @@ def execute(scientist,jid,payload,request,token):
     payload['research_phase']={'experiment':'experiment','evaluate':'evaluation','analyzer_create':'analyzer_creation','analyzer_evaluate':'evaluation','analyze':'analysis'}.get(op,'observation')
     if op=='experiment':
         if getattr(scientist,'experiments',None):scientist.experiments.require_evaluation(jid)
-        hypothesis=hypothesis_id(payload,request)
+        try:hypothesis=hypothesis_id(payload,request)
+        except ValueError as error:
+            return {'state':'claim_required','fields':[{'field':'hypothesis','reason':str(error)}]},None,None
         if not getattr(scientist,'experiments',None):raise ValueError('Player experiment executor unavailable')
-        scientist.experiments.require_preregistration(hypothesis)
         discussed={int(i) for i in payload.get('feedback_statements',{})}
         pending={plan:ids for plan,ids in completed_feedback(payload).items() if not set(ids)&discussed}
         if pending:
             error=ValueError('Review completed input results before another experiment. Cite their actual event IDs in findings, a memory_note or research_report; unknown is valid. Observation methods remain your choice.')
             error.constraints={'completed_results_without_statement':pending,'required':'Record what is known or unknown with result Evidence IDs. Choose observe/compare if needed; old images are not new input results.'}
             raise error
+        from .inline_claims import accept
+        receipt=accept(scientist,jid,payload,request,token,hypothesis)
+        if receipt and receipt.get('state')=='claim_required':return receipt,None,None
         identifier=scientist.experiments.submit(jid,token,request,hypothesis)
         scientist.activity.update(experiment=f'研究Job {jid[:8]}：Experiment {identifier[:8]} の結果待ち',next='Playerで許可入力を試し、同じ研究へ結果を返します')
         while not scientist.stop_event.wait(.05):
@@ -205,6 +391,7 @@ def execute(scientist,jid,payload,request,token):
             raise InterruptedError('Experiment interrupted; inputs will not be replayed')
         row=scientist.experiments.get(identifier)
         result=json.loads(row['result']) or {'experiment':identifier,'state':row['state'],'events':[]}
+        if receipt:result={**result,'registration':receipt}
         if result.get('completed'):p['experiments']+=1;p['new_evidence']+=result['completed']
         payload['research_phase']='evaluation'
         return result,None,None
@@ -271,6 +458,7 @@ def action_budget_used(payload):
     """Bill the full journal except experiment refusals from gates A and B."""
     def exempt(record):
         result=record.get('result',{})
+        if record.get('request',{}).get('op')=='experiment' and result.get('state') in ('registration_required','claim_required'):return True
         return (record.get('request',{}).get('op')=='experiment'
                 and record.get('state')=='error' and result.get('state')=='rejected'
                 and any(reason.get('code') in ('not_preregistered','evaluation_required')
@@ -291,7 +479,7 @@ def run_actions(scientist,jid,payload,requests):
         old=next((r for r in ledger if r['fingerprint']==fingerprint and r['state']=='done'),None)
         record={'action_id':token,'fingerprint':fingerprint,'request':request,'state':'running','at':time.time(),'step':payload.get('research_calls',0)}
         ledger.append(record);scientist.store.set_job(jid,'running',payload)
-        if old and not request.get('fresh') and request.get('op') not in ('experiment','memory_search','memory_read','memory_note','research_report'):
+        if old and not request.get('fresh') and not request.get('resend') and request.get('op') not in ('experiment','registration','memory_search','memory_read','memory_note','research_report'):
             record.update(state='duplicate',result={'duplicate':True,'original_step':old['step'],'result':old['result']})
             payload['duplicate_requests']=payload.get('duplicate_requests',0)+1
             scientist.activity.record('RESEARCH',f'duplicate job={jid} step={record["step"]} op={request.get("op","observe")}')
@@ -425,6 +613,7 @@ def model_history_payload(payload):
 def history_context(payload,compact=False,max_chars=HISTORY_VIEW_CHARS):
     view=model_history_payload(payload)
     result=json.loads(_history_context(view,compact))
+    result['inline_claim_receipts']=payload.get('inline_claim_receipts',[])
     result['loop_gaps']=view['_loop_gaps']
     result['progress']=view['_progress']
     result['latest_success']=[json.loads(_history_context(dict(view,action_history=[entry]),True))['actions'][-1] for entry in view['action_history'] if entry.get('state')=='done'][-1:]
@@ -569,7 +758,15 @@ def experiment_context(scientist,jid):
                 'matching_post_registration_samples':len(eligible),'missing_samples':max(0,16-len(eligible)),
                 'blocking_reasons':reasons,
                 'note':'現在Jobの集計であり評価結果ではない。未登録の過去経験は標本へ転用できない。evaluateは現在Jobの同じ仮説に紐づく実験だけを検査する。'}
+            transition=scientist.store.db.execute('SELECT * FROM transition_claims WHERE knowledge=?',(group['hypothesis'],)).fetchone()
+            if transition and getattr(scientist,'experiments',None):
+                selected,conditional,_=scientist.experiments.evaluation_samples(group['hypothesis'],jid)
+                group['claim_type']='transition'
+                group['evaluation_requirements']={'scope':'current_job_only','preregistered':True,'registered_target':dict(transition),'matching_post_registration_samples':len(selected),'missing_samples':max(0,16-len(selected)),'from_state_absent_or_unknown':not selected}
             result['hypotheses'].append(group)
+    from .transitions import context as transition_context
+    with scientist.store.lock:
+        result['state_transitions']=transition_context(scientist.store,getattr(scientist,'experiments',None),jid)
     result['plans_remaining']=max(0,result['plan_limit']-result['plans_used'])
     result['inputs_remaining']=max(0,result['input_limit']-result['requested_inputs'])
     result['note']='completed/changedは入力別内訳を持つ観測数で統計的な支持・反証ではない。完了経験だけを計数。未送信・中断は成功扱いしない。未登録なら新しい仮説と今後の実験が必要。異なる仮説・入力の標本は混ぜない。'

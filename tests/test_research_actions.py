@@ -25,6 +25,14 @@ def legacy_unregistered_plan(c,job,token,request,kid):
     return identifier
 
 
+def seed_model_finding(c,job,finding):
+    """Persist a prior model turn so experiment references exist at call start."""
+    from selfstruct.research_actions import record_findings
+    payload={'research_rows':c.store.rows()}
+    record_findings(c.scientist,job,payload,{'findings':[finding]})
+    c.store.set_job(job,'pending',payload)
+
+
 class UnlabelledDynamics(SyntheticGame):
     """Hidden bit toggles on input; no game object/goal labels reach research."""
     def capture(self):return Image.new('RGB',(160,96),(231,39,72) if self.position%2 else (7,181,213))
@@ -48,15 +56,15 @@ def test_same_job_crop_compare_experiment_evaluate_analyzer_loop(tmp_path,vision
                 assert '許可入力' in prompt and '"0":"A"' in prompt and '"1":"B"' in prompt
                 return json.dumps({'actions':[{'op':'observe','event':last,'phase':'before','box':[80,0,160,48],'size':[128,64],'mode':'RGB','output':'image' if vision else 'pixels','limit':64}]})
             assert f'"job":"{job}"' in prompt and '追加観測結果' in prompt
-            if vision and n<=6:assert options.get('images') and all(i.startswith('data:image/png;base64,') for i in options['images'])
+            if vision and n==2:assert options.get('images') and all(i.startswith('data:image/png;base64,') for i in options['images'])
             elif not vision:assert 'images' not in options and ('pixels' in prompt or 'mean' in prompt)
             if n==2:
                 assert '"box":[80,0,160,48]' in prompt and '"size":[128,64]' in prompt
                 return json.dumps({'actions':[{'op':'compare','event':last,'phase':'before','compare':{'event':older,'phase':'after'},'box':[80,0,160,48],'size':[64,32],'output':'statistics'}]})
             if n==3:
                 assert 'similarity' in prompt
-                return json.dumps({'findings':[{'id':'h1','text':'同じ許可入力後に画像差分が再現するかを検証する。意味は不明。','action':1,'change_probability':1.0,'evidence':[last,older]}],
-                    'actions':[{'op':'experiment','hypothesis':'h1','action':1,'duration':10,'wait':10,'repeat':8}]})
+                return json.dumps({'findings':[],
+                    'actions':[{'op':'experiment','hypothesis':'h1','claim':{'type':'change_rate','probability':1},'action':1,'duration':10,'wait':10,'repeat':8}]})
             if n==4:
                 assert '同じ許可入力後に画像差分が再現するかを検証する' in prompt
                 assert '"preregistered":{"action":1,"change_probability":1.0,"after_id":' in prompt
@@ -64,7 +72,7 @@ def test_same_job_crop_compare_experiment_evaluate_analyzer_loop(tmp_path,vision
                 state=json.loads(c.store.get_job(job)['payload'])
                 completed=state['action_history'][-1]['result']['events']
                 return json.dumps({'findings':[{'id':'r4_1','text':'8件の数値結果を受領。支持は未確認で、同じ登録済み仮説の標本を追加する。','evidence':[r['id'] for r in completed]}],
-                                   'actions':[{'op':'experiment','hypothesis':'h1','action':1,'duration':10,'wait':10,'repeat':8}]})
+                                   'actions':[{'op':'experiment','hypothesis':'h1','claim':{'type':'change_rate','probability':1},'action':1,'duration':10,'wait':10,'repeat':8}]})
             if n==5:
                 return json.dumps({'actions':[{'op':'evaluate','hypothesis':'h1','change_probability':1.0}]})
             if n==6:
@@ -74,6 +82,7 @@ def test_same_job_crop_compare_experiment_evaluate_analyzer_loop(tmp_path,vision
             return json.dumps({'findings':[],'actions':[],'wat':'','reason':'計画した観測と入力試験を完了。ゲーム意味は未確認。'})
     client=Client();client.vision=vision;c.scientist.client=client
     job=c.store.job('research',{});errors=[]
+    seed_model_finding(c,job,{'id':'h1','text':'同じ許可入力後に画像差分が再現するかを検証する。意味は不明。','action':1,'change_probability':1.0,'evidence':[last,older]})
     def research():
         try:c.scientist.study(rows,job)
         except BaseException as error:errors.append(error)
@@ -364,9 +373,9 @@ def test_research_schema_requires_testable_condition_and_linked_hypothesis():
     from selfstruct.research_schema import action_schema,validate
     schema=action_schema(15)
     with pytest.raises(ValueError):validate(schema,{'op':'experiment','action':6,'hypothesis':'h1','condition':{'size':[8,8],'mode':'RGB'}})
-    validate(schema,{'op':'experiment','action':6})
-    validate(schema,{'op':'experiment','action':6,'hypothesis':'h1'})
-    validate(schema,{'op':'experiment','action':6,'hypothesis':'h1','condition':{'mean_min':1.5}})
+    with pytest.raises(ValueError):validate(schema,{'op':'experiment','action':6})
+    with pytest.raises(ValueError):validate(schema,{'op':'experiment','action':6,'hypothesis':'h1'})
+    validate(schema,{'op':'experiment','action':6,'hypothesis':'h1','claim':{'type':'change_rate','probability':.5},'condition':{'mean_min':1.5}})
     with pytest.raises(ValueError):validate(schema,{'op':'observe','event':27701,'observation':2})
     with pytest.raises(ValueError):validate(schema,{'op':'observe','event':27701,'fresh':True})
     with pytest.raises(ValueError):validate(schema,{'op':'compare','event':27701,'compare':{'event':27701,'observation':2}})
@@ -458,7 +467,7 @@ def test_generation_schema_issues_new_names_per_turn_and_keeps_old_references():
     from selfstruct.research import PROPOSAL_SCHEMA
     schema=response_schema(PROPOSAL_SCHEMA,['A','B'],{1},['r2_1','r2_2'],{'h1':12})
     base={'findings':[],'actions':[],'problem':'','reason':'','wat':''}
-    validate(schema,{**base,'findings':[{'id':'r2_1','text':'新しい主張','evidence':[1]}],'actions':[{'op':'experiment','hypothesis':'h1','action':1}]})
+    validate(schema,{**base,'findings':[{'id':'r2_1','text':'新しい主張','evidence':[1]}],'actions':[{'op':'experiment','hypothesis':'h1','claim':{'type':'change_rate','probability':1},'action':1}]})
     with pytest.raises(ValueError):validate(schema,{**base,'findings':[{'id':'h1','text':'上書きする主張','evidence':[1]}]})
     with pytest.raises(ValueError):validate(schema,{**base,'actions':[{'op':'evaluate','hypothesis':'unissued','change_probability':.5}]})
 
@@ -549,9 +558,10 @@ def test_last_call_experiment_is_in_final_diagnostic_context(tmp_path,monkeypatc
     c=Controller(Config(root=str(tmp_path),keys=['A','B'],research_every=100000),UnlabelledDynamics());c.step();eid=c.last_eid
     class Client:
         def complete(self,prompt,**options):
-            return json.dumps({'findings':[{'id':'r1_1','text':'入力後の変化確率を事前登録','evidence':[eid],'action':1,'change_probability':1}],
-                'actions':[{'op':'experiment','hypothesis':'r1_1','action':1,'duration':10,'wait':10,'repeat':1}]})
+            return json.dumps({'findings':[],
+                'actions':[{'op':'experiment','hypothesis':'r1_1','claim':{'type':'change_rate','probability':1},'action':1,'duration':10,'wait':10,'repeat':1}]})
     c.scientist.client=Client();job=c.store.job('research',{})
+    seed_model_finding(c,job,{'id':'r1_1','text':'入力後の変化確率を事前登録','evidence':[eid],'action':1,'change_probability':1})
     thread=threading.Thread(target=lambda:c.scientist.study(c.store.rows(),job));thread.start()
     try:
         deadline=time.time()+10
@@ -713,8 +723,8 @@ def test_completed_experiment_ids_remain_available_for_same_job_visual_feedback(
         def complete(self,prompt,**options):
             self.calls+=1
             if self.calls==1:
-                return json.dumps({'findings':[{'id':'r1_1','text':'入力後の画面を調べる。意味は未確認。','action':1,'change_probability':0.5,'evidence':[initial]}],
-                                   'actions':[{'op':'experiment','hypothesis':'r1_1','action':1,'duration':10,'wait':10,'repeat':1}]})
+                return json.dumps({'findings':[],
+                                   'actions':[{'op':'experiment','hypothesis':'r1_1','claim':{'type':'change_rate','probability':0.5},'action':1,'duration':10,'wait':10,'repeat':1}]})
             if self.calls==2:
                 p=json.loads(c.store.get_job(job)['payload'])
                 self.event=p['action_history'][0]['result']['events'][0]['id']
@@ -726,6 +736,7 @@ def test_completed_experiment_ids_remain_available_for_same_job_visual_feedback(
             assert self.calls==3 and bool(options.get('images'))==vision
             return json.dumps({'findings':[{'id':'r3_1','text':'実験前後を取得。意味と目標達成は未確認。','evidence':[initial,self.event]}],'actions':[],'wat':''})
     client=Client();client.vision=vision;c.scientist.client=client;job=c.store.job('research',{})
+    seed_model_finding(c,job,{'id':'r1_1','text':'入力後の画面を調べる。意味は未確認。','action':1,'change_probability':0.5,'evidence':[initial]})
     def study():
         try:c.scientist.study(c.store.rows(),job)
         except Exception as error:errors.append(error)
@@ -772,8 +783,8 @@ def test_actual_experiment_feedback_persists_and_requested_pair_fits_small_reply
         calls.append((prompt,options));n=len(calls)
         history=json.loads(prompt.split('研究履歴：',1)[1].split('\n追加観測結果',1)[0])
         if n==1:
-            return json.dumps({'findings':[{'id':'r1_1','text':'入力の効果は未確認。','action':1,'change_probability':0.5,'evidence':[initial]}],
-                               'actions':[{'op':'experiment','hypothesis':'r1_1','action':1,'duration':10,'wait':10,'repeat':1}]})
+            return json.dumps({'findings':[],
+                               'actions':[{'op':'experiment','hypothesis':'r1_1','claim':{'type':'change_rate','probability':0.5},'action':1,'duration':10,'wait':10,'repeat':1}]})
         feedback=history['index']['input_feedback'][0]
         if n==2:
             event.append(feedback['event_ids'][0]);assert event[0]>initial
@@ -790,6 +801,7 @@ def test_actual_experiment_feedback_persists_and_requested_pair_fits_small_reply
         return '{"findings":[],"actions":[],"wat":""}'
     monkeypatch.setattr(client,'complete',complete);c.scientist.client=client
     job=c.store.job('research',{});errors=[]
+    seed_model_finding(c,job,{'id':'r1_1','text':'入力の効果は未確認。','action':1,'change_probability':0.5,'evidence':[initial]})
     def study():
         try:c.scientist.study(c.store.rows(),job)
         except Exception as exc:errors.append(exc)
@@ -815,11 +827,11 @@ def test_completed_input_requires_result_statement_and_unknown_can_resume(tmp_pa
         calls=0
         def complete(self,prompt,**options):
             self.calls+=1;n=self.calls
-            request={'op':'experiment','hypothesis':'r1_1','action':1,'duration':10,'wait':10,'repeat':1}
+            request={'op':'experiment','hypothesis':'r1_1','claim':{'type':'change_rate','probability':0.5},'action':1,'duration':10,'wait':10,'repeat':1}
             p=json.loads(c.store.get_job(job)['payload'])
             if n==1:
                 # Preplanned batch in one response remains valid.
-                return json.dumps({'findings':[{'id':'r1_1','text':'入力効果は不明。','action':1,'change_probability':0.5,'evidence':[initial]}],'actions':[request,request]})
+                return json.dumps({'findings':[],'actions':[request,request]})
             complete=[a['result'] for a in p['action_history'] if a['state']=='done' and a['request']['op']=='experiment']
             ids=[r['events'][0]['id'] for r in complete]
             if n==2:
@@ -840,6 +852,7 @@ def test_completed_input_requires_result_statement_and_unknown_can_resume(tmp_pa
             return '{"findings":[],"actions":[]}'
     client=Client();client.vision=vision;c.scientist.client=client
     job=c.store.job('research',{});errors=[]
+    seed_model_finding(c,job,{'id':'r1_1','text':'入力効果は不明。','action':1,'change_probability':0.5,'evidence':[initial]})
     def study():
         try:c.scientist.study(c.store.rows(),job)
         except Exception as exc:errors.append(exc)
@@ -856,3 +869,29 @@ def test_completed_input_requires_result_statement_and_unknown_can_resume(tmp_pa
         from selfstruct.diagnostics import diagnostic_job_payload
         assert json.loads(diagnostic_job_payload(json.dumps(p)))['feedback_statements']==p['feedback_statements']
     finally:c.scientist.stop_event.set();worker.join(2);c.close()
+
+
+def test_job_image_delivery_suppresses_and_explicitly_resends(tmp_path):
+    c=Controller(Config(root=str(tmp_path),keys=['A','B'],research_every=100000),UnlabelledDynamics())
+    c.step();eid=c.last_eid
+    counts=[];sizes=[]
+    class Client:
+        vision=True
+        def complete(self,prompt,**options):
+            n=len(counts)+1;counts.append(len(options.get('images',[])))
+            sizes.append(sum(len(i.encode()) for i in options.get('images',[])))
+            if n==3:
+                assert 'image_already_delivered' in prompt and 'first_step' in prompt
+            if n==4:return '{"actions":[],"findings":[],"wat":""}'
+            request=dict(op='observe',event=eid,phase='before',output='image',size=[32,32],mode='RGB')
+            if n==3:request['resend']=True
+            return json.dumps({'actions':[request]})
+    c.scientist.client=Client();jid=c.store.job('research',{})
+    try:
+        c.scientist.study(c.store.rows(),jid)
+        p=json.loads(c.store.get_job(jid)['payload'])
+        assert counts==[0,1,0,1]
+        assert p['image_bytes']==sum(sizes)==2*sizes[1]
+        assert p['image_saved_bytes']>=sizes[1] and p['image_suppressed_count']>=1
+        assert all(r['first_step']==2 for r in p['image_suppressions'])
+    finally:c.close()
