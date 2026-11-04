@@ -41,6 +41,7 @@ def model_instructions(vision, example_event=None):
 
 def allowed_evidence(payload):
     ids={r['id'] for r in payload.get('research_rows',[])}
+    ids.update(c['frames'][0] for c in payload.get('situation_candidates',[]))
     for h in payload.get('visual_history',[]):ids.update(evidence_ids(h.get('result',{}).get('evidence',{})))
     for h in payload.get('action_history',[]):
         for row in h.get('result',{}).get('events',[]):
@@ -80,7 +81,11 @@ def record_findings(scientist,jid,payload,value):
         aliases=payload.setdefault('state_aliases',{})
         prior=aliases.get(f.get('id'))
         if prior and prior['finding']!=f:raise ValueError('State reference cannot be rebound')
-        sid=prior['state'] if prior else transitions.register_state(scientist.store,f['text'],f['evidence'],f.get('phase','before'),f.get('state_id'))
+        if prior:sid=prior['state']
+        elif 'candidate_id' in f:
+            from .situation_candidates import adopt
+            sid=adopt(scientist.store,payload,f)
+        else:sid=transitions.register_state(scientist.store,f['text'],f['evidence'],f.get('phase','before'),f.get('state_id'))
         if f.get('id'):aliases[f['id']]={'state':sid,'finding':f}
         payload.setdefault('defined_states',[]).append(sid)
         record_feedback_statement(payload,f['evidence'],'knowledge',sid)

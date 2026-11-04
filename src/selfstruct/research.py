@@ -51,6 +51,7 @@ PROPOSAL_SCHEMA={
                 'action':{'type':'integer','minimum':0},
                 'state':{'type':'boolean'},
                 'state_id':{'type':'integer'},
+                'candidate_id':{'type':'string','maxLength':40},
                 'phase':{'type':'string','enum':['before','after']},
                 'transition':{'type':'object','additionalProperties':False,'required':['from_state','action','to_state','probability'],'properties':{'from_state':{'type':'integer'},'to_state':{'type':'integer'},'action':{'type':'integer'},'probability':{'type':'number','minimum':0,'maximum':1}}},
                 'change_probability':{'type':'number','minimum':0,'maximum':1}}}},
@@ -73,6 +74,8 @@ def parse_proposal(response,allowed,keys):
     if not isinstance(findings,list) or len(findings)>8:raise ResearchRepairNeeded('findingsは最大8件のオブジェクト配列にしてください。')
     for finding in findings:
         if not isinstance(finding,dict) or not isinstance(finding.get('text'),str) or not 1<=len(finding['text'])<=2000:raise ResearchRepairNeeded('各findingにはtext文字列とevidence整数配列が必要です。')
+        if 'candidate_id' in finding and (finding.get('state') is not True or not isinstance(finding['candidate_id'],str)):
+            raise ResearchRepairNeeded('candidate_id requires a model state definition')
         transition=finding.get('transition')
         if transition is not None:
             import math
@@ -789,6 +792,11 @@ class Scientist:
         from .research_mission import identity
         payload['mission']=identity()
         payload.setdefault('research_started',time.time());payload['research_job']=jid
+        from .situation_candidates import generate, agenda
+        if 'situation_candidates' not in payload:
+            payload['situation_candidates']=generate(self.store,jid)
+            self.store.pin([i for c in payload['situation_candidates'] for i in c['frames']],pin)
+            self.store.set_job(jid,'running',payload)
         if payload.get('pending_actions'):
             run_actions(self,jid,payload,payload['pending_actions']);payload.pop('pending_actions',None)
         if payload.get('memory_mode')!='pull':self.initial_visual_evidence(jid,payload)
@@ -865,6 +873,7 @@ class Scientist:
             prefix+='\n根拠IDはExperience IDのみ。observation IDは観測参照用で、findings.evidenceへ混ぜません。許可Evidence IDs：'+json.dumps(sorted(allowed_evidence(payload)))
             prefix+='\n参照中の仮説（保存された主張と事前登録。変更は別IDへ）：'+json.dumps(payload['hypothesis_context'][-2:] if payload.get('memory_mode')=='pull' else payload['hypothesis_context'],ensure_ascii=False,separators=(',',':'))
             prefix+='\n今回の新規findings.id候補：'+json.dumps(new_ids)+'。既存仮説を使うだけならfindingsを空にしてactions.hypothesisへ既存の別名／IDを指定する。主張・事前登録を変更するなら新規IDで別仮説を定義する。'
+            prefix+='\n状況候補agenda：'+json.dumps(agenda(payload),separators=(',',':'))+'。候補は未定義でクレームから参照できません。代表経験をobserveで確認し、採用する場合はfindingsにstate=true、candidate_id、モデル自身のtext、evidence=[代表経験ID]、phase="before"を指定する。通常状態IDは次の呼出しで使えます。採否・意味は自分で選びます。'
             compact_history=False
             history_chars=6000
             omitted_visual_results=0
