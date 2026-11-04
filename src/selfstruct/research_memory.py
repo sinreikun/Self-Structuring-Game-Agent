@@ -15,6 +15,8 @@ def setup(db):
         db.execute("ALTER TABLE research_reports ADD COLUMN evaluations TEXT NOT NULL DEFAULT '[]'")
     if 'producer' not in {r[1] for r in db.execute('PRAGMA table_info(research_reports)')}:
         db.execute("ALTER TABLE research_reports ADD COLUMN producer TEXT NOT NULL DEFAULT 'llm'")
+    if 'situation_map' not in {r[1] for r in db.execute('PRAGMA table_info(research_reports)')}:
+        db.execute("ALTER TABLE research_reports ADD COLUMN situation_map TEXT NOT NULL DEFAULT '{}'")
     db.execute('CREATE TABLE IF NOT EXISTS research_notes(id INTEGER PRIMARY KEY, job TEXT, title TEXT, body TEXT, evidence TEXT, updated REAL)')
 
 
@@ -66,7 +68,7 @@ def document(scientist,collection,ref):
         if isinstance(p.get('progress'),dict):p['progress']={k:v for k,v in p['progress'].items() if k not in ('memory_reads','memory_searches')}
         return {'job':row['id'],'state':row['state'],**{k:v for k,v in p.items() if k in ('outcome','progress','hypotheses','experiment_context','research_limit')}}
     if collection=='report':
-        for key in ('goal_evidence','findings','unknowns','next_steps','evaluations'):row[key]=json.loads(row[key])
+        for key in ('goal_evidence','findings','unknowns','next_steps','evaluations','situation_map'):row[key]=json.loads(row[key])
         row['attribution']='LLM research report; not an independent verification of game meaning or success'
         return row
     row['evidence']=json.loads(row['evidence']);return row
@@ -245,6 +247,8 @@ def report(scientist,jid,payload,request,*,producer='llm'):
         store.reserve(16384)
         ref=str(store.db.execute('INSERT INTO research_reports(job,title,target_goal,goal_status,goal_evidence,findings,unknowns,next_steps,updated,evaluations,producer) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
             (jid,request['title'],request['target_goal'],request['goal_status'],json.dumps(request['goal_evidence']),encoded(request['findings']),encoded(unknowns),encoded(request['next_steps']),time.time(),encoded(evaluations),producer)).lastrowid)
+        from .transitions import situation_map
+        store.db.execute('UPDATE research_reports SET situation_map=? WHERE id=?',(encoded(situation_map(store)),int(ref)))
         store.pin(ids,'research-report-'+ref)
         return {'status':'saved',**metadata('report',ref,document(scientist,'report',ref)),'evaluation_ids':[e['evaluation_id'] for e in evaluations],'pending_evaluations':pending,
                 'validation':('Host record summary' if producer=='host_record_summary' else 'LLM report')+'; existing statistical verdicts and game success unchanged'}
@@ -291,5 +295,6 @@ def render_report(doc):
     for e in evaluations:
         lines.append('- 仮説 '+str(e['hypothesis'])+'：'+e['status']+' ／ 評価 '+str(e['evaluation_id'])+' ／ 実験 '+str(e['experiments'])+' ／ 根拠 '+str(e['evidence'])+' ／ n='+str(e['n'])+' ／ executor='+e.get('executor','scientist')+' ／ automatic='+str(e.get('automatic',False)))
         lines.append('  判定根拠：'+encoded({'reasons':e['reasons'],'interval95':e['interval95'],'expected_probability':e['expected_probability'],'observed_probability':e['observed_probability'],'limitation':e['limitation']}))
+    lines.append('\nSituation map: '+str(doc.get('situation_map',{})))
     lines+=['\n未確認事項',*('- '+x for x in doc['unknowns']),'\n次の方針',*('- '+x for x in doc['next_steps'])]
     return '\n'.join(lines)

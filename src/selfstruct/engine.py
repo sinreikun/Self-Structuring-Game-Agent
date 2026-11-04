@@ -99,6 +99,7 @@ class Controller:
         self.experiments=Experiments(self.store,self.config.keys,self.activity)
         self.scientist.experiments=self.experiments
         self.current_experiment=None
+        self.baseline_jobs=set()
         self.visual.eyes.cancel = self.scientist.stop_event
         self.scientist.client.context = config.llm_context
         handler = RotatingFileHandler(self.experiment / "host" / "host.log", maxBytes=2 * 1024**2, backupCount=2, encoding="utf-8")
@@ -394,6 +395,25 @@ class Controller:
             self.confirm_steps = 0
             self._restore_learning()
         before = self.game.capture()
+        # Host observation on the sole I/O thread; Player policy is unchanged.
+        from . import transitions
+        with self.store.lock:
+            jobs=[r[0] for r in self.store.db.execute("SELECT id FROM jobs WHERE kind='research' AND state IN ('pending','running')")]
+            queued=self.store.db.execute("SELECT job FROM research_experiments WHERE state IN ('queued','running') ORDER BY created LIMIT 1").fetchone()
+            state,base=transitions.baseline_for(self.store,before)
+        new_jobs=[j for j in jobs if j not in self.baseline_jobs]
+        if new_jobs or (queued and state is not None and base is None):
+            frames=[before];self.game.release()
+            for _ in range(4):
+                if self.cancel_input.wait(.5) or self.halted_step():return 0
+                frames.append(self.game.capture())
+            with self.store.lock:
+                baseline=transitions.save_baseline(self.store,new_jobs[0] if new_jobs else queued[0],frames)
+            self.baseline_jobs.update(new_jobs)
+            self.activity.record('BASELINE',f'id={baseline} frames=5 no_input_seconds=2')
+            before=frames[-1]
+        with self.store.lock:
+            _,base=transitions.baseline_for(self.store,before)
         if self.halted_step():return 0
         self.activity.record("OBS",f"frame={self.steps} region=full")
         feature, raw = features(before)
@@ -448,6 +468,9 @@ class Controller:
         after_hash = self.store.image(after_image,critical=time.time()<self.protect_until or bool(self.scientist.live) or self.revisions.state["trial"])
         change = difference(before, after_image)
         self.store.finish(eid, after_hash, change, time.perf_counter() - started)
+        transitions.grow(self.store,eid,'before','experiment' if experiment else 'observation')
+        transitions.grow(self.store,eid,'after','experiment' if experiment else 'observation')
+        if experiment and base is not None:transitions.correct(self.store,eid,base)
         if experiment:self.experiments.completed(experiment['id']);self.current_experiment=None
         self.activity.record("DIFF",f"score={change:.4f}")
         self.activity.record("STORE",f"event={eid}")

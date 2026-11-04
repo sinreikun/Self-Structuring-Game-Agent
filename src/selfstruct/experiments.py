@@ -163,6 +163,9 @@ class Experiments:
         if claim and claim['claim_type']=='transition':
             from .transitions import samples
             rows=samples(self.store,claim,rows)
+        for row in rows:
+            correction=self.store.db.execute('SELECT mean FROM corrected_changes WHERE event=?',(row['id'],)).fetchone()
+            if correction:row['change']=correction['mean']
         return rows,conditional,experiment_ids
 
     def mature_unevaluated(self,job):
@@ -208,10 +211,19 @@ class Experiments:
             evidence=list(dict.fromkeys(json.loads(hypothesis_row['evidence'])+[r['id'] for r in rows]))
             self.store.db.execute('UPDATE knowledge SET validation=?,evidence=? WHERE id=?',(status,json.dumps(evidence),hypothesis))
             result={'executor':executor,'automatic':automatic,'job':job,'hypothesis':hypothesis,'status':status,'n':n,'observed_probability':p,'expected_probability':probability,'interval95':interval,'pre_registered':registered,'required_samples':16,'reasons':reasons,'registered_target':{'action':self.keys.index(claim['action']),'change_probability':claim['probability'],'after_id':claim['after_id']} if claim else None,'experiments':experiment_ids,'sessions':sorted({r['session'] for r in rows}),'evidence':[r['id'] for r in rows],'previous_status':hypothesis_row['validation'],'limitation':'Image change reproducibility only; game meaning/causality unverified'}
+            measured=[dict(r) for r in self.store.db.execute('SELECT * FROM corrected_changes WHERE event IN ('+','.join('?' for _ in rows)+')',[r['id'] for r in rows])] if rows else []
+            result['baseline_corrections']=measured
+            if claim and claim['claim_type']=='transition' and n==0:
+                guard=self.store.db.execute('SELECT * FROM transition_granularity WHERE knowledge=?',(hypothesis,)).fetchone()
+                plans=self.store.db.execute('SELECT events FROM research_experiments WHERE hypothesis=?'+(' AND job=?' if job is not None else ''),(hypothesis,job) if job is not None else (hypothesis,)).fetchall()
+                reasons.append({'code':'zero_samples_granularity' if guard and guard['max_similarity']>=.99 else 'zero_samples_identification' if any(json.loads(p['events']) for p in plans) else 'zero_samples_insufficient','detail':'No eligible samples: frozen representative identification, granularity and experiment availability.'})
             result['claim_type']=claim['claim_type'] if claim else None
             if claim and claim['claim_type']=='transition':
                 result['registered_target']={'from_state':claim['from_state'],'action':self.keys.index(claim['action']),'to_state':claim['to_state'],'probability':claim['probability'],'after_id':claim['after_id']}
-                result['limitation']='Similarity-defined transition frequency; description semantics unverified'
+                from .transitions import sample_diagnostics
+                all_ids=sorted({i for p in self.store.db.execute('SELECT events FROM research_experiments WHERE hypothesis=?'+(' AND job=?' if job is not None else ''),(hypothesis,job) if job is not None else (hypothesis,)) for i in json.loads(p['events'])})
+                result['sample_diagnostics']=sample_diagnostics(self.store,claim,[{'id':i} for i in all_ids])
+                result['limitation']='Similarity-defined transition frequency; cross-state success requires corrected change >0.01 when baseline exists; description semantics unverified'
             previous=self.store.db.execute('SELECT id,result FROM research_evaluations WHERE hypothesis=? AND job IS ? ORDER BY id DESC LIMIT 1',(hypothesis,job)).fetchone()
             if previous:
                 prior=json.loads(previous['result']);prior['evaluation_id']=previous['id']
