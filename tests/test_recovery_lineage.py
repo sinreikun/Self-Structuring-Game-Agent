@@ -126,3 +126,24 @@ def test_recover_step_without_an_entry_waits_for_a_manual_relaunch(monkeypatch):
     assert game.recover_step() is False
     assert game.recovery_note == 'no recorded launch entry'
     assert not launches
+
+
+def test_recover_step_ignores_host_child_seen_through_lineage(tmp_path, monkeypatch):
+    # The capture worker is a child of the host process; the recorded lineage
+    # also contains the host, so the child enters the descendant ledger. It
+    # must still not block the relaunch (regression: CI repeated-closures).
+    import os as _os
+    entry = tmp_path / 'Game.exe'
+    entry.write_bytes(b'x')
+    host = info(50, 1, r'C:\Python\python.exe', 100)
+    worker = info(30, 50, GAME, 3000)
+    game = make_game(monkeypatch, [{50: host, 30: worker}], [[]], str(entry))
+    game.lineage = [dict(pid=50, created=100, exe=host.exe, parent=1)]
+    game.target_exe = GAME
+    game.target_filter = GAME
+    monkeypatch.setattr(_os, 'getpid', lambda: 50)
+    launches = []
+    game._start_entry = lambda: launches.append(1) or (20, 2000)
+    assert game.recover_step() is False
+    assert game.recovery_note.startswith('launched')
+    assert launches == [1]

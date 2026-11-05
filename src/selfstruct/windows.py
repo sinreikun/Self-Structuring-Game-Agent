@@ -493,7 +493,11 @@ class WindowsGame:
                 if info.parent in own and info.pid not in own:
                     own.add(info.pid)
                     changed = True
-        blocking = {pid for pid in targets if pid not in own or pid in self._recover_known}
+        launched_subtree: dict[int, int] = {}
+        if self._recover_launched is not None:
+            launched_subtree = {self._recover_launched[0]: self._recover_launched[1]}
+            track_descendants(processes, launched_subtree, self.launched_after)
+        blocking = {pid for pid in targets if pid not in own or pid in launched_subtree}
         if blocking:
             self.recovery_note = 'target process present without a window'
             return False
