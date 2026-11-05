@@ -42,6 +42,8 @@ class Config:
     target_created: int = 0
     target_exe: str = ''
     target_hwnd: int = 0
+    entry_exe: str = ''
+    lineage: list = field(default_factory=list)
     window_title: str = ""
     keys: list[str] = field(default_factory=lambda: ["UP", "DOWN", "LEFT", "RIGHT", "ENTER", "SPACE"])
     quota_bytes: int = 10 * 1024**3

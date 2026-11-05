@@ -11,7 +11,8 @@ import threading
 import time
 
 from PIL import Image
-from .processes import LiveProcess, enumerate_windows, process_info, snapshot_processes, track_descendants
+from .processes import (LiveProcess, enumerate_windows, launch_entry, process_info,
+                        process_lineage, snapshot_processes, track_descendants)
 
 KEY_CODES = {**{chr(k): k for k in range(65, 91)}, **{str(k): 48 + k for k in range(10)},
              **{f"NUM{k}": 0x60 + k for k in range(10)},
@@ -112,7 +113,8 @@ def parse_arguments(text: str) -> list[str]:
 class WindowsGame:
     def __init__(self, exe: str, args: list[str], title: str, keys: list[str], *,
                  mode: str='launch', target_pid: int=0, target_created: int=0,
-                 target_exe: str='', target_hwnd: int=0, on_wait=None, cancel=None):
+                 target_exe: str='', target_hwnd: int=0, entry_exe: str='', lineage=None,
+                 on_wait=None, cancel=None):
         if os.name != "nt":
             raise OSError("ゲームの画面操作はWindowsで利用できます。")
         self.exe, self.args, self.title = exe, args, title
@@ -130,6 +132,14 @@ class WindowsGame:
         self.last_launch=0.
         self.launch_strategy=0
         self.pending_launch=False
+        self.entry_exe=entry_exe or ''
+        self.lineage=[dict(node) for node in lineage or []]
+        self.recovery_note=''
+        self._recover_candidate=None
+        self._recover_launched=None
+        self._recover_launches=0
+        self._recover_last_launch=0.
+        self._recover_known={}
         self.startup_timeout=120 if mode in {"attach","launcher"} else 60
         self.keys = set(keys)
         self.process: LiveProcess | None = None
@@ -259,6 +269,12 @@ class WindowsGame:
             if self.process:self.process.close()
             self.process=LiveProcess(chosen.process)
             self.generation+=1
+        if not getattr(self,'entry_exe',''):
+            chain=process_lineage(processes,chosen.process.pid)
+            if chain:
+                self.lineage=[dict(pid=node.pid,created=node.created,exe=node.exe,parent=node.parent)
+                              for node in chain]
+                self.entry_exe=launch_entry(chain)
         if self.hwnd!=chosen.hwnd:self.capturer.close();self.last_input_target=None
         self.hwnd=chosen.hwnd
         self.target_pid,self.target_created=chosen.process.pid,chosen.process.created
@@ -403,6 +419,102 @@ class WindowsGame:
             self.gdi.DeleteObject(bmp)
             self.gdi.DeleteDC(mem)
             self.user.ReleaseDC(hwnd, dc)
+
+    def _recover_blocked(self, processes) -> str | None:
+        if self._recover_launched is not None:
+            pid, created = self._recover_launched
+            root = processes.get(pid)
+            if root is not None and root.created == created:
+                return 'launched entry still running'
+        if self.entry_exe and Path(self.entry_exe).is_file():
+            return None
+        return 'no recorded launch entry'
+
+    def recover_step(self) -> bool:
+        """One recovery scan for attach mode; True once rebound to the new target.
+
+        Replacement processes are found by executable identity or by descent
+        from the recorded lineage / the entry this step launched. A candidate
+        window must be stable across two scans before it is bound (a process
+        launched by this step binds at once), and the recorded entry is
+        launched only while nothing that could still produce the target runs."""
+        if self.mode != 'attach' or not self.target_exe:
+            raise GameUnavailable('この復旧手順はプロセス接続専用です。')
+        if self.cancel and self.cancel.is_set():
+            raise GameUnavailable('再起動を中止しました。')
+        processes = snapshot_processes()
+        windows = enumerate_windows(processes)
+        known = dict(self._recover_known)
+        if self._recover_launched is not None:
+            known.setdefault(*self._recover_launched)
+        for node in self.lineage:
+            if isinstance(node, dict) and node.get('pid'):
+                known.setdefault(int(node['pid']), int(node.get('created') or 0))
+        track_descendants(processes, known, self.launched_after)
+        self._recover_known = known
+        wanted = self.target_exe.casefold()
+        targets = {
+            info.pid for info in processes.values()
+            if info.exe and info.exe.casefold() == wanted
+            and info.created > self.target_created
+            and (info.pid, info.created) not in self.ignored_processes
+        }
+        targets |= {
+            pid for pid in known
+            if pid in processes and processes[pid].exe
+            and processes[pid].exe.casefold() == wanted
+        }
+        candidates = [
+            window for window in windows if window.process.pid in targets
+            and (not self.target_filter or window.process.exe.casefold() == self.target_filter.casefold())
+        ]
+        if candidates:
+            chosen = max(candidates, key=lambda window: window.area)
+            identity = (chosen.process.pid, chosen.hwnd)
+            own = (self._recover_launched is not None
+                   and chosen.process.pid == self._recover_launched[0])
+            if own or identity == self._recover_candidate:
+                self._recover_candidate = None
+                self.target_pid, self.target_created = chosen.process.pid, chosen.process.created
+                self.connect()
+                self._recover_launched = None
+                self._recover_launches = 0
+                self.recovery_note = 'rebound'
+                return True
+            self._recover_candidate = identity
+            self.recovery_note = 'candidate stabilizing'
+            return False
+        self._recover_candidate = None
+        if targets:
+            self.recovery_note = 'target process present without a window'
+            return False
+        blocked = self._recover_blocked(processes)
+        if blocked:
+            self.recovery_note = blocked
+            return False
+        backoff = min(60.0, 5.0 * 2 ** min(self._recover_launches, 4))
+        if self._recover_launches and time.monotonic() - self._recover_last_launch < backoff:
+            self.recovery_note = 'waiting to relaunch'
+            return False
+        try:
+            startup = subprocess.STARTUPINFO()
+            startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startup.wShowWindow = 4
+            self.launched_after = time.time_ns() // 100 + 116444736000000000
+            self.root_process = subprocess.Popen(
+                [self.entry_exe], cwd=str(Path(self.entry_exe).parent),
+                shell=False, startupinfo=startup)
+            root = process_info(self.root_process.pid)
+            self._recover_launched = (self.root_process.pid, root.created if root else 0)
+            self._recover_launches += 1
+            self._recover_last_launch = time.monotonic()
+            self.pending_launch = True
+            self.recovery_note = 'launched ' + Path(self.entry_exe).name
+        except (OSError, ValueError) as error:
+            self._recover_launches += 1
+            self._recover_last_launch = time.monotonic()
+            self.recovery_note = f'launch failed: {error}'
+        return False
 
     def restart(self, force: bool=False) -> None:
         if self.mode=='attach':

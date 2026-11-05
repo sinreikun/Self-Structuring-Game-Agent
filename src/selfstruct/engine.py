@@ -341,7 +341,8 @@ class Controller:
                                         mode=self.config.connection_mode,target_pid=self.config.target_pid,
                                         target_created=self.config.target_created,target_exe=self.config.target_exe,
                                         target_hwnd=self.config.target_hwnd,on_wait=lambda:setattr(self,'last_progress',time.monotonic()),
-                                        cancel=self.stopped)
+                                        cancel=self.stopped,entry_exe=self.config.entry_exe,
+                                        lineage=self.config.lineage)
             self.status = "ゲームへ接続中"
             self.activity.update(phase=self.status, connection="接続中",revision=self.agent_id)
             try:self.game.start()
@@ -352,7 +353,9 @@ class Controller:
                 state=json.loads(state_path.read_text(encoding='utf-8'))
                 if state.get('target_exe') and state['target_exe'].casefold()!=self.game.target_exe.casefold():
                     raise ValueError('前回と異なるゲーム本体が見つかりました。NEWBORNで開始してください。')
-                state['target_exe']=self.game.target_exe;write_json(state_path,state)
+                state['target_exe']=self.game.target_exe
+                if self.game.entry_exe:state['entry_exe']=self.game.entry_exe;state['lineage']=self.game.lineage
+                write_json(state_path,state)
             self.activity.update(connection="接続済み")
             unchanged = 0
             while not self.stopped.is_set():
@@ -424,14 +427,22 @@ class Controller:
         # the next process generation, even when the process restarts quickly.
         with self.store.lock,self.store.db:
             self.store.db.execute("UPDATE events SET state='interrupted' WHERE session=? AND state IN ('pending','sent')",(self.session,))
-        attempt=0
+        attempt=0;last_note=''
         try:
             while not self.stopped.is_set():
                 attempt+=1;self.last_progress=time.monotonic()
                 self.status=f'ゲームを復旧中（{attempt}回目）'
                 self.activity.update(phase=self.status,recovery='起動・再接続を試行中')
                 try:
-                    if isinstance(self.game,WindowsGame) and attempt>1:self.game.restart(force=True)
+                    stepped_bind=False
+                    if (not restart and attempt==1 and isinstance(self.game,WindowsGame)
+                            and self.game.mode=='attach'):
+                        if not self.game.recover_step():
+                            note=self.game.recovery_note
+                            if note!=last_note:log.warning('Game recovery waiting: %s',note);last_note=note
+                            self.stopped.wait(1);attempt=0;continue
+                        stepped_bind=True
+                    elif isinstance(self.game,WindowsGame) and attempt>1:self.game.restart(force=True)
                     elif restart:self.game.restart()
                     else:
                         try:self.game.connect()
@@ -450,6 +461,7 @@ class Controller:
                     self.stopped.wait(.5)
                 except (GameUnavailable,OSError) as error:
                     log.warning('Game recovery attempt %d: %s',attempt,error)
+                    if stepped_bind:attempt=0
                     self.game.release()
                     delay=min(30,self.recovery_delay*2**min(attempt-1,4))
                     self.status=f'ゲームの復旧待ち（{delay:g}秒後に再試行）'

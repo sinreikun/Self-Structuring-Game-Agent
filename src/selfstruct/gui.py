@@ -268,7 +268,8 @@ class App(ManagementUI):
         if path:
             self.fields[name].set(path)
             if name=='game_exe':
-                self.config=replace(self.config,target_pid=0,target_created=0,target_exe='',target_hwnd=0)
+                self.config=replace(self.config,target_pid=0,target_created=0,target_exe='',target_hwnd=0,
+                                    entry_exe='',lineage=[])
                 self.connection_method.set('実行ファイルから起動')
                 self.selected_process.set('実行ファイルから起動します。ランチャーの場合は接続方法を切り替えてください。')
 
@@ -279,8 +280,14 @@ class App(ManagementUI):
         ProcessPicker(self.window,self.selected_target)
 
     def selected_target(self,item):
+        from .processes import launch_entry,process_lineage,snapshot_processes
+        try:lineage=process_lineage(snapshot_processes(),item.process.pid)
+        except OSError:lineage=[]
         self.config=replace(self.config,target_pid=item.process.pid,target_created=item.process.created,
-                            target_exe=item.process.exe,target_hwnd=item.hwnd)
+                            target_exe=item.process.exe,target_hwnd=item.hwnd,
+                            entry_exe=launch_entry(lineage),
+                            lineage=[dict(pid=node.pid,created=node.created,exe=node.exe,parent=node.parent)
+                                     for node in lineage])
         self.connection_method.set('起動中のプロセスに接続')
         if not self.fields['game_exe'].get():self.fields['game_exe'].set(item.process.exe)
         self.fields['window_title'].set('')

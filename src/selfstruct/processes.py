@@ -119,6 +119,58 @@ def discover_targets() -> list[ProcessWindow]:
                   key=lambda item:(not bool(item.hwnd),item.process.name.casefold(),item.process.pid))
 
 
+SHARED_LAUNCH_PARENTS = frozenset({
+    'steam.exe','epicgameslauncher.exe','goggalaxy.exe','explorer.exe','cmd.exe',
+    'powershell.exe','pwsh.exe','python.exe','pythonw.exe','java.exe','dotnet.exe',
+    'services.exe','winlogon.exe','svchost.exe','conhost.exe','dllhost.exe',
+    'runtimebroker.exe','applicationframehost.exe','sihost.exe','taskhostw.exe',
+})
+
+
+def process_lineage(processes: dict[int, 'ProcessInfo'], pid: int, limit: int = 8) -> list['ProcessInfo']:
+    """[target, parent, grandparent, ...] from one snapshot.
+
+    Stops at a missing parent or a recycled one (a parent must predate its child)."""
+    chain: list[ProcessInfo] = []
+    seen: set[int] = set()
+    current = processes.get(pid)
+    while current is not None and current.pid not in seen and len(chain) < limit:
+        seen.add(current.pid)
+        chain.append(current)
+        parent = processes.get(current.parent)
+        if parent is None or parent.created > current.created:
+            break
+        current = parent
+    return chain
+
+
+def launch_entry(lineage: list['ProcessInfo']) -> str:
+    """Executable to relaunch so the target at lineage[0] comes back.
+
+    The highest ancestor that is not a shared platform process and is installed
+    in the target's own directory tree; the target itself when it was launched
+    directly (a directly started program is its own entry)."""
+    if not lineage or not lineage[0].exe:
+        return ''
+    target = lineage[0]
+    target_dir = os.path.dirname(target.exe.replace('/', '\\')).casefold()
+    entry = ''
+    for ancestor in lineage[1:]:
+        if not ancestor.exe:
+            break
+        if os.path.basename(ancestor.exe.replace('/', '\\')).casefold() in SHARED_LAUNCH_PARENTS:
+            break
+        directory = os.path.dirname(ancestor.exe.replace('/', '\\')).casefold()
+        drive = os.path.splitdrive(directory)[0]
+        if not directory or directory == drive + '\\':
+            break
+        if target_dir == directory or target_dir.startswith(directory + '\\'):
+            entry = ancestor.exe
+        else:
+            break
+    return entry or target.exe
+
+
 def track_descendants(processes: dict[int,ProcessInfo], known: dict[int,int], launched_after: int) -> None:
     """Remember exited launchers too; never follow children of a recycled PID."""
     changed=True

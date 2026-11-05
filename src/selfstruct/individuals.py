@@ -17,7 +17,7 @@ import zipfile
 
 from .config import Config, InstanceLock, write_json
 
-INDIVIDUAL_FIELDS = frozenset('game_exe game_args connection_mode target_pid target_created target_exe target_hwnd window_title keys quota_bytes llm_url llm_model model_id model_name model_quant llm_context llm_backend llm_threads mode research_every restart_after max_restarts'.split())
+INDIVIDUAL_FIELDS = frozenset('game_exe game_args connection_mode target_pid target_created target_exe target_hwnd entry_exe lineage window_title keys quota_bytes llm_url llm_model model_id model_name model_quant llm_context llm_backend llm_threads mode research_every restart_after max_restarts'.split())
 
 
 def compatible_keys(old, new):
