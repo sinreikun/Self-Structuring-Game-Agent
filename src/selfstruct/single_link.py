@@ -33,7 +33,8 @@ def context(scientist, payload):
             for name,table in [('claim','claims'),('transition_claim','transition_claims')]:
                 row=store.db.execute('SELECT * FROM '+table+' WHERE knowledge=?',(kid,)).fetchone()
                 result[name]=dict(row) if row else None
-            samples,_,_=scientist.experiments.evaluation_samples(kid)
+            experiments=getattr(scientist,'experiments',None)
+            samples,_,_=experiments.evaluation_samples(kid) if experiments else ([],None,None)
             result.update(samples=samples,missing_samples=max(0,16-len(samples)))
             state_ids=[result['transition_claim'][k] for k in ('from_state','to_state')] if result['transition_claim'] else []
         else:
@@ -99,7 +100,8 @@ def finish(scientist,jid,payload):
     if payload.get('link_end'):return True
     with scientist.store.lock:
         if link['kind']=='claim':
-            done=len(scientist.experiments.evaluation_samples(link['hypothesis_id'])[0])>=16
+            experiments=getattr(scientist,'experiments',None)
+            done=bool(experiments) and len(experiments.evaluation_samples(link['hypothesis_id'])[0])>=16
         elif link['kind']=='hypothesis':
             kid=link['hypothesis_id']
             done=bool(scientist.store.db.execute('SELECT 1 FROM research_claims WHERE knowledge=?',(kid,)).fetchone() and

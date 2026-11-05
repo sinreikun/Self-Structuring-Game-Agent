@@ -3,6 +3,8 @@ import json
 
 
 def calculate(scientist, payload):
+    if getattr(scientist, 'experiments', None) is None:
+        return []
     store = scientist.store
     claims = []
     with store.lock:

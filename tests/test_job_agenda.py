@@ -69,3 +69,11 @@ def test_provisional_evaluation_keeps_claim_in_agenda(world):
             ('prior-job',k,json.dumps({'pre_registered':True,'n':3,'status':'inconclusive'}),0))
     assert calculate(c.scientist,{})==[
         {'kind':'claim','hypothesis_id':k,'samples':3,'required_samples':16,'missing_samples':13}]
+
+
+def test_calculate_without_experiments_returns_empty(world):
+    class Bare:
+        pass
+    bare = Bare()
+    bare.store = world.scientist.store
+    assert calculate(bare, {}) == []
