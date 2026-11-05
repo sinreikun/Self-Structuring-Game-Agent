@@ -797,6 +797,10 @@ class Scientist:
             payload['situation_candidates']=generate(self.store,jid)
             self.store.pin([i for c in payload['situation_candidates'] for i in c['frames']],pin)
             self.store.set_job(jid,'running',payload)
+        from .job_agenda import calculate
+        if 'job_agenda' not in payload:
+            payload['job_agenda']=calculate(self,payload)
+            self.store.set_job(jid,'running',payload)
         if payload.get('pending_actions'):
             run_actions(self,jid,payload,payload['pending_actions']);payload.pop('pending_actions',None)
         if payload.get('memory_mode')!='pull':self.initial_visual_evidence(jid,payload)
@@ -874,6 +878,8 @@ class Scientist:
             prefix+='\n参照中の仮説（保存された主張と事前登録。変更は別IDへ）：'+json.dumps(payload['hypothesis_context'][-2:] if payload.get('memory_mode')=='pull' else payload['hypothesis_context'],ensure_ascii=False,separators=(',',':'))
             prefix+='\n今回の新規findings.id候補：'+json.dumps(new_ids)+'。既存仮説を使うだけならfindingsを空にしてactions.hypothesisへ既存の別名／IDを指定する。主張・事前登録を変更するなら新規IDで別仮説を定義する。'
             prefix+='\n状況候補agenda：'+json.dumps(agenda(payload),separators=(',',':'))+'。遷移クレーム（findings.transitionまたはexperiment.claim）のfrom_state/to_stateには候補IDを直接指定できます。登録成功時に候補束がテキスト無しの通常状態として採用され、クレームは通常状態IDへ解決・凍結されます。別途の採用操作は不要です。代表経験はobserveで確認できます。独立した採用は従来どおりfindingsにstate=true、candidate_id、モデル自身のtext、evidence=[代表経験ID]、phase="before"を指定できます。採否・意味・遷移・確率は自分で選びます。'
+            from .job_agenda import prepend
+            prefix=prepend(prefix,payload['job_agenda'])
             compact_history=False
             history_chars=6000
             omitted_visual_results=0
