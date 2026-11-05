@@ -708,7 +708,7 @@ def _history_context(payload,compact=False):
         recent=[]
         for entry in payload.get('action_history',[])[-2:]:
             result=entry.get('result',{});request={k:v for k,v in entry.get('request',{}).items() if k!='body' and (entry.get('request',{}).get('op')!='research_report' or k in ('op','title'))}
-            view={k:v for k,v in result.items() if k in ('state','error','detail','constraints','completed','hypothesis','status','n','interval95','pre_registered','reasons','registered_target','records','collection','ref','revision','next_offset','experiment')}
+            view={k:v for k,v in result.items() if k in ('state','error','detail','constraints','completed','hypothesis','status','n','interval95','pre_registered','reasons','registered_target','registered_claim','fields','next','records','collection','ref','revision','next_offset','experiment')}
             if 'events' in result:
                 view['event_ids']=[r['id'] for r in result['events']]
                 if not compact:view['events']=[{k:v for k,v in r.items() if k in ('id','action','change','state')} for r in result['events']]
@@ -718,7 +718,7 @@ def _history_context(payload,compact=False):
     count=2 if compact else 4
     for entry in payload.get('action_history',[])[-count:]:
         result=entry.get('result',{})
-        safe={k:v for k,v in result.items() if k in ('state','error','detail','constraints','duplicate','completed','hypothesis','status','n','observed_probability','expected_probability','interval95','id','events','phase','original_step','pre_registered','required_samples','reasons','registered_target','repeated')}
+        safe={k:v for k,v in result.items() if k in ('state','error','detail','constraints','duplicate','completed','hypothesis','status','n','observed_probability','expected_probability','interval95','id','events','phase','original_step','pre_registered','required_samples','reasons','registered_target','registered_claim','fields','next','repeated')}
         if compact:safe.pop('events',None)
         elif isinstance(safe.get('events'),list):safe['events']=[{k:v for k,v in row.items() if k in ('id','action','change','state')} for row in safe['events']]
         request={k:v for k,v in entry.get('request',{}).items() if k!='body'}

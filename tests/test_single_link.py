@@ -196,3 +196,57 @@ def test_a_discovery_remains_fixed_after_new_hypothesis(world):
     hyp(c)
     assert assign(c.scientist,p) is None and p['job_mode']=='discovery'
     assert assign(c.scientist,{})['kind']=='hypothesis'
+
+
+@pytest.mark.parametrize('kind',['change_rate','transition'])
+def test_registered_claim_mismatch_explains_free_resubmission(world,monkeypatch,kind):
+    c=world;k=hyp(c);probability=.0005
+    expected={'type':kind,'probability':probability,'action':'A','action_index':0}
+    if kind=='change_rate':c.store.claim(k,'A',probability,0)
+    else:
+        sid=transitions.register_state(c.store,'model state',[c.last_eid],'before')
+        transitions.register_claim(c.store,k,'A',{'from_state':sid,'to_state':sid,'probability':probability})
+        expected.update(from_state=sid,to_state=sid)
+    j,p=job(c,{'kind':'claim','hypothesis_id':k})
+    bundled={key:value for key,value in expected.items() if key not in ('action','action_index')}
+    bundled['probability']=.75
+    request={'op':'experiment','hypothesis':'assigned','action':0}
+    run_actions(c.scientist,j,p,[{**request,'claim':bundled}])
+    result=p['action_history'][-1]['result']
+    assert result['state']=='claim_required' and result['registered_claim']==expected
+    assert 'without a claim field' in result['next'] and 'registered action' in result['next']
+    assert 'new hypothesis' not in json.dumps(result)
+    assert action_budget_used(p)==0
+    assert not c.store.db.execute('SELECT 1 FROM research_experiments WHERE job=?',(j,)).fetchone()
+    original=c.experiments.submit
+    def submit(*args,**kwargs):
+        ident=original(*args,**kwargs);c.experiments.finish(ident,'expired');return ident
+    monkeypatch.setattr(c.experiments,'submit',submit)
+    from selfstruct.research_actions import history_context
+    for mode in ('pull','full'):
+        p['memory_mode']=mode
+        shown=history_context(p)
+        assert 'registered_claim' in shown and 'without a claim field' in shown
+    p['research_calls']+=1
+    run_actions(c.scientist,j,p,[request])
+    assert p['action_history'][-1]['state']=='done' and action_budget_used(p)==1
+    registered=c.store.db.execute('SELECT * FROM research_claims WHERE knowledge=?',(k,)).fetchone()
+    assert registered['probability']==probability and registered['claim_type']==kind
+
+
+def test_single_link_prompt_view_bounds_lists_without_changing_records():
+    import copy
+    from selfstruct.single_link import prompt_view
+    facts={'assignment':{'kind':'claim','hypothesis_id':2116},
+           'hypothesis':{'id':2116,'text':'model claim','evidence':json.dumps(list(range(1000)))},
+           'claim':{'action':'W','probability':.0005},'missing_samples':8,
+           'samples':[{'id':i,'change':0} for i in range(8)],'evidence_ids':list(range(1000)),
+           'candidate':{'id':'sc-x','frames':list(range(1000))},'states':[],
+           'baseline':[{'frames':json.dumps(list(range(1000)))}]}
+    original=copy.deepcopy(facts);view=prompt_view(facts)
+    assert facts==original and view['assignment']==facts['assignment']
+    assert view['claim']==facts['claim'] and view['missing_samples']==8
+    assert view['samples_count']==8 and len(view['samples'])==3
+    assert view['hypothesis']['evidence_count']==1000 and view['hypothesis']['evidence']==[997,998,999]
+    assert view['candidate']['frames_count']==1000 and len(view['candidate']['frames'])==3
+    assert view['baseline'][0]['frames_count']==1000

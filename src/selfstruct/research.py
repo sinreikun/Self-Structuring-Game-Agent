@@ -803,7 +803,7 @@ class Scientist:
         if 'job_agenda' not in payload:
             payload['job_agenda']=calculate(self,payload)
             self.store.set_job(jid,'running',payload)
-        from .single_link import assign, context as link_context, finish as finish_link, history_view
+        from .single_link import assign, context as link_context, finish as finish_link, history_view, prompt_view
         assign(self,payload)
         payload['link_resume_step']=payload.get('research_calls',0)
         payload['link_history_start']=len(history)
@@ -888,9 +888,11 @@ class Scientist:
                 prefix+='\n研究JSONの形式修正。WAT生成・ABI修正へ移行しないでください。操作名はopの列挙値だけ、パラメータは別のJSONフィールドです。\n検査：'+payload.get('repair_error','')+'\n不完全な応答：'+payload['repair_response'][:3000]
             from .research_mission import MISSION
             if MISSION not in prefix:prefix=MISSION+'\n'+prefix
-            prefix+='\n根拠IDはExperience IDのみ。observation IDは観測参照用で、findings.evidenceへ混ぜません。許可Evidence IDs：'+json.dumps(sorted(allowed_evidence(payload)))
+            evidence=sorted(allowed_evidence(payload))
+            prefix+='\n根拠IDはExperience IDのみ。observation IDは観測参照用で、findings.evidenceへ混ぜません。許可Evidence IDs：'+json.dumps(evidence[-8:] if assigned_context else evidence)
+            if assigned_context:prefix+='（全'+str(len(evidence))+'件、直近8件。以前の記録はmemory_search/readで取得可）'
             if assigned_context:
-                prefix+='\n担当リンクの現在記録：'+json.dumps(assigned_context,ensure_ascii=False,separators=(',',':'))
+                prefix+='\n担当リンクの現在記録：'+json.dumps(prompt_view(assigned_context),ensure_ascii=False,separators=(',',':'))
                 prefix+='\n担当外へのclaim登録・experimentは非課金で差し戻します。新規仮説のみの登録とobserve/compare/memoryは自由です。放棄するときはfindingsにabandon_link=trueとtextに理由、evidenceに根拠IDを記録してください。担当が閉じるか放棄するまで製品既定予算内で継続します。'
             prefix+='\n参照中の仮説（保存された主張と事前登録。変更は別IDへ）：'+json.dumps(payload['hypothesis_context'][-2:] if payload.get('memory_mode')=='pull' else payload['hypothesis_context'],ensure_ascii=False,separators=(',',':'))
             prefix+='\n今回の新規findings.id候補：'+json.dumps(new_ids)+'。既存仮説を使うだけならfindingsを空にしてactions.hypothesisへ既存の別名／IDを指定する。主張・事前登録を変更するなら新規IDで別仮説を定義する。'

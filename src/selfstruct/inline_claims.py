@@ -78,7 +78,11 @@ def accept(scientist,jid,payload,request,token,hypothesis):
                 expected={'type':existing['claim_type'],'probability':existing['probability']}
                 if existing['claim_type']=='transition':expected.update({k:existing[k] for k in ('from_state','to_state')})
                 if normalized!=expected or existing['action']!=scientist.keys[request['action']]:
-                    return reject([{'field':'claim','reason':'differs from immutable registered claim; use a new hypothesis'}])
+                    result=reject([{'field':'claim','reason':'differs from immutable registered claim'}])
+                    result['registered_claim']={**expected,'action':existing['action'],
+                                                'action_index':scientist.keys.index(existing['action'])}
+                    result['next']='Resend this hypothesis with the registered action and without a claim field to experiment using the immutable registered claim. No input executed.'
+                    return result
             else:
                 for field in ('from_state','to_state') if kind=='transition' else ():
                     value=normalized[field]

@@ -57,6 +57,26 @@ def context(scientist, payload):
     return result
 
 
+def prompt_view(facts):
+    """Bound model display only; full evidence and sample ledgers remain available."""
+    import copy
+    view=copy.deepcopy(facts)
+    def recent(record, field):
+        values=record.get(field,[])
+        if isinstance(values,str):values=json.loads(values)
+        record[field+'_count']=len(values)
+        record[field]=values[-3:]
+    for record in [view.get('hypothesis'),*view.get('states',[])]:
+        if record:recent(record,'evidence')
+    if view.get('candidate'):recent(view['candidate'],'frames')
+    for record in view.get('baseline',[]):recent(record,'frames')
+    recent(view,'evidence_ids')
+    if 'samples' in view:recent(view,'samples')
+    claim=view.get('transition_claim')
+    if claim and claim.get('representatives'):recent(claim,'representatives')
+    return view
+
+
 def rejection(scientist, payload, hypothesis, claim=None):
     link=payload.get('assigned_link')
     if not link:return None
