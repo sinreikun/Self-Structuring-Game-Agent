@@ -436,8 +436,38 @@ def execute(scientist,jid,payload,request,token):
     if op=='compare' and not isinstance(request.get('compare'),dict):raise ValueError('compare requires a second Evidence reference')
     if op in ('compare','analyze'):translated['op']='observe'
     if translated.get('op','observe')=='observe' and translated.get('output','pixels') in ('pixels','image'):translated={'limit':128,**translated}
+    resize = None
+    observation_key = None
+    if op == 'observe':
+        from .vision import box_for, fitted_size, MAX_PIXELS
+        image, reference = scientist.visual.eyes.source(translated, allowed=available, pin='research-job-'+jid)
+        try:box = box_for(translated.get('box'), image.size)
+        except ValueError:box = [0,0,*image.size]  # checked_transform returns the original structured error
+        requested = translated.get('size', [32,32])
+        dimensions = [box[2]-box[0],box[3]-box[1]] if requested in ('native','fit') else requested
+        if requested != 'fit' and isinstance(dimensions,list) and len(dimensions)==2 and all(type(v)==int and 1<=v<=MAX_PIXELS for v in dimensions) and dimensions[0]*dimensions[1]>MAX_PIXELS:
+            delivered = fitted_size(dimensions)
+            translated = {**translated, 'size':delivered}
+            resize = {'requested_size':requested, 'requested_dimensions':dimensions, 'delivered_size':delivered,
+                      'rounded':True, 'resize_policy':'aspect_preserving_within_max_pixels'}
+        # Exact source pixels, including shape/mode, and all observation conditions.
+        # Capture current/fresh once, then bind execution to its immutable reference.
+        conditions = canonical_request(translated)
+        for key in ('fresh','resend'):conditions.pop(key,None)
+        observation_key = hashlib.sha256(image.mode.encode()+str(image.size).encode()+image.tobytes()+json.dumps(conditions,sort_keys=True).encode()).hexdigest()
+        old = next((r for r in reversed(payload.get('action_history',[])) if r.get('observation_key')==observation_key and r.get('state')=='done'),None)
+        if old and not request.get('resend'):
+            result = {'duplicate':True, 'unchanged':True, 'original_action_id':old['action_id'],
+                      'original_step':old['step'], 'image_bytes':0, 'action_charged':False}
+            if resize:result.update(resize)
+            return result,None,None
+        translated = resolved_request(translated,reference)
     scientist.activity.update(experiment=f'研究Job {jid[:8]}：{op} Experience {request.get("event","現在")} {request.get("phase","before")} 領域 {request.get("box","全体")} 解像度 {request.get("size","既定")}',next='取得結果を同じ研究Jobへ返して再推論')
     result,attachment=scientist.visual.handle(translated,pin='research-job-'+jid,native=bool(getattr(scientist.client,'vision',False)),allowed=available)
+    if resize:result.update(resize)
+    if observation_key:
+        record = next((r for r in reversed(payload.get('action_history',[])) if r['action_id']==token),None)
+        if record is not None:record['observation_key']=observation_key
     if len(json.dumps(result).encode())>12000:result={'error':'VisualResultTooLarge','detail':'Use smaller size/crop or pixels limit<=512'};attachment=None
     resolved=resolved_request(translated,result['evidence']) if 'evidence' in result else translated
     ids=sorted(evidence_ids(result.get('evidence',{})))
@@ -462,9 +492,10 @@ def canonical_request(request):
 
 
 def action_budget_used(payload):
-    """Bill the full journal except experiment refusals from gates A and B."""
+    """Bill performed work; gate refusals and unchanged observe references are free."""
     def exempt(record):
         result=record.get('result',{})
+        if record.get('request',{}).get('op')=='observe' and record.get('state')=='duplicate' and result.get('unchanged'):return True
         if record.get('request',{}).get('op')=='experiment' and result.get('state') in ('registration_required','claim_required'):return True
         return (record.get('request',{}).get('op')=='experiment'
                 and record.get('state')=='error' and result.get('state')=='rejected'
@@ -486,7 +517,7 @@ def run_actions(scientist,jid,payload,requests):
         old=next((r for r in ledger if r['fingerprint']==fingerprint and r['state']=='done'),None)
         record={'action_id':token,'fingerprint':fingerprint,'request':request,'state':'running','at':time.time(),'step':payload.get('research_calls',0)}
         ledger.append(record);scientist.store.set_job(jid,'running',payload)
-        if old and not request.get('fresh') and not request.get('resend') and request.get('op') not in ('experiment','registration','memory_search','memory_read','memory_note','research_report'):
+        if old and request.get('op','observe')!='observe' and not request.get('fresh') and not request.get('resend') and request.get('op') not in ('experiment','registration','memory_search','memory_read','memory_note','research_report'):
             record.update(state='duplicate',result={'duplicate':True,'original_step':old['step'],'result':old['result']})
             payload['duplicate_requests']=payload.get('duplicate_requests',0)+1
             scientist.activity.record('RESEARCH',f'duplicate job={jid} step={record["step"]} op={request.get("op","observe")}')
@@ -496,7 +527,8 @@ def run_actions(scientist,jid,payload,requests):
         else:
             try:
                 result,resolved,attachment=execute(scientist,jid,payload,request,token)
-                record.update(state='done',result=result,returned_at=time.time())
+                record.update(state='duplicate' if result.get('unchanged') and result.get('duplicate') else 'done',result=result,returned_at=time.time())
+                if record['state']=='duplicate':payload['duplicate_requests']=payload.get('duplicate_requests',0)+1
                 if resolved is not None:
                     record['visual_index']=len(payload.setdefault('visual_history',[]))
                     payload['visual_history'].append({'request':resolved,'result':result,'native':bool(attachment),'job':jid,'step':record['step']})

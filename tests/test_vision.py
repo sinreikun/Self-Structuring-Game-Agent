@@ -353,7 +353,9 @@ def test_managed_vision_context_pressure_preserves_references_and_does_not_retry
     job = store.job('research', {})
     scientist.study(store.rows(), job)
     assert len(calls) == 2 and store.get_job(job)['state'] == 'complete'
-    assert len(json.loads(store.get_job(job)['payload'])['visual_history']) == 4
+    payload=json.loads(store.get_job(job)['payload'])
+    assert len(payload['visual_history']) == 1
+    assert [a['state'] for a in payload['action_history']]==['done','duplicate','duplicate','duplicate']
 
 
 def test_actual_trace_identifies_evidence_region_and_resolution_within_display_budget(world):
@@ -380,7 +382,7 @@ def test_research_recovers_from_real_source_bounds_and_native_area_limits(world,
                 assert '"source_size":[1600,900]' in prompt and 'omit box for full source' in prompt
                 return json.dumps({'actions':[{'op':'observe','event':eid,'size':'native','mode':'RGB','output':'pixels','limit':64}]})
             if self.calls==3:
-                assert '"max_pixels":262144' in prompt and 'reducing limit does not reduce' in prompt
+                assert '"rounded":true' in prompt and '"delivered_size":[682,384]' in prompt
                 return json.dumps({'actions':[{'op':'observe','event':eid,'size':resolution,'mode':'RGB','output':'image' if vision else 'pixels','limit':64}]})
             expected=[682,384] if resolution=='fit' else resolution
             assert self.calls==4 and '"size":'+json.dumps(expected,separators=(',',':')) in prompt
@@ -391,11 +393,11 @@ def test_research_recovers_from_real_source_bounds_and_native_area_limits(world,
     scientist=Scientist(store,Revisions(store.root/'revisions'),client,['A'],48,lambda _:None);scientist.visual=access
     job=store.job('research',{});scientist.study(store.rows(),job)
     payload=json.loads(store.get_job(job)['payload'])
-    assert client.calls==4 and [a['state'] for a in payload['action_history']]==['error','error','done']
+    assert client.calls==4 and [a['state'] for a in payload['action_history']]==['error','done','done']
     assert payload['action_history'][0]['result']['constraints']['source_size']==[1600,900]
-    assert payload['action_history'][1]['result']['constraints']['suggested_size']==[682,384]
-    if resolution=='fit':assert payload['research_steps'][-1]['delivered_visual_evidence'][0]['requested_size']=='fit'
-    assert payload['progress']['new_evidence']==1 and payload['visual_history'][0]['request']['size']==resolution
+    assert payload['action_history'][1]['result']['delivered_size']==[682,384]
+    if resolution=='fit':assert any(v.get('requested_size')=='fit' for v in payload['research_steps'][-1]['delivered_visual_evidence'])
+    assert payload['progress']['new_evidence']==2 and payload['visual_history'][1]['request']['size']==resolution
     from selfstruct.diagnostics import diagnostic_job_payload
     assert json.loads(diagnostic_job_payload(json.dumps(payload)))['action_history'][0]['result']['constraints']['source_size']==[1600,900]
 
