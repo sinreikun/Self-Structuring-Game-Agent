@@ -74,6 +74,10 @@ def record_feedback_statement(payload, ids, collection, ref):
 def record_findings(scientist,jid,payload,value):
     from .research import parse_proposal
     proposal=parse_proposal(json.dumps(value,ensure_ascii=False),allowed_evidence(payload),scientist.keys)
+    from .single_link import abandon, rejection
+    abandoned=[f for f in proposal['findings'] if f.get('abandon_link')]
+    for finding in abandoned:abandon(scientist,jid,payload,finding)
+    proposal['findings']=[f for f in proposal['findings'] if f not in abandoned]
     from . import transitions
     from .situation_candidates import claim_candidates, register_bundled_claim
     state_findings=[f for f in proposal['findings'] if f.get('state') is True]
@@ -95,6 +99,7 @@ def record_findings(scientist,jid,payload,value):
     plan=[];batch={}
     with scientist.store.lock:
         def matching_target(kid,finding):
+            if payload.get('assigned_link') and payload['assigned_link'].get('hypothesis_id')==kid and not scientist.store.db.execute('SELECT 1 FROM research_claims WHERE knowledge=?',(kid,)).fetchone():return True
             if 'transition' in finding:
                 c=scientist.store.db.execute('SELECT * FROM transition_claims WHERE knowledge=?',(kid,)).fetchone()
                 t=finding['transition']
@@ -107,6 +112,9 @@ def record_findings(scientist,jid,payload,value):
         # Validate every reserved alias before writing any new Knowledge or claim.
         for finding in proposal['findings']:
             ids=sorted(set(finding['evidence']));ref=finding.get('id');existing=None
+            if ref in mappings and ('transition' in finding or 'action' in finding and 'change_probability' in finding):
+                if rejection(scientist,payload,mappings[ref],finding.get('transition')):
+                    finding={k:v for k,v in finding.items() if k not in ('transition','action','change_probability')}
             if ref in batch:
                 if batch[ref]!=finding:raise ValueError('Hypothesis reference cannot be rebound; choose a supplied new findings.id')
                 continue
@@ -121,7 +129,11 @@ def record_findings(scientist,jid,payload,value):
                     if matching_target(old['id'],finding):existing=old['id'];break
             plan.append((finding,ids,ref,existing))
         for finding,ids,ref,existing in plan:
-            if existing is None and getattr(scientist,'experiments',None):
+            has_claim='transition' in finding or 'action' in finding and 'change_probability' in finding
+            if has_claim and rejection(scientist,payload,existing,finding.get('transition')):
+                # Keep the model's new hypothesis, but do not register its claim.
+                finding={k:v for k,v in finding.items() if k not in ('transition','action','change_probability')}
+            if existing is None and getattr(scientist,'experiments',None) and not (payload.get('assigned_link') and not ('transition' in finding or 'action' in finding and 'change_probability' in finding)):
                 pending=scientist.experiments.mature_unevaluated(jid)
                 if pending:
                     from .experiments import EvaluationRequired
@@ -150,6 +162,12 @@ def record_findings(scientist,jid,payload,value):
             else:
                 evidence=json.loads(scientist.store.db.execute('SELECT evidence FROM knowledge WHERE id=?',(kid,)).fetchone()[0])
                 with scientist.store.db:scientist.store.db.execute('UPDATE knowledge SET evidence=? WHERE id=?',(json.dumps(sorted(set(evidence+ids))),kid))
+                if payload.get('assigned_link') and payload['assigned_link'].get('hypothesis_id')==kid and not scientist.store.db.execute('SELECT 1 FROM research_claims WHERE knowledge=?',(kid,)).fetchone():
+                    if 'transition' in finding:
+                        register_bundled_claim(scientist.store,payload,jid,kid,scientist.keys[finding['transition']['action']],finding['transition'])
+                    elif 'action' in finding and 'change_probability' in finding:
+                        latest=scientist.store.db.execute('SELECT coalesce(max(id),0) FROM events').fetchone()[0]
+                        scientist.store.claim(kid,scientist.keys[finding['action']],finding['change_probability'],latest)
             if isinstance(ref,str) and 1<=len(ref)<=40:mappings[ref]=kid
             record_feedback_statement(payload,ids,'knowledge',kid)
     refresh_preregistration_gate(scientist,payload)
@@ -355,6 +373,21 @@ def execute(scientist,jid,payload,request,token):
     elif request.get('op')=='experiment':validate(action_schema(len(scientist.keys),experiment_required=False),{k:v for k,v in request.items() if k!='claim'})
     else:validate(action_schema(len(scientist.keys)),request)
     op=request.get('op','observe');p=progress(payload)
+    from .single_link import rejection
+    if op in ('experiment','registration'):
+        if op=='registration':
+            route=payload.get('registration_routes',{}).get(request.get('route'),{})
+            kid=route.get('hypothesis');claim={**(route.get('claim') or {}),**request}
+        else:
+            try:kid=hypothesis_id(payload,request)
+            except ValueError:kid=None
+            claim=request.get('claim')
+            if claim is None and kid is not None:
+                with scientist.store.lock:
+                    row=scientist.store.db.execute('SELECT * FROM transition_claims WHERE knowledge=?',(kid,)).fetchone()
+                    claim=dict(row) if row else None
+        refusal=rejection(scientist,payload,kid,claim)
+        if refusal:return refusal,None,None
     if op=='registration':return complete_registration(scientist,jid,payload,request,token)
     if op in ('memory_search','memory_read','memory_note','research_report'):
         from .research_memory import search,read,note,report
@@ -495,6 +528,7 @@ def action_budget_used(payload):
     """Bill performed work; gate refusals and unchanged observe references are free."""
     def exempt(record):
         result=record.get('result',{})
+        if result.get('code')=='outside_assigned_link':return True
         if record.get('request',{}).get('op')=='observe' and record.get('state')=='duplicate' and result.get('unchanged'):return True
         if record.get('request',{}).get('op')=='experiment' and result.get('state') in ('registration_required','claim_required'):return True
         return (record.get('request',{}).get('op')=='experiment'
@@ -507,6 +541,8 @@ def action_budget_used(payload):
 def run_actions(scientist,jid,payload,requests):
     ledger=payload.setdefault('action_history',[])
     for index,request in enumerate(requests):
+        from .single_link import finish
+        if finish(scientist,jid,payload):break
         if not isinstance(request,dict):raise ValueError('Research action must be an object')
         if action_budget_used(payload)>=MAX_ACTIONS or time.time()-payload.get('research_started',time.time())>MAX_SECONDS:
             payload['research_limit']='actions' if action_budget_used(payload)>=MAX_ACTIONS else 'time';break
@@ -734,6 +770,10 @@ def context_entry(entry,older=False):
 
 def hypothesis_context(scientist,payload):
     """Keep actively referenced claims in context; an alias alone is not a memory."""
+    if payload.get('assigned_link'):
+        from .single_link import context
+        current=context(scientist,payload)
+        return [{'id':current['hypothesis']['id']}] if current.get('hypothesis') else []
     aliases=payload.get('hypotheses',{});active=[]
     for entry in payload.get('action_history',[])[-4:]:
         ref=entry.get('request',{}).get('hypothesis')

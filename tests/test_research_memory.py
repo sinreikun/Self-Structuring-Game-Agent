@@ -206,7 +206,8 @@ def test_external_notes_survive_reopening_the_individual(world):
 def test_batched_reads_report_undelivered_pages_without_destroying_records(world,monkeypatch):
     from selfstruct.research import LocalLLM
     from selfstruct.research_actions import run_actions
-    c,job,p=world;p.update(memory_mode='pull',research_calls=1,research_started=time.time())
+    # The memory paging scenario is a discovery Job already running before these reads.
+    c,job,p=world;p.update(assigned_link=None,job_mode='discovery',memory_mode='pull',research_calls=1,research_started=time.time())
     requests=[]
     for i in range(4):
         kid=c.store.knowledge('hypothesis',f'本文{i} '+('未確認の記録。'*350),'inferred','hypothesis',[c.last_eid])

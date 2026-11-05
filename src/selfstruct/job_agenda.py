@@ -24,13 +24,19 @@ def calculate(scientist, payload):
                           WHERE kind='hypothesis' AND validation NOT IN ('supported','refuted')
                           AND NOT EXISTS (SELECT 1 FROM research_claims c WHERE c.knowledge=k.id)
                           AND NOT EXISTS (SELECT 1 FROM research_evaluations e WHERE e.hypothesis=k.id)
-                          ORDER BY id LIMIT 3""")]
+                          ORDER BY id""")]
     adopted = payload.get('adopted_situation_candidates', {})
     candidates = [{'kind': 'situation_candidate', 'candidate_id': c['id'],
                    'frame_count': len(c['frames'])}
                   for c in payload.get('situation_candidates', []) if c['id'] not in adopted]
     candidates.sort(key=lambda item: (-item['frame_count'], item['candidate_id']))
-    return (claims + hypotheses + candidates)[:3]
+    items=claims+hypotheses+candidates
+    with store.lock:
+        exists=store.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='link_abandonments'").fetchone()
+        abandoned={r[0] for r in store.db.execute('SELECT DISTINCT link FROM link_abandonments')} if exists else set()
+    from .single_link import key
+    items.sort(key=lambda item:key(item) in abandoned)
+    return items[:3]
 
 
 def prepend(context, items):

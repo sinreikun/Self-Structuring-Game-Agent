@@ -9,6 +9,13 @@ from selfstruct.smoke import SyntheticGame
 
 
 def test_autonomous_research_candidate_live_promotion_and_rollback(tmp_path, monkeypatch):
+    # Isolate the existing discovery-to-promotion lifecycle. Single-link ownership
+    # and closure have separate end-to-end coverage in test_single_link.py.
+    from selfstruct.single_link import assign
+    def discovery(scientist,payload):
+        payload.setdefault('assigned_link',None)
+        return assign(scientist,payload)
+    monkeypatch.setattr('selfstruct.single_link.assign',discovery)
     seed = Path("src/selfstruct/assets/seed.wat").read_text(encoding="utf-8")
     # Fast observation is part of the test fixture, not a real-game performance claim.
     fast = seed.replace('(i32.const 80)', '(i32.const 10)')

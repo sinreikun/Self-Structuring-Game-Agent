@@ -161,7 +161,14 @@ def test_diagnostic_exposes_repair_and_visual_progress_without_prompt_source_or_
         assert 'experiment/model-capabilities.json' in z.namelist()
 
 
-def test_legacy_failure_yields_to_fresh_visual_research_without_resetting_individual(research_world):
+def test_legacy_failure_yields_to_fresh_visual_research_without_resetting_individual(research_world,monkeypatch):
+    # Isolate legacy-job retirement and fresh discovery continuation, rather than
+    # the independent single-link selection/closure protocol.
+    from selfstruct.single_link import assign
+    def discovery(scientist,payload):
+        payload.setdefault('assigned_link',None)
+        return assign(scientist,payload)
+    monkeypatch.setattr('selfstruct.single_link.assign',discovery)
     store,revisions,event=research_world
     first=store.rows(1)[0]
     def collect(n):

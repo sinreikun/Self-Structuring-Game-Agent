@@ -28,7 +28,8 @@ def legacy_unregistered_plan(c,job,token,request,kid):
 def seed_model_finding(c,job,finding):
     """Persist a prior model turn so experiment references exist at call start."""
     from selfstruct.research_actions import record_findings
-    payload={'research_rows':c.store.rows()}
+    # This protocol harness begins as discovery before its scripted first finding.
+    payload={'research_rows':c.store.rows(),'assigned_link':None,'job_mode':'discovery'}
     record_findings(c.scientist,job,payload,{'findings':[finding]})
     c.store.set_job(job,'pending',payload)
 
@@ -585,7 +586,7 @@ def test_managed_context_with_four_experiments_preserves_targets_and_repair(tmp_
     from selfstruct.research import LocalLLM
     from selfstruct.research_actions import record_findings
     c=Controller(Config(root=str(tmp_path),keys=['A','B'],research_every=100000),UnlabelledDynamics());c.step();eid=c.last_eid
-    job=c.store.job('research',{});p={'memory_mode':'legacy','research_rows':c.store.rows(),'research_calls':6,'initial_visual_evidence':True}
+    job=c.store.job('research',{});p={'assigned_link':None,'job_mode':'discovery','memory_mode':'legacy','research_rows':c.store.rows(),'research_calls':6,'initial_visual_evidence':True}
     findings=[{'id':f'r{i}_1','text':f'実験対象{i}：'+('画像変化の再現性はまだ不明。'*14),'evidence':[eid]} for i in range(1,5)]
     record_findings(c.scientist,job,p,{'findings':findings})
     for i in range(1,5):
