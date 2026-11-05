@@ -41,7 +41,7 @@
  ],
  "release_commit": "bc0298a3b8d6fb9a8f041b9bfcf09d4f6353cf4e",
  "release_name": "single-link-research-jobs",
- "release_status": "ci_verified",
+ "release_status": "published",
  "signed_distribution": "not_generated",
  "source": "cab59509afabec45b4327ef4fc36fe85618b2c25",
  "tag": "v0.9.0-dev.1",
