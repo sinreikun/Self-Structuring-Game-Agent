@@ -150,10 +150,10 @@ class Experiments:
         if row['state']=='running' and len(json.loads(row['events']))>=json.loads(row['request'])['repeat']:self.finish(identifier,'complete')
 
     def evaluation_samples(self,hypothesis,job=None):
-        """Read the exact evidence set used by evaluate; no evaluation or writes."""
+        """Read the shared claim ledger across jobs; job never limits evidence."""
         ids=[];conditional=False;experiment_ids=[]
-        plans=self.store.db.execute('SELECT id,events,request FROM research_experiments WHERE hypothesis=?'+(' AND job=?' if job is not None else ''),
-                                     (hypothesis,job) if job is not None else (hypothesis,)).fetchall()
+        plans=self.store.db.execute('SELECT id,events,request FROM research_experiments WHERE hypothesis=?',
+                                     (hypothesis,)).fetchall()
         for r in plans:
             experiment_ids.append(r['id'])
             ids+=json.loads(r['events']);condition=json.loads(r['request']).get('condition') or {};conditional=conditional or condition.get('mean_min',0)>0 or condition.get('mean_max',255)<255
@@ -168,12 +168,21 @@ class Experiments:
             if correction:row['change']=correction['mean']
         return rows,conditional,experiment_ids
 
+    def final_evaluation(self,hypothesis):
+        """Only a statistical verdict finalizes an immutable registered claim."""
+        for row in self.store.db.execute('SELECT id,result FROM research_evaluations WHERE hypothesis=? ORDER BY id DESC',(hypothesis,)):
+            result=json.loads(row['result'])
+            if result.get('pre_registered') and result.get('n',0)>=16 and result.get('status') in ('supported','refuted'):
+                return {**result,'evaluation_id':row['id']}
+        return None
+
     def mature_unevaluated(self,job):
         with self.store.lock:
             result=[]
             for claim in self.store.db.execute('SELECT * FROM research_claims'):
                 kid=claim['knowledge']
-                if self.store.db.execute('SELECT 1 FROM research_evaluations WHERE hypothesis=?',(kid,)).fetchone():continue
+                if self.final_evaluation(kid):continue
+                if not self.store.db.execute('SELECT 1 FROM research_experiments WHERE hypothesis=? AND job=?',(kid,job)).fetchone():continue
                 rows,conditional,_=self.evaluation_samples(kid,job)
                 if (len(rows)>=16 and not conditional and len({r['session'] for r in rows})==1
                     and all(r['action']==claim['action'] and r['id']>claim['after_id'] for r in rows)):
@@ -189,7 +198,9 @@ class Experiments:
         with self.store.lock,self.store.db:
             hypothesis_row=self.store.db.execute("SELECT * FROM knowledge WHERE id=? AND kind='hypothesis'",(hypothesis,)).fetchone()
             if not hypothesis_row:raise ValueError('Unknown hypothesis')
-            rows,conditional,experiment_ids=self.evaluation_samples(hypothesis,job)
+            final=self.final_evaluation(hypothesis)
+            if final:return final
+            rows,conditional,experiment_ids=self.evaluation_samples(hypothesis)
             # A small experiment cannot prove support. Different inputs must not be pooled.
             n=len(rows);p=sum(r.get('success',r['change']>.01) for r in rows)/n if n else None
             status='inconclusive';interval=None
@@ -210,18 +221,18 @@ class Experiments:
                 status='supported' if interval[0]<=probability<=interval[1] else 'refuted'
             evidence=list(dict.fromkeys(json.loads(hypothesis_row['evidence'])+[r['id'] for r in rows]))
             self.store.db.execute('UPDATE knowledge SET validation=?,evidence=? WHERE id=?',(status,json.dumps(evidence),hypothesis))
-            result={'executor':executor,'automatic':automatic,'job':job,'hypothesis':hypothesis,'status':status,'n':n,'observed_probability':p,'expected_probability':probability,'interval95':interval,'pre_registered':registered,'required_samples':16,'reasons':reasons,'registered_target':{'action':self.keys.index(claim['action']),'change_probability':claim['probability'],'after_id':claim['after_id']} if claim else None,'experiments':experiment_ids,'sessions':sorted({r['session'] for r in rows}),'evidence':[r['id'] for r in rows],'previous_status':hypothesis_row['validation'],'limitation':'Image change reproducibility only; game meaning/causality unverified'}
+            result={'executor':executor,'automatic':automatic,'job':job,'hypothesis':hypothesis,'status':status,'n':n,'observed_probability':p,'expected_probability':probability,'interval95':interval,'pre_registered':registered,'required_samples':16,'missing_samples':max(0,16-n),'reasons':reasons,'registered_target':{'action':self.keys.index(claim['action']),'change_probability':claim['probability'],'after_id':claim['after_id']} if claim else None,'experiments':experiment_ids,'sessions':sorted({r['session'] for r in rows}),'evidence':[r['id'] for r in rows],'previous_status':hypothesis_row['validation'],'limitation':'Image change reproducibility only; game meaning/causality unverified'}
             measured=[dict(r) for r in self.store.db.execute('SELECT * FROM corrected_changes WHERE event IN ('+','.join('?' for _ in rows)+')',[r['id'] for r in rows])] if rows else []
             result['baseline_corrections']=measured
             if claim and claim['claim_type']=='transition' and n==0:
                 guard=self.store.db.execute('SELECT * FROM transition_granularity WHERE knowledge=?',(hypothesis,)).fetchone()
-                plans=self.store.db.execute('SELECT events FROM research_experiments WHERE hypothesis=?'+(' AND job=?' if job is not None else ''),(hypothesis,job) if job is not None else (hypothesis,)).fetchall()
+                plans=self.store.db.execute('SELECT events FROM research_experiments WHERE hypothesis=?',(hypothesis,)).fetchall()
                 reasons.append({'code':'zero_samples_granularity' if guard and guard['max_similarity']>=.99 else 'zero_samples_identification' if any(json.loads(p['events']) for p in plans) else 'zero_samples_insufficient','detail':'No eligible samples: frozen representative identification, granularity and experiment availability.'})
             result['claim_type']=claim['claim_type'] if claim else None
             if claim and claim['claim_type']=='transition':
                 result['registered_target']={'from_state':claim['from_state'],'action':self.keys.index(claim['action']),'to_state':claim['to_state'],'probability':claim['probability'],'after_id':claim['after_id']}
                 from .transitions import sample_diagnostics
-                all_ids=sorted({i for p in self.store.db.execute('SELECT events FROM research_experiments WHERE hypothesis=?'+(' AND job=?' if job is not None else ''),(hypothesis,job) if job is not None else (hypothesis,)) for i in json.loads(p['events'])})
+                all_ids=sorted({i for p in self.store.db.execute('SELECT events FROM research_experiments WHERE hypothesis=?',(hypothesis,)) for i in json.loads(p['events'])})
                 result['sample_diagnostics']=sample_diagnostics(self.store,claim,[{'id':i} for i in all_ids])
                 result['limitation']='Similarity-defined transition frequency; cross-state success requires corrected change >0.01 when baseline exists; description semantics unverified'
             previous=self.store.db.execute('SELECT id,result FROM research_evaluations WHERE hypothesis=? AND job IS ? ORDER BY id DESC LIMIT 1',(hypothesis,job)).fetchone()

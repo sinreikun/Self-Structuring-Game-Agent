@@ -21,7 +21,7 @@ def claim(c,k,n,evaluated=False):
         c.store.db.execute('INSERT INTO claims VALUES(?,?,?,?,?)',(k,'A',.5,0,0))
         c.store.db.execute('INSERT INTO research_experiments VALUES(?,?,?,?,?,?,?,?,?,?)',
             (str(k),'prior-job',k,'{}','complete',json.dumps(ids),'{}',0,0,0))
-        if evaluated:c.store.db.execute('INSERT INTO research_evaluations(job,hypothesis,result,created) VALUES(?,?,?,?)',('prior-job',k,'{}',0))
+        if evaluated:c.store.db.execute('INSERT INTO research_evaluations(job,hypothesis,result,created) VALUES(?,?,?,?)',('prior-job',k,json.dumps({'pre_registered':True,'n':16,'status':'supported'}),0))
 
 def test_a_fixed_progress_order_and_completed_exclusion(world):
     c=world
@@ -60,3 +60,12 @@ def test_b_job_context_starts_with_facts(world):
 def test_c_empty_does_not_invent(world):
     assert calculate(world.scientist,{})==[]
     assert prepend('original context',[])=='original context'
+
+
+def test_provisional_evaluation_keeps_claim_in_agenda(world):
+    c=world;k=hypothesis(c);claim(c,k,3)
+    with c.store.db:
+        c.store.db.execute('INSERT INTO research_evaluations(job,hypothesis,result,created) VALUES(?,?,?,?)',
+            ('prior-job',k,json.dumps({'pre_registered':True,'n':3,'status':'inconclusive'}),0))
+    assert calculate(c.scientist,{})==[
+        {'kind':'claim','hypothesis_id':k,'samples':3,'required_samples':16,'missing_samples':13}]

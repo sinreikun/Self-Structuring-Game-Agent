@@ -8,7 +8,7 @@ def calculate(scientist, payload):
     with store.lock:
         for row in store.db.execute('SELECT knowledge FROM research_claims ORDER BY knowledge'):
             kid = row['knowledge']
-            if store.db.execute('SELECT 1 FROM research_evaluations WHERE hypothesis=?', (kid,)).fetchone():
+            if scientist.experiments.final_evaluation(kid):
                 continue
             status = store.db.execute('SELECT validation FROM knowledge WHERE id=?', (kid,)).fetchone()
             if not status or status[0] in ('supported', 'refuted'):

@@ -71,7 +71,7 @@ def test_evaluation_snapshot_survives_later_verdict_and_report_rejects_missing_h
     finish_report(c.scientist,job,p)
     assert c.store.db.execute('select count(*) from research_reports').fetchone()[0]==count
     other=c.store.job('research',{})
-    assert c.experiments.evaluate(kid,.5,job=other)['n']==0
+    assert c.experiments.evaluate(kid,.5,job=other)['n']==1
 
 
 def test_progress_requires_experiment_and_evaluation():

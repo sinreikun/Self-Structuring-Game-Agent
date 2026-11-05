@@ -392,10 +392,17 @@ def test_full_pixel_range_is_unconditional_for_preregistered_evaluation(tmp_path
         for token in ('s1','s2'):
             c.experiments.submit(job,token,{'action':1,'repeat':8,'duration':10,'wait':10,'condition':{'mean_min':0,'mean_max':255}},kid)
             for _ in range(8):c.step()
-        assert c.experiments.evaluate(kid,1)['status']=='supported'
-        # A genuinely selective condition must not prove an unconditional claim.
+        final=c.experiments.evaluate(kid,1)
+        assert final['status']=='supported'
         c.experiments.submit(job,'s3',{'action':1,'condition':{'mean_min':254}},kid)
-        assert c.experiments.evaluate(kid,1)['status']=='inconclusive'
+        assert c.experiments.evaluate(kid,1)['evaluation_id']==final['evaluation_id']
+        # Selection still cannot prove a new unconditional claim.
+        other=c.store.knowledge('hypothesis','選別条件の別クレーム','inferred','hypothesis',[c.last_eid])
+        c.store.claim(other,'B',1,c.last_eid)
+        c.experiments.submit(job,'s4',{'action':1,'condition':{'mean_min':254}},other)
+        selected=c.experiments.evaluate(other,1)
+        assert selected['status']=='inconclusive'
+        assert any(r['code']=='conditional_selection' for r in selected['reasons'])
     finally:c.close()
 
 

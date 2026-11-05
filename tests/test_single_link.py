@@ -33,7 +33,7 @@ def test_a_fixed_selection_and_terminal_exclusion(world):
     c=world;a=hyp(c);b=hyp(c);done=hyp(c);judged=hyp(c);bare=hyp(c)
     ids=[r['id'] for r in c.store.rows()]
     claim(c,a,ids[:2]);claim(c,b,ids[:4]);claim(c,done,ids);claim(c,judged,ids[:3])
-    with c.store.db:c.store.db.execute('INSERT INTO research_evaluations(job,hypothesis,result,created) VALUES(?,?,?,?)',('old',judged,'{}',0))
+    with c.store.db:c.store.db.execute('INSERT INTO research_evaluations(job,hypothesis,result,created) VALUES(?,?,?,?)',('old',judged,json.dumps({'pre_registered':True,'n':16,'status':'supported'}),0))
     p={};assert assign(c.scientist,p)['hypothesis_id']==b
     original=dict(p['assigned_link'])
     with c.store.db:c.store.db.execute('UPDATE research_experiments SET events=? WHERE hypothesis=?',(json.dumps(ids),b))
