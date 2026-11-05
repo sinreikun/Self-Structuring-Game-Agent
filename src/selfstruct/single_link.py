@@ -4,7 +4,9 @@ import time
 
 
 def key(link):
-    return ('hypothesis:'+str(link['hypothesis_id']) if 'hypothesis_id' in link else 'situation_candidate:'+link['candidate_id'])
+    if 'hypothesis_id' in link:return 'hypothesis:'+str(link['hypothesis_id'])
+    if 'state_id' in link:return 'situation:'+str(link['state_id'])
+    return 'situation_candidate:'+link['candidate_id']
 
 
 def assign(scientist, payload):
@@ -37,6 +39,8 @@ def context(scientist, payload):
             samples,_,_=experiments.evaluation_samples(kid) if experiments else ([],None,None)
             result.update(samples=samples,missing_samples=max(0,16-len(samples)))
             state_ids=[result['transition_claim'][k] for k in ('from_state','to_state')] if result['transition_claim'] else []
+        elif link['kind']=='situation_card':
+            state_ids=[link['state_id']]
         else:
             candidate=next((c for c in payload.get('situation_candidates',[]) if c['id']==link['candidate_id']),None)
             result['candidate']=candidate
@@ -106,6 +110,8 @@ def finish(scientist,jid,payload):
             kid=link['hypothesis_id']
             done=bool(scientist.store.db.execute('SELECT 1 FROM research_claims WHERE knowledge=?',(kid,)).fetchone() and
                       scientist.store.db.execute('SELECT 1 FROM research_experiments WHERE job=? AND hypothesis=?',(jid,kid)).fetchone())
+        elif link['kind']=='situation_card':
+            done=bool(scientist.store.db.execute('SELECT 1 FROM situation_cards WHERE state=?',(link['state_id'],)).fetchone())
         else:done=link['candidate_id'] in payload.get('adopted_situation_candidates',{})
     if done:payload['link_end']={'reason':'link_closed','link':dict(link),'at':time.time()}
     return bool(done)

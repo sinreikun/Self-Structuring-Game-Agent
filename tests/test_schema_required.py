@@ -17,7 +17,7 @@ def test_required_paths_are_grammar_required(path):
 def test_values_remain_host_responsibility(road):
     from selfstruct.research_actions import run_actions,execute
     s,p,e=road
-    r={'op':'experiment','hypothesis':'invented','action':0,'claim':{'type':'change_rate','probability':.5}}
+    r={'op':'experiment','hypothesis':'invented','action':0,'claim':{'type':'change_rate','probability':.5,'situation':{'text':'s','evidence':[e],'phase':'before'}}}
     validate_experiment(r,1);run_actions(s,'job',p,[r])
     result=p['action_history'][-1]['result']
     assert result['state']=='claim_required' and 'invented' in result['fields'][0]['reason']
@@ -25,12 +25,20 @@ def test_values_remain_host_responsibility(road):
         r={**r,'hypothesis':'h','claim':{'type':'transition','probability':.5,'from_state':state,'to_state':state}}
         validate_experiment(r,1);result=execute(s,'job',p,r,str(state))[0]
         assert len(result['fields'])==2 and all(str(state) in f['reason'] for f in result['fields'])
-    r={**r,'claim':{'type':'change_rate','probability':2}}
+    r={**r,'claim':{'type':'change_rate','probability':2,'situation':{'text':'s','evidence':[e],'phase':'before'}}}
     
     with pytest.raises(SchemaViolation):validate_experiment(r,1)
     assert execute(s,'job',p,r,'prob')[0]['fields'][0]['field']=='claim.probability'
-    r={**r,'claim':{'type':'change_rate','probability':.5}}
+    r={**r,'claim':{'type':'change_rate','probability':.5,'situation':{'text':'s','evidence':[e],'phase':'before'}}}
     assert execute(s,'job',p,r,'alias')[0]['registration']['hypothesis']==p['hypotheses']['h']
+
+def test_change_rate_situation_is_gate_required(road):
+    from selfstruct.research_actions import execute
+    s,p,e=road
+    r={'op':'experiment','hypothesis':'h','action':0,'claim':{'type':'change_rate','probability':.5}}
+    validate_experiment(r,1)
+    result=execute(s,'job',p,r,'nosit')[0]
+    assert any(f['field']=='claim.situation' for f in result['fields'])
 
 def test_schema_violation_persisted_separately_before_findings(tmp_path):
     from selfstruct.config import Config

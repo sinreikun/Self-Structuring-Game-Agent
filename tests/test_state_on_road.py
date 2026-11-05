@@ -44,7 +44,7 @@ def test_registration_precedes_submit_and_receipt_survives(road):
         assert s.store.db.execute('select count(*) from research_experiments').fetchone()[0]==0
         return submit(*args)
     s.experiments.submit=checked
-    result=experiment(s,p,{'type':'change_rate','probability':.7})
+    result=experiment(s,p,{'type':'change_rate','probability':.7,'situation':{'text':'start','evidence':[e],'phase':'before'}})
     assert result['registration']['plan']==result['experiment']
     assert not p.get('registration_routes')
 
@@ -65,12 +65,12 @@ def test_inline_transition_reuses_definition_and_claim(road):
 
 
 @pytest.mark.parametrize('claim,fields',[
-    ({'type':'change_rate'},['claim.probability']),
+    ({'type':'change_rate'},['claim.probability','claim.situation']),
     ({'type':'transition','probability':.6},['claim.from_state','claim.to_state']),
-    ({'type':'change_rate','probability':.6,'from_state':1},['claim.from_state']),
+    ({'type':'change_rate','probability':.6,'from_state':1},['claim.from_state','claim.situation']),
     ({'probability':.6},['claim.type']),
-    ({'type':'change_rate','probability':True},['claim.probability']),
-    ({'type':'change_rate','probability':float('nan')},['claim.probability']),
+    ({'type':'change_rate','probability':True},['claim.probability','claim.situation']),
+    ({'type':'change_rate','probability':float('nan')},['claim.probability','claim.situation']),
 ])
 def test_invalid_inline_is_named_unbilled_and_has_no_pending(road,claim,fields):
     s,p,e=road
@@ -104,6 +104,7 @@ def test_gate_b_precedes_inline(road):
 def test_corrected_resend_and_conflicting_claim(road):
     s,p,e=road
     assert experiment(s,p,{'type':'change_rate'})['state']=='claim_required'
-    assert experiment(s,p,{'type':'change_rate','probability':.7},'fixed')['state']=='complete'
-    assert experiment(s,p,{'type':'change_rate','probability':.8},'conflict')['state']=='claim_required'
+    anchored={'type':'change_rate','probability':.7,'situation':{'text':'start','evidence':[e],'phase':'before'}}
+    assert experiment(s,p,anchored,'fixed')['state']=='complete'
+    assert experiment(s,p,{**anchored,'probability':.8},'conflict')['state']=='claim_required'
     assert s.store.db.execute('select count(*) from claims').fetchone()[0]==1

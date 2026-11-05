@@ -59,7 +59,7 @@ def test_missing_or_invalid_claim_never_creates_plan(tmp_path,probability):
     try:
         kid=c.store.knowledge('hypothesis','検証対象','inferred','hypothesis',[c.last_eid])
         if probability is not None:
-            with c.store.db:c.store.db.execute('insert into claims values(?,?,?,?,?)',(kid,'A',probability,c.last_eid,c.last_eid))
+            with c.store.db:c.store.db.execute('insert into claims(knowledge,action,probability,after_id,tested_until) values(?,?,?,?,?)',(kid,'A',probability,c.last_eid,c.last_eid))
         with pytest.raises(PreregistrationRequired) as error:c.experiments.submit('job','x',{'action':0},kid)
         assert error.value.hypothesis==kid
         assert c.store.db.execute('select count(*) from research_experiments').fetchone()[0]==0

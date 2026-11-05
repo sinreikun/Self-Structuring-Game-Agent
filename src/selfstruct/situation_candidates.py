@@ -140,3 +140,17 @@ def register_bundled_claim(store, payload, job, kid, action, claim):
             raise
         payload['adopted_situation_candidates'] = adopted
         return normalized
+
+
+def adopt_candidate(store, payload, candidate_id):
+    """Register a presented candidate as an unnamed state, as claim bundles do.
+
+    Used when a change-rate claim anchors to a candidate ID: the frames are a
+    measured cluster, and no semantic text is manufactured for it."""
+    adopted = payload.setdefault('adopted_situation_candidates', {})
+    if candidate_id in adopted:return adopted[candidate_id]
+    candidate = claim_candidates(payload).get(candidate_id)
+    if candidate is None:raise ValueError('Unknown situation candidate')
+    state = transitions.register_unnamed_state(store, candidate['frames'])
+    adopted[candidate_id] = state
+    return state

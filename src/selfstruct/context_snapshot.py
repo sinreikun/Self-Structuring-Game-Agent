@@ -11,7 +11,8 @@ from .store import Store
 def snapshot(store, job):
     tables = ('research_experiments', 'claims', 'transition_claims',
               'transition_granularity', 'state_frames', 'state_baselines',
-              'knowledge', 'research_evaluations', 'corrected_changes')
+              'knowledge', 'research_evaluations', 'corrected_changes',
+              'situation_cards', 'skills')
     with store.lock:
         captured = {}
         ids = {r[0] for r in store.db.execute(
@@ -42,9 +43,12 @@ def snapshot(store, job):
             db.execute('CREATE TABLE ' + table + ' (' + ','.join('"'+c+'"' for c in columns) + ')')
             db.executemany('INSERT INTO ' + table + ' VALUES (' + ','.join('?' for _ in columns) + ')', rows)
         db.execute('''CREATE VIEW research_claims AS
-            SELECT knowledge,action,probability,after_id,'change_rate' claim_type,NULL from_state,NULL to_state,NULL representatives FROM claims
-            UNION ALL SELECT knowledge,action,probability,after_id,'transition',from_state,to_state,representatives FROM transition_claims''')
-        view = SimpleNamespace(db=db, root=root, lock=threading.RLock(), context_snapshot=True)
+            SELECT knowledge,action,probability,after_id,'change_rate' claim_type,NULL from_state,NULL to_state,representatives,situation FROM claims
+            UNION ALL SELECT knowledge,action,probability,after_id,'transition',from_state,to_state,representatives,NULL situation FROM transition_claims''')
+        view = SimpleNamespace(db=db, root=root, lock=threading.RLock(), context_snapshot=True,
+                               _pixel_cache=getattr(store, '_pixel_cache', None),
+                               _identify_cache=getattr(store, '_identify_cache', None),
+                               _flat_cache=getattr(store, '_flat_cache', None))
         view.observed_image = lambda event, phase: Store.observed_image(view, event, phase)
         return view
     except BaseException:

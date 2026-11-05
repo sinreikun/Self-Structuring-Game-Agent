@@ -86,6 +86,11 @@ class Controller:
             self.instance_lock.close()
             raise
         self.store = Store(self.experiment, config.quota_bytes, record_locks=True)
+        # Identification-heavy research contexts re-read the same immutable
+        # event frames on every iteration; let this store memoize them.
+        self.store._pixel_cache = {}
+        self.store._identify_cache = {}
+        self.store._flat_cache = {}
         self.diagnostic_lock = self.store.lock.output_lock
         self.store.account_root = self.root
         self.revisions = Revisions(self.experiment / "agents" / "revisions")
@@ -111,6 +116,8 @@ class Controller:
         self.scientist.experiments=self.experiments
         self.current_experiment=None
         self.baseline_jobs=set()
+        self._skill_last_use={}
+        self._pending_skill=None
         self.visual.eyes.cancel = self.scientist.stop_event
         self.scientist.client.context = config.llm_context
         accounting.watch(*(self.experiment/"host"/name for name in ("host.log", "host.log.1", "host.log.2")))
@@ -494,6 +501,7 @@ class Controller:
                     jobs=[r[0] for r in self.store.db.execute("SELECT id FROM jobs WHERE kind='research' AND state IN ('pending','running')")]
                     queued=self.store.db.execute("SELECT job FROM research_experiments WHERE state IN ('queued','running') ORDER BY created LIMIT 1").fetchone()
                     state,base=transitions.baseline_for(self.store,before)
+            current_state=state
             new_jobs=[j for j in jobs if j not in self.baseline_jobs]
             if new_jobs or (queued and state is not None and base is None):
                 frames=[before];self.game.release()
@@ -507,8 +515,10 @@ class Controller:
                 self.baseline_jobs.update(new_jobs)
                 self.activity.record('BASELINE',f'id={baseline} frames=5 no_input_seconds=2')
                 before=frames[-1]
-            with self.timed_stage("baseline_recheck"), self.store.lock:
-                _,base=transitions.baseline_for(self.store,before)
+                # Only a freshly saved baseline can change the lookup for the
+                # new head frame; this stage is the sole baseline writer.
+                with self.timed_stage("baseline_recheck"), self.store.lock:
+                    _,base=transitions.baseline_for(self.store,before)
             if self.halted_step():return 0
         with self.timed_stage("features_trial_agent"):
             self.activity.record("OBS",f"frame={self.steps} region=full")
@@ -540,6 +550,15 @@ class Controller:
                 plan=experiment['plan'];index=plan['action'];duration=plan['duration']/1000;wait=plan['wait']/1000
                 raw_prediction=agent.call('predict',feature,index);pred=-1 if raw_prediction<0 else raw_prediction/1000
                 self.activity.record('EXPERIMENT',f"execute job={experiment['job']} id={experiment['id']} action={index}")
+            self._pending_skill=None
+            if experiment is None and current_state is not None and not trial:
+                from . import skills as compiled_skills
+                for candidate in compiled_skills.for_situation(self.store,current_state):
+                    if self.steps-self._skill_last_use.get(candidate['id'],-10**9)>=32:
+                        index=self.config.keys.index(candidate['action']);self._pending_skill=candidate
+                        self._skill_last_use[candidate['id']]=self.steps
+                        self.activity.record('SKILL',f"use skill={candidate['id']} from={current_state} action={candidate['action']}")
+                        break
             if self.halted_step():return 0
             self.activity.update(phase="入力中", action=self.config.keys[index],duration=duration,prediction=pred,
                                  next="入力後の画面を観測します")
@@ -574,6 +593,9 @@ class Controller:
             change = difference(before, after_image)
         with self.timed_stage("store_finish"):
             self.store.finish(eid, after_hash, change, time.perf_counter() - started)
+        if current_state is not None:
+            with self.timed_stage("situation_tag"), self.store.lock, self.store.db:
+                self.store.db.execute('INSERT OR REPLACE INTO event_situations VALUES(?,?)',(eid,current_state))
         with self.timed_stage("grow_before"):
             transitions.grow(self.store,eid,'before','experiment' if experiment else 'observation')
         with self.timed_stage("grow_after"):
@@ -595,6 +617,14 @@ class Controller:
         with self.timed_stage("trial_result"):
             self.scientist.trial_result({"id": eid, "action": self.config.keys[index], "feature": feature, "change": change,"arm":"agent" if trial else "base","cost":time.perf_counter()-started}, raw, after_raw, after)
         with self.timed_stage("finalize"):
+            if self._pending_skill is not None:
+                try:
+                    with self.store.lock:
+                        arrived_state=transitions.identify(self.store,after_image,transitions.representatives(self.store))
+                    from . import skills as compiled_skills
+                    compiled_skills.record_use(self.store,self._pending_skill['id'],eid,arrived_state==self._pending_skill['to_state'])
+                except Exception:log.exception('Skill use could not be recorded')
+                self._pending_skill=None
             self.latest_before, self.latest = before, after_image
             self.steps += 1
             self.last_eid = eid
@@ -603,6 +633,10 @@ class Controller:
                 self.revisions.confirm()
             if self.steps % 64 == 0:
                 self.checkpoint()
+                try:
+                    created=transitions.bootstrap_situations(self.store)
+                    if created:self.activity.record('SITUATION',f'bootstrap created={created}')
+                except Exception:log.exception('Situation bootstrap failed')
             self.scientist.tick()
             return change
 

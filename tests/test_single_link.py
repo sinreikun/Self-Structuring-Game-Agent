@@ -71,7 +71,7 @@ def test_b_assigned_experiment_passes_and_closes(world,monkeypatch):
     def submit(*args,**kwargs):
         ident=original(*args,**kwargs);c.experiments.finish(ident,'expired');return ident
     monkeypatch.setattr(c.experiments,'submit',submit)
-    run_actions(c.scientist,j,p,[{'op':'experiment','hypothesis':a,'action':0,'claim':{'type':'change_rate','probability':.5}}])
+    run_actions(c.scientist,j,p,[{'op':'experiment','hypothesis':a,'action':0,'claim':{'type':'change_rate','probability':.5,'situation':{'text':'start','evidence':[c.last_eid],'phase':'before'}}}])
     assert p['action_history'][0]['state']=='done'
     assert action_budget_used(p)==1 and finish(c.scientist,j,p)
     assert p['link_end']['reason']=='link_closed'
@@ -183,7 +183,7 @@ def test_d_hypothesis_study_closes_after_submission(world,monkeypatch):
         vision=False
         def complete(self,*args,**kwargs):
             calls.append(1)
-            return json.dumps({'findings':[],'actions':[{'op':'experiment','hypothesis':a,'action':0,'claim':{'type':'change_rate','probability':.5}}],'wat':''})
+            return json.dumps({'findings':[],'actions':[{'op':'experiment','hypothesis':a,'action':0,'claim':{'type':'change_rate','probability':.5,'situation':{'text':'start','evidence':[c.last_eid],'phase':'before'}}}],'wat':''})
     c.scientist.client=Client();c.scientist.study(c.store.rows(),j)
     saved=json.loads(c.store.get_job(j)['payload'])
     assert c.store.get_job(j)['state']=='complete' and saved['outcome']=='link_closed'

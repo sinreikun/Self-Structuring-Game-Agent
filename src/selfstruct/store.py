@@ -419,11 +419,11 @@ class Store:
         with self.lock:
             return [dict(r) for r in self.db.execute("SELECT * FROM knowledge ORDER BY id DESC")]
 
-    def claim(self, knowledge: int, action: str, probability: float, after_id: int):
+    def claim(self, knowledge: int, action: str, probability: float, after_id: int, situation: int = None, representatives: str = None):
         if not 0 <= probability <= 1:
             raise ValueError("Invalid predicted probability")
         with self.lock, self.db:
-            self.db.execute("INSERT INTO claims VALUES(?,?,?,?,?)", (knowledge, action, probability, after_id, after_id))
+            self.db.execute("INSERT INTO claims(knowledge,action,probability,after_id,tested_until,situation,representatives) VALUES(?,?,?,?,?,?,?)", (knowledge, action, probability, after_id, after_id, situation, representatives))
 
     def validate_claims(self):
         import math

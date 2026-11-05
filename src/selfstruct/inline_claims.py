@@ -33,6 +33,7 @@ def accept(scientist,jid,payload,request,token,hypothesis):
                     return reject([{'field':'action','reason':'differs from registered claim'}])
                 normalized={'type':existing['claim_type'],'probability':existing['probability']}
                 if existing['claim_type']=='transition':normalized.update({k:existing[k] for k in ('from_state','to_state')})
+                if existing['claim_type']=='change_rate' and existing['situation'] is not None:normalized['situation']=existing['situation']
             else:return reject([{'field':'claim.type','reason':'missing'},{'field':'claim.probability','reason':'missing'}])
         else:
             if not isinstance(raw,dict):return reject([{'field':'claim','reason':'expected object'}])
@@ -41,13 +42,17 @@ def accept(scientist,jid,payload,request,token,hypothesis):
             probability=raw.get('probability')
             if type(probability) not in (int,float) or not math.isfinite(probability) or not 0<=probability<=1:
                 errors.append({'field':'claim.probability','reason':'required finite number in [0,1]'})
-            allowed={'type','probability'}|({'from_state','to_state'} if kind=='transition' else set())
+            allowed={'type','probability'}|({'from_state','to_state'} if kind=='transition' else {'situation'} if kind=='change_rate' else set())
             errors.extend({'field':'claim.'+k,'reason':'inconsistent or unknown field'} for k in raw.keys()-allowed)
             defined={r['state'] for r in transitions.representatives(store)}
             normalized={'type':kind,'probability':probability}
-            for field in ('from_state','to_state') if kind=='transition' else ():
+            for field in ('from_state','to_state') if kind=='transition' else ('situation',) if kind=='change_rate' else ():
                 value=raw.get(field)
+                if field=='situation' and value is None and existing is not None:
+                    if existing['situation'] is not None:normalized['situation']=existing['situation']
+                    continue
                 try:
+                    if value is None and field=='situation':raise ValueError('situation is required for change_rate claims')
                     if isinstance(value,dict):
                         if set(value)!={'text','evidence','phase'}:raise ValueError('requires text, evidence, phase only')
                         if not isinstance(value['text'],str) or not value['text'].strip() or len(value['text'])>1000:raise ValueError('requires nonempty model text up to 1000 characters')
@@ -66,33 +71,54 @@ def accept(scientist,jid,payload,request,token,hypothesis):
                 except (ValueError,OSError,KeyError,TypeError) as error:errors.append({'field':'claim.'+field,'reason':str(error)})
             if errors:return reject(errors)
             # Resolve identical definitions without creating duplicate states on resubmission.
-            for field in ('from_state','to_state') if kind=='transition' else ():
+            for field in ('from_state','to_state') if kind=='transition' else ('situation',) if kind=='change_rate' else ():
+                if field not in normalized:continue
                 value=normalized[field]
                 if isinstance(value,dict):
                     match=None
                     for row in store.db.execute("SELECT id,text FROM knowledge WHERE kind='state'"):
                         refs={(r['event'],r['phase']) for r in store.db.execute('SELECT event,phase FROM state_frames WHERE state=?',(row['id'],))}
-                        if row['text']==value['text'] and refs=={(i,value['phase']) for i in value['evidence']}:match=row['id'];break
+                        if row['text']==value['text'] and {(i,value['phase']) for i in value['evidence']}<=refs:match=row['id'];break
                     normalized[field]=match if match is not None else value
             if existing:
                 expected={'type':existing['claim_type'],'probability':existing['probability']}
                 if existing['claim_type']=='transition':expected.update({k:existing[k] for k in ('from_state','to_state')})
-                if normalized!=expected or existing['action']!=scientist.keys[request['action']]:
+                if existing['claim_type']=='change_rate' and existing['situation'] is not None:expected['situation']=existing['situation']
+                upgraded=(existing['claim_type']=='change_rate' and existing['situation'] is None
+                          and normalized.get('situation') is not None
+                          and {k:v for k,v in normalized.items() if k!='situation'}==expected
+                          and existing['action']==scientist.keys[request['action']])
+                if upgraded:
+                    anchor=normalized['situation']
+                    if isinstance(anchor,dict):anchor=transitions.register_state(store,anchor['text'],anchor['evidence'],anchor['phase'])
+                    elif isinstance(anchor,str):
+                        from .situation_candidates import adopt_candidate
+                        anchor=adopt_candidate(store,payload,anchor)
+                    normalized['situation']=anchor
+                    with store.db:
+                        store.db.execute('UPDATE claims SET situation=?,representatives=? WHERE knowledge=?',
+                                         (anchor,json.dumps(transitions.representatives(store)),hypothesis))
+                elif normalized!=expected or existing['action']!=scientist.keys[request['action']]:
                     result=reject([{'field':'claim','reason':'differs from immutable registered claim'}])
                     result['registered_claim']={**expected,'action':existing['action'],
                                                 'action_index':scientist.keys.index(existing['action'])}
                     result['next']='Resend this hypothesis with the registered action and without a claim field to experiment using the immutable registered claim. No input executed.'
                     return result
             else:
-                for field in ('from_state','to_state') if kind=='transition' else ():
+                for field in ('from_state','to_state') if kind=='transition' else ('situation',) if kind=='change_rate' else ():
                     value=normalized[field]
                     if isinstance(value,dict):normalized[field]=transitions.register_state(store,value['text'],value['evidence'],value['phase'])
                 if kind=='transition':
                     from .situation_candidates import register_bundled_claim
                     normalized=register_bundled_claim(store,payload,jid,hypothesis,scientist.keys[request['action']],normalized)
                 else:
+                    if isinstance(normalized['situation'],str):
+                        from .situation_candidates import adopt_candidate
+                        normalized['situation']=adopt_candidate(store,payload,normalized['situation'])
                     latest=store.db.execute('SELECT coalesce(max(id),0) FROM events').fetchone()[0]
-                    store.claim(hypothesis,scientist.keys[request['action']],probability,latest)
+                    store.claim(hypothesis,scientist.keys[request['action']],probability,latest,
+                                situation=normalized['situation'],
+                                representatives=json.dumps(transitions.representatives(store)))
         identifier=hashlib.sha256((jid+':'+token).encode()).hexdigest()[:32]
         # Persist original payload, normalized registration and future plan ID before submit.
         with store.db:

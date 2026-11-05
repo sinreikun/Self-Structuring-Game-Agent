@@ -16,6 +16,8 @@ def setup(db):
       events TEXT, result TEXT, attempts INTEGER, created REAL, updated REAL)''')
     from .transitions import setup as setup_transitions
     setup_transitions(db)
+    from .skills import setup as setup_skills
+    setup_skills(db)
     from .inline_claims import setup as setup_inline_claims
     setup_inline_claims(db)
     db.execute("UPDATE research_experiments SET state='interrupted',updated=? WHERE state IN ('queued','running')",(time.time(),))
@@ -163,6 +165,9 @@ class Experiments:
         if claim and claim['claim_type']=='transition':
             from .transitions import samples
             rows=samples(self.store,claim,rows)
+        elif claim and claim['claim_type']=='change_rate' and claim['situation'] is not None:
+            from .transitions import anchored
+            rows=anchored(self.store,claim,rows)
         for row in rows:
             correction=self.store.db.execute('SELECT mean FROM corrected_changes WHERE event=?',(row['id'],)).fetchone()
             if correction:row['change']=correction['mean']
@@ -221,7 +226,7 @@ class Experiments:
                 status='supported' if interval[0]<=probability<=interval[1] else 'refuted'
             evidence=list(dict.fromkeys(json.loads(hypothesis_row['evidence'])+[r['id'] for r in rows]))
             self.store.db.execute('UPDATE knowledge SET validation=?,evidence=? WHERE id=?',(status,json.dumps(evidence),hypothesis))
-            result={'executor':executor,'automatic':automatic,'job':job,'hypothesis':hypothesis,'status':status,'n':n,'observed_probability':p,'expected_probability':probability,'interval95':interval,'pre_registered':registered,'required_samples':16,'missing_samples':max(0,16-n),'reasons':reasons,'registered_target':{'action':self.keys.index(claim['action']),'change_probability':claim['probability'],'after_id':claim['after_id']} if claim else None,'experiments':experiment_ids,'sessions':sorted({r['session'] for r in rows}),'evidence':[r['id'] for r in rows],'previous_status':hypothesis_row['validation'],'limitation':'Image change reproducibility only; game meaning/causality unverified'}
+            result={'executor':executor,'automatic':automatic,'job':job,'hypothesis':hypothesis,'status':status,'n':n,'observed_probability':p,'expected_probability':probability,'interval95':interval,'pre_registered':registered,'required_samples':16,'missing_samples':max(0,16-n),'reasons':reasons,'registered_target':{'action':self.keys.index(claim['action']),'change_probability':claim['probability'],'after_id':claim['after_id'],'situation':claim['situation'] if claim['claim_type']=='change_rate' else None} if claim else None,'experiments':experiment_ids,'sessions':sorted({r['session'] for r in rows}),'evidence':[r['id'] for r in rows],'previous_status':hypothesis_row['validation'],'limitation':'Image change reproducibility only; game meaning/causality unverified'}
             measured=[dict(r) for r in self.store.db.execute('SELECT * FROM corrected_changes WHERE event IN ('+','.join('?' for _ in rows)+')',[r['id'] for r in rows])] if rows else []
             result['baseline_corrections']=measured
             if claim and claim['claim_type']=='transition' and n==0:

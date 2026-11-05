@@ -268,6 +268,9 @@ def finish_report(scientist,jid,payload):
             progress['hypotheses_evaluated']=progress.get('hypotheses_evaluated',0)+1
             if result['status'] in ('supported','refuted') and result['status']!=result['previous_status']:
                 progress['hypotheses_updated']=progress.get('hypotheses_updated',0)+1
+        from . import skills as compiled_skills
+        created=compiled_skills.compile_supported(store)
+        if created:payload.setdefault('progress',{})['skills_compiled']=payload.get('progress',{}).get('skills_compiled',0)+len(created)
         ids={r['id'] for r in store.db.execute('SELECT id,result FROM research_evaluations WHERE job=?',(jid,)) if json.loads(r['result']).get('n',0)>0}
         if not ids:return
         for row in store.db.execute('SELECT evaluations FROM research_reports WHERE job=?',(jid,)):

@@ -13,6 +13,7 @@ MAX_SECONDS=600
 MAX_IMAGE_BYTES=4*1024*1024
 
 INSTRUCTIONS='''実験の登録形式はschema参照。States/samples: index.state_transitions。findings.state=trueで状態を保存。
+change_rateのclaimにはsituation（その入力を行う状況のstate ID／候補ID／インライン定義）が必須。標本は開始フレームがその状況に同定されたものだけを数える。状況への意味づけはdescribe_situation（state,label,scene_kind,role）で行い、index.situation_cardsに残る。支持された遷移は技（skills）に編纂され、Playerがその状況で再利用する。
 研究応答JSON: {"findings":[{"id":"供給された新規ID","text":"主張","evidence":[ID]}],"actions":[],"problem":"","reason":"","wat":""}。WATは任意。actionsは最大4件、opは操作名だけで引数は別フィールド。
 例 {"op":"observe","event":1,"phase":"before","size":[32,32],"mode":"RGB","output":"pixels","limit":64}。例のIDは今回の索引・許可入力へ置換する。
 索引から必要な記録・画像を要求。型はschemaに従う。
@@ -214,7 +215,7 @@ def hypothesis_id(payload,request):
 def procedure_view(scientist,payload,route):
     claim=route.get('claim') or {}
     kind=claim.get('claim_type')
-    fields=['probability']+(['from_state','to_state'] if kind=='transition' else [])
+    fields=['probability']+(['from_state','to_state'] if kind=='transition' else ['situation'] if kind=='change_rate' else [])
     missing=[k for k in fields if k not in claim]
     stage=route.get('stage') or ('claim_type' if not route.get('type_confirmed') else (missing[0] if missing else 'registration'))
     form={'op':'registration','route':route['id'],'decision':['complete','withdraw'],
@@ -230,7 +231,7 @@ def procedure_view(scientist,payload,route):
             'form':form,'submitted_claim':dict(claim),
             'next':'Confirm claim_type, then fill only the next required field; complete resumes experiment. withdraw cancels.'}
     if route.get('field_error'):result['field_error']=route['field_error']
-    if kind=='transition':result.update(candidate_frames=route['candidates'],existing_states=route['states'])
+    if kind in ('transition','change_rate'):result.update(candidate_frames=route['candidates'],existing_states=route['states'])
     return result
 
 
@@ -279,7 +280,7 @@ def complete_registration(scientist,jid,payload,request,token):
     scientist.experiments.require_evaluation(jid)
     import math
     claim=dict(route.get('claim') or {})
-    supplied={k:request[k] for k in ('claim_type','probability','from_state','to_state') if k in request}
+    supplied={k:request[k] for k in ('claim_type','probability','from_state','to_state','situation') if k in request}
     supplied={**route.pop('unvalidated_claim',{}),**supplied}
     route.setdefault('submitted_values',{}).update(supplied)
     route.pop('field_error',None)
@@ -292,6 +293,8 @@ def complete_registration(scientist,jid,payload,request,token):
         route['presentations']=route.get('presentations',0)+1
         scientist.store.set_job(jid,'running',payload)
         return procedure_view(scientist,payload,route),None,None
+    if supplied.get('claim_type')=='transition' and 'situation' in supplied:
+        return pending('claim_type','claim_type','Situation field requires change_rate; confirm type or withdraw')
     mixed=supplied.get('claim_type')=='change_rate' and any(k in supplied for k in ('from_state','to_state'))
     if mixed:
         route['unvalidated_claim']={**supplied,'claim_type':'transition'}
@@ -319,7 +322,7 @@ def complete_registration(scientist,jid,payload,request,token):
         if field=='probability':
             if type(value) not in (int,float) or not math.isfinite(value) or not 0<=value<=1:
                 errors.append(('probability',field,'Expected a number from 0 to 1'));continue
-        elif field in ('from_state','to_state'):
+        elif field in ('from_state','to_state','situation'):
             defined={r['state'] for r in transitions.representatives(scientist.store)} | set(claim_candidates(payload))
             if isinstance(value,dict):
                 try:
@@ -342,13 +345,18 @@ def complete_registration(scientist,jid,payload,request,token):
         route['field_errors']=[{'field':f,'reason':r} for _,f,r in errors]
         stage,field,reason=errors[0]
         return pending(stage,field,reason)
-    for field in ['probability']+(['from_state','to_state'] if kind=='transition' else []):
+    for field in ['probability']+(['from_state','to_state'] if kind=='transition' else ['situation']):
         if field not in claim:return pending(field)
     if kind=='transition':
         claim=register_bundled_claim(scientist.store,payload,jid,route['hypothesis'],scientist.keys[route['action']],{**claim,'action':route['action']})
     else:
+        if isinstance(claim['situation'],str):
+            from .situation_candidates import adopt_candidate
+            claim['situation']=adopt_candidate(scientist.store,payload,claim['situation'])
         latest=scientist.store.db.execute('SELECT coalesce(max(id),0) FROM events').fetchone()[0]
-        scientist.store.claim(route['hypothesis'],scientist.keys[route['action']],claim['probability'],latest)
+        scientist.store.claim(route['hypothesis'],scientist.keys[route['action']],claim['probability'],latest,
+                              situation=claim['situation'],
+                              representatives=json.dumps(transitions.representatives(scientist.store)))
     route.update(status='registered',claim=claim,finished=time.time())
     scientist.store.set_job(jid,'running',payload)
     scientist.store.unpin('registration-'+jid+'-'+route['id'])
@@ -404,6 +412,12 @@ def execute(scientist,jid,payload,request,token):
         if 'content' in result:result['content_sha256']=hashlib.sha256(result['content'].encode()).hexdigest()
         payload['memory_results']=payload.get('memory_results',[])+[{'action_id':token,'step':payload.get('research_calls',0),'request':request,'result':result}]
         return result,None,None
+    if op=='describe_situation':
+        from . import transitions
+        if not any(k in request for k in ('label','scene_kind','role')):raise ValueError('describe_situation requires label, scene_kind or role')
+        card=transitions.save_card(scientist.store,request['state'],request.get('label'),request.get('scene_kind'),request.get('role'))
+        scientist.activity.record('SITUATION',f'job={jid} state={request["state"]} card={card}')
+        return {'state':'described','situation':request['state'],'card':card},None,None
     payload['research_phase']={'experiment':'experiment','evaluate':'evaluation','analyzer_create':'analyzer_creation','analyzer_evaluate':'evaluation','analyze':'analysis'}.get(op,'observation')
     if op=='experiment':
         if getattr(scientist,'experiments',None):scientist.experiments.require_evaluation(jid)
@@ -696,6 +710,35 @@ def history_context(payload,compact=False,max_chars=HISTORY_VIEW_CHARS):
     rejected=[e for e in view['action_history'] if e.get('result',{}).get('state')=='rejected']
     result['latest_action_rejection']=[{k:e.get(k) for k in ('request','result')} for e in rejected if not any(r.get('code')=='evaluation_required' for r in e.get('result',{}).get('reasons',[]))][-1:]
     encode=lambda:json.dumps(result,ensure_ascii=False,separators=(',',':'))
+    if len(encode())>max_chars:
+        # Representative pools are journal data the model can re-derive; the
+        # action results are the loop's lifeline and are sacrificed last.
+        for holder in (result.get('experiment_context'),result.get('index')):
+            view=(holder or {}).get('state_transitions')
+            if isinstance(view,dict):
+                reps=view.get('representatives')
+                if isinstance(reps,list) and len(reps)>6:
+                    view['representatives']=reps[:6];view['representatives_omitted']=len(reps)-6
+                view.pop('recent_state_distribution',None)
+        index=result.get('index')
+        if isinstance(index,dict) and isinstance(index.get('state_transitions'),dict):
+            # The index duplicates the experiment context's transition view;
+            # keep only its map and the state ids it covers.
+            view=index['state_transitions']
+            index['state_transitions']={'situation_map':view.get('situation_map',{}),
+                'state_ids':sorted({r.get('state') for r in view.get('representatives',[]) if isinstance(r,dict)}),
+                'detail':'experiment_context.state_transitions'}
+    if len(encode())>max_chars:
+        # Second stage: shrink orientation further before touching actions.
+        for holder in (result.get('experiment_context'),result.get('index')):
+            view=(holder or {}).get('state_transitions')
+            if isinstance(view,dict):
+                reps=view.get('representatives')
+                if isinstance(reps,list) and len(reps)>2:
+                    view['representatives']=reps[:2];view['representatives_omitted']=view.get('representatives_omitted',0)+len(reps)-2
+        if isinstance(result.get('index'),dict):result['index'].pop('input_feedback',None)
+        receipts=result.get('inline_claim_receipts')
+        if isinstance(receipts,list) and len(receipts)>1:result['inline_claim_receipts']=receipts[-1:]
     for key in ('actions','index','hypotheses'):
         if len(encode())<=max_chars:break
         result[key]=[] if key=='actions' else {}

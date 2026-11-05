@@ -103,7 +103,7 @@ def test_model_pulls_memory_then_eyes_experiment_evaluation_and_persistent_note(
                     'actions':[{'op':'observe','event':eid,'output':'statistics'}]})
             if n==6:
                 return json.dumps({
-                    'actions':[{'op':'experiment','hypothesis':'r5_1','claim':{'type':'change_rate','probability':1},'action':1,'duration':10,'wait':10,'repeat':8} for _ in range(2)]})
+                    'actions':[{'op':'experiment','hypothesis':'r5_1','claim':{'type':'change_rate','probability':1,'situation':{'text':'r5 screen','evidence':[eid,older],'phase':'before'}},'action':1,'duration':10,'wait':10,'repeat':8} for _ in range(2)]})
             if n==7:
                 assert 'event_ids' in prompt and '"completed":8' in prompt
                 return json.dumps({'actions':[{'op':'evaluate','hypothesis':'r5_1','change_probability':1}]})

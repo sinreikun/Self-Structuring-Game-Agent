@@ -32,13 +32,14 @@ ACTION_FIELDS={
  'analyzer_evaluate':({'id':string(128),'train':array(integer(1),8,64),'test':array(integer(1),8,64)},['id','train','test']),
  'analyzer_list':({'cursor':integer()},[]),'analyzer_get':({'id':string(128)},['id']),'analyzer_retire':({'id':string(128)},['id']),
  'evidence_keep':({'observation':integer(1),'reason':string(240)},['observation','reason']),
- 'library_request':({'name':string(500),'purpose':string(500),'reason':string(500)},['name','purpose','reason'])}
+ 'library_request':({'name':string(500),'purpose':string(500),'reason':string(500)},['name','purpose','reason']),
+ 'describe_situation':({'state':integer(1),'label':{**string(120),'minLength':1},'scene_kind':{'type':'string','enum':['menu','dialogue','field','battle','shop','status','other','unknown']},'role':{'type':'string','enum':['navigation','conversation','management','combat','unknown']}},['state'])}
 # Procedure contents are supplied by the model, never completed by Host.
 STATE_CHOICE={'anyOf':[integer(1),obj({'state':{'type':'boolean','enum':[True]},'text':{**string(1000),'minLength':1},'evidence':array(integer(1),1,16),'phase':{'type':'string','enum':['before','after']}},['state','text','evidence','phase'])]}
 INLINE_STATE={'anyOf':[integer(1),obj({'text':{**string(1000),'minLength':1},'evidence':array(integer(1),1,16),'phase':{'type':'string','enum':['before','after']}},['text','evidence','phase'])]}
 INLINE_STATE['anyOf'].append({**string(40),'minLength':1})
 STATE_CHOICE['anyOf'].append({**string(40),'minLength':1})
-CLAIM_FIELDS={'type':{'type':'string','enum':['transition','change_rate']},'probability':{'type':'number','minimum':0,'maximum':1},'from_state':INLINE_STATE,'to_state':INLINE_STATE}
+CLAIM_FIELDS={'type':{'type':'string','enum':['transition','change_rate']},'probability':{'type':'number','minimum':0,'maximum':1},'from_state':INLINE_STATE,'to_state':INLINE_STATE,'situation':INLINE_STATE}
 # Disjoint branches compile to grammar constraints, including conditional required fields.
 EXPERIMENT_CLAIM={'description':'Model preregistration saved before input. States resolve to existing IDs, current candidate IDs (adopted without text at registration), or inline model definitions; receipt returns IDs. Repeat the same claim for reuse.', 'anyOf':[
     obj({**CLAIM_FIELDS,'type':{'type':'string','enum':['transition']}},['type','probability','from_state','to_state']),
@@ -54,7 +55,7 @@ def validate_experiment(request,key_count,schema=None):
         try:validate(schema if schema is not None else action_schema(key_count),request)
         except ValueError as error:raise SchemaViolation('schema_violation: '+str(error)) from error
 
-ACTION_FIELDS['registration']=({'route':string(80),'decision':{'type':'string','enum':['complete','withdraw']},'claim_type':{'type':'string','enum':['change_rate','transition']},'probability':{'type':'number','minimum':0,'maximum':1},'from_state':STATE_CHOICE,'to_state':STATE_CHOICE},['route','decision'])
+ACTION_FIELDS['registration']=({'route':string(80),'decision':{'type':'string','enum':['complete','withdraw']},'claim_type':{'type':'string','enum':['change_rate','transition']},'probability':{'type':'number','minimum':0,'maximum':1},'from_state':STATE_CHOICE,'to_state':STATE_CHOICE,'situation':STATE_CHOICE},['route','decision'])
 
 
 
@@ -127,7 +128,7 @@ def response_schema(base,keys,allowed,new_ids=None,aliases=None,domain=None):
                     if not domain['hypotheses']:continue
                     fields['hypothesis']={'anyOf':[{'type':kind,'enum':[v for v in domain['hypotheses'] if type(v)==typ]} for kind,typ in [('string',str),('integer',int)] if any(type(v)==typ for v in domain['hypotheses'])], 'description':'Snapshot at call start. Missing references must be created in findings first and used next call.'}
                     for branch in fields['claim']['anyOf']:
-                        for field in ('from_state','to_state'):
+                        for field in ('from_state','to_state','situation'):
                             if field in branch['properties']:
                                 choices=[deepcopy(INLINE_STATE['anyOf'][1])]
                                 if domain.get('candidates'):choices.append({'type':'string','enum':domain['candidates']})
@@ -144,6 +145,11 @@ def response_schema(base,keys,allowed,new_ids=None,aliases=None,domain=None):
                     if variant['properties']['op']['enum']==['registration']:
                         variant['properties'][field]['anyOf']=[v for v in variant['properties'][field]['anyOf'] if v.get('type')!='string']
                         if domain.get('candidates'):variant['properties'][field]['anyOf'].append({'type':'string','enum':domain['candidates']})
+        for name in ('actions','visual_requests'):
+            for variant in schema['properties'][name]['items']['anyOf']:
+                if variant['properties']['op']['enum']==['registration'] and 'situation' in variant['properties']:
+                    variant['properties']['situation']['anyOf']=[v for v in variant['properties']['situation']['anyOf'] if v.get('type')!='string']
+                    if domain.get('candidates'):variant['properties']['situation']['anyOf'].append({'type':'string','enum':domain['candidates']})
     # A valid database row is not necessarily a reference presented to this Job.
     # Historical references remain available through explicit memory retrieval.
     events=sorted(allowed)

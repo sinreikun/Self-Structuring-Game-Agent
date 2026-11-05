@@ -18,7 +18,7 @@ def hypothesis(c):
 def claim(c,k,n,evaluated=False):
     ids=[r['id'] for r in c.store.rows()][-n:] if n else []
     with c.store.db:
-        c.store.db.execute('INSERT INTO claims VALUES(?,?,?,?,?)',(k,'A',.5,0,0))
+        c.store.db.execute('INSERT INTO claims(knowledge,action,probability,after_id,tested_until) VALUES(?,?,?,?,?)',(k,'A',.5,0,0))
         c.store.db.execute('INSERT INTO research_experiments VALUES(?,?,?,?,?,?,?,?,?,?)',
             (str(k),'prior-job',k,'{}','complete',json.dumps(ids),'{}',0,0,0))
         if evaluated:c.store.db.execute('INSERT INTO research_evaluations(job,hypothesis,result,created) VALUES(?,?,?,?)',('prior-job',k,json.dumps({'pre_registered':True,'n':16,'status':'supported'}),0))

@@ -27,12 +27,21 @@ def calculate(scientist, payload):
                           AND NOT EXISTS (SELECT 1 FROM research_claims c WHERE c.knowledge=k.id)
                           AND NOT EXISTS (SELECT 1 FROM research_evaluations e WHERE e.hypothesis=k.id)
                           ORDER BY id""")]
+    cards = []
+    with store.lock:
+        described = set()
+        if store.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='situation_cards'").fetchone():
+            described = {r[0] for r in store.db.execute('SELECT state FROM situation_cards')}
+        cards = [{'kind': 'situation_card', 'state_id': row[0]}
+                 for row in store.db.execute("""SELECT DISTINCT k.id FROM knowledge k
+                     JOIN state_frames s ON s.state = k.id WHERE k.kind = 'state' ORDER BY k.id""")
+                 if row[0] not in described]
     adopted = payload.get('adopted_situation_candidates', {})
     candidates = [{'kind': 'situation_candidate', 'candidate_id': c['id'],
                    'frame_count': len(c['frames'])}
                   for c in payload.get('situation_candidates', []) if c['id'] not in adopted]
     candidates.sort(key=lambda item: (-item['frame_count'], item['candidate_id']))
-    items=claims+hypotheses+candidates
+    items=claims+hypotheses+candidates+cards
     with store.lock:
         exists=store.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='link_abandonments'").fetchone()
         abandoned={r[0] for r in store.db.execute('SELECT DISTINCT link FROM link_abandonments')} if exists else set()
