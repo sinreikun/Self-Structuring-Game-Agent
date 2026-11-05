@@ -485,7 +485,16 @@ class WindowsGame:
             self.recovery_note = 'candidate stabilizing'
             return False
         self._recover_candidate = None
-        if targets:
+        own = {os.getpid()}
+        changed = True
+        while changed:
+            changed = False
+            for info in processes.values():
+                if info.parent in own and info.pid not in own:
+                    own.add(info.pid)
+                    changed = True
+        blocking = {pid for pid in targets if pid not in own or pid in self._recover_known}
+        if blocking:
             self.recovery_note = 'target process present without a window'
             return False
         blocked = self._recover_blocked(processes)
@@ -497,15 +506,8 @@ class WindowsGame:
             self.recovery_note = 'waiting to relaunch'
             return False
         try:
-            startup = subprocess.STARTUPINFO()
-            startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startup.wShowWindow = 4
             self.launched_after = time.time_ns() // 100 + 116444736000000000
-            self.root_process = subprocess.Popen(
-                [self.entry_exe], cwd=str(Path(self.entry_exe).parent),
-                shell=False, startupinfo=startup)
-            root = process_info(self.root_process.pid)
-            self._recover_launched = (self.root_process.pid, root.created if root else 0)
+            self._recover_launched = self._start_entry()
             self._recover_launches += 1
             self._recover_last_launch = time.monotonic()
             self.pending_launch = True
@@ -515,6 +517,21 @@ class WindowsGame:
             self._recover_last_launch = time.monotonic()
             self.recovery_note = f'launch failed: {error}'
         return False
+
+    def _start_entry(self) -> tuple[int, int]:
+        """Launch the recorded entry once; returns (pid, created) of the root.
+
+        The configured arguments belong to the entry only when the entry is the
+        configured executable itself; a recorded launcher is started bare."""
+        args = list(self.args) if self.exe and self.entry_exe.casefold() == self.exe.casefold() else []
+        startup = subprocess.STARTUPINFO()
+        startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startup.wShowWindow = 4
+        self.root_process = subprocess.Popen(
+            [self.entry_exe, *args], cwd=str(Path(self.entry_exe).parent),
+            shell=False, startupinfo=startup)
+        root = process_info(self.root_process.pid)
+        return self.root_process.pid, root.created if root else 0
 
     def restart(self, force: bool=False) -> None:
         if self.mode=='attach':

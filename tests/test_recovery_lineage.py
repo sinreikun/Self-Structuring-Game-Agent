@@ -1,6 +1,4 @@
 """Lineage recording, launch-entry resolution, and attach-mode recovery steps."""
-import subprocess
-import time
 
 from selfstruct import windows
 from selfstruct.processes import ProcessInfo, ProcessWindow, launch_entry, process_lineage
@@ -60,6 +58,8 @@ def make_game(monkeypatch, snapshots, window_sets, entry_exe):
     game._recover_launches = 0
     game._recover_last_launch = 0.0
     game._recover_known = {}
+    game.exe = ''
+    game.args = []
     game.bound = []
     game.connect = lambda: game.bound.append((game.target_pid, game.target_created))
     state = {'index': 0}
@@ -81,7 +81,7 @@ def test_recover_step_waits_without_launching_while_target_process_exists(tmp_pa
     game_proc = info(30, 20, GAME, 3000)
     game = make_game(monkeypatch, [{30: game_proc}], [[]], str(entry))
     launches = []
-    monkeypatch.setattr(subprocess, 'Popen', lambda *a, **k: launches.append(a))
+    game._start_entry = lambda: launches.append(1) or (20, 2000)
     assert game.recover_step() is False
     assert game.recovery_note == 'target process present without a window'
     assert not launches
@@ -95,10 +95,7 @@ def test_recover_step_launches_entry_then_binds_stable_candidate(tmp_path, monke
     game = make_game(monkeypatch, [{}, {30: game_proc}, {30: game_proc}],
                      [[], [window], [window]], str(entry))
     launches = []
-    class FakeRoot:
-        pid = 20
-    monkeypatch.setattr(subprocess, 'Popen', lambda *a, **k: launches.append(a) or FakeRoot())
-    monkeypatch.setattr(windows, 'process_info', lambda pid: info(20, 1, str(entry), 2000))
+    game._start_entry = lambda: launches.append(1) or (20, 2000)
     assert game.recover_step() is False
     assert game.recovery_note.startswith('launched')
     assert len(launches) == 1
@@ -115,10 +112,7 @@ def test_recover_step_binds_its_own_launched_game_at_once(tmp_path, monkeypatch)
     game_proc = info(20, 1, GAME, 3000)
     window = ProcessWindow(game_proc, 555, 'game', 100)
     game = make_game(monkeypatch, [{}, {20: game_proc}], [[], [window]], str(entry))
-    class FakeRoot:
-        pid = 20
-    monkeypatch.setattr(subprocess, 'Popen', lambda *a, **k: FakeRoot())
-    monkeypatch.setattr(windows, 'process_info', lambda pid: info(20, 1, GAME, 2000))
+    game._start_entry = lambda: (20, 2000)
     assert game.recover_step() is False  # launches the entry (= the game itself)
     game.launched_after = 1500
     assert game.recover_step() is True   # own process: no stability wait
@@ -128,7 +122,7 @@ def test_recover_step_binds_its_own_launched_game_at_once(tmp_path, monkeypatch)
 def test_recover_step_without_an_entry_waits_for_a_manual_relaunch(monkeypatch):
     game = make_game(monkeypatch, [{}], [[]], '')
     launches = []
-    monkeypatch.setattr(subprocess, 'Popen', lambda *a, **k: launches.append(a))
+    game._start_entry = lambda: launches.append(1) or (20, 2000)
     assert game.recover_step() is False
     assert game.recovery_note == 'no recorded launch entry'
     assert not launches

@@ -127,6 +127,15 @@ SHARED_LAUNCH_PARENTS = frozenset({
 })
 
 
+def _win_dir(path: str) -> str:
+    normalized = path.replace('/', '\\').casefold()
+    return normalized.rsplit('\\', 1)[0] if '\\' in normalized else ''
+
+
+def _win_base(path: str) -> str:
+    return path.replace('/', '\\').casefold().rsplit('\\', 1)[-1]
+
+
 def process_lineage(processes: dict[int, 'ProcessInfo'], pid: int, limit: int = 8) -> list['ProcessInfo']:
     """[target, parent, grandparent, ...] from one snapshot.
 
@@ -153,16 +162,15 @@ def launch_entry(lineage: list['ProcessInfo']) -> str:
     if not lineage or not lineage[0].exe:
         return ''
     target = lineage[0]
-    target_dir = os.path.dirname(target.exe.replace('/', '\\')).casefold()
+    target_dir = _win_dir(target.exe)
     entry = ''
     for ancestor in lineage[1:]:
         if not ancestor.exe:
             break
-        if os.path.basename(ancestor.exe.replace('/', '\\')).casefold() in SHARED_LAUNCH_PARENTS:
+        if _win_base(ancestor.exe) in SHARED_LAUNCH_PARENTS:
             break
-        directory = os.path.dirname(ancestor.exe.replace('/', '\\')).casefold()
-        drive = os.path.splitdrive(directory)[0]
-        if not directory or directory == drive + '\\':
+        directory = _win_dir(ancestor.exe)
+        if not directory or '\\' not in directory:
             break
         if target_dir == directory or target_dir.startswith(directory + '\\'):
             entry = ancestor.exe
