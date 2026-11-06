@@ -50,7 +50,7 @@ def context(scientist, payload):
         for sid in dict.fromkeys(state_ids):
             row=store.db.execute('SELECT id,text,evidence,validation FROM knowledge WHERE id=?',(sid,)).fetchone()
             if row:result['states'].append(dict(row))
-            result['baseline'].extend(dict(r) for r in store.db.execute('SELECT id,state,frames FROM state_baselines WHERE state=? ORDER BY id DESC LIMIT 1',(sid,)))
+            result['baseline'].extend(dict(r) for r in store.db.execute('SELECT id,state,frames,regions FROM state_baselines WHERE state=? ORDER BY id DESC LIMIT 1',(sid,)))
     evidence=set()
     for record in [result.get('hypothesis'),*result.get('states',[])]:
         if record:evidence.update(json.loads(record['evidence']))
@@ -62,21 +62,43 @@ def context(scientist, payload):
     return result
 
 
-def prompt_view(facts):
-    """Bound model display only; full evidence and sample ledgers remain available."""
+def prompt_view(facts,compact=False):
+    """Bound model display only; full evidence and sample ledgers remain available.
+
+    Baseline frames are pixel arrays: as prompt text they cost thousands of
+    tokens and carry nothing the model can use (visual access is by image).
+    The view therefore carries only the frame count and the baseline's
+    active-region digest, mirroring transitions.context."""
     import copy
     view=copy.deepcopy(facts)
-    def recent(record, field):
+    def recent(record, field, keep=3):
         values=record.get(field,[])
         if isinstance(values,str):values=json.loads(values)
         record[field+'_count']=len(values)
-        record[field]=values[-3:]
+        record[field]=values[-keep:]
     for record in [view.get('hypothesis'),*view.get('states',[])]:
         if record:recent(record,'evidence')
     if view.get('candidate'):recent(view['candidate'],'frames')
-    for record in view.get('baseline',[]):recent(record,'frames')
+    for record in view.get('baseline',[]):
+        frames=record.pop('frames',[])
+        if isinstance(frames,str):
+            try:frames=json.loads(frames)
+            except ValueError:frames=[]
+        record['frames_count']=len(frames)
+        regions=record.pop('regions',None)
+        if regions is not None:
+            if isinstance(regions,str):
+                try:regions=json.loads(regions)
+                except ValueError:regions=[]
+            record['active_regions']=[i for i,v in enumerate(regions) if isinstance(v,(int,float)) and v>.01]
     recent(view,'evidence_ids')
-    if 'samples' in view:recent(view,'samples')
+    if 'samples' in view:recent(view,'samples',1 if compact else 3)
+    if compact:
+        for record in [view.get('hypothesis'),*view.get('states',[])]:
+            if not record:continue
+            if isinstance(record.get('text'),str):record['text']=record['text'][:300]
+            record.pop('evidence',None)
+        view.pop('evidence_ids',None)
     claim=view.get('transition_claim')
     if claim and claim.get('representatives'):recent(claim,'representatives')
     return view

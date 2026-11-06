@@ -892,7 +892,8 @@ class Scientist:
             prefix+='\n根拠IDはExperience IDのみ。observation IDは観測参照用で、findings.evidenceへ混ぜません。許可Evidence IDs：'+json.dumps(evidence[-8:] if assigned_context else evidence)
             if assigned_context:prefix+='（全'+str(len(evidence))+'件、直近8件。以前の記録はmemory_search/readで取得可）'
             if assigned_context:
-                prefix+='\n担当リンクの現在記録：'+json.dumps(prompt_view(assigned_context),ensure_ascii=False,separators=(',',':'))
+                link_view_json=json.dumps(prompt_view(assigned_context),ensure_ascii=False,separators=(',',':'))
+                prefix+='\n担当リンクの現在記録：'+link_view_json
                 prefix+='\n担当外へのclaim登録・experimentは非課金で差し戻します。新規仮説のみの登録とobserve/compare/memoryは自由です。放棄するときはfindingsにabandon_link=trueとtextに理由、evidenceに根拠IDを記録してください。担当が閉じるか放棄するまで製品既定予算内で継続します。'
             prefix+='\n参照中の仮説（保存された主張と事前登録。変更は別IDへ）：'+json.dumps(payload['hypothesis_context'][-2:] if payload.get('memory_mode')=='pull' else payload['hypothesis_context'],ensure_ascii=False,separators=(',',':'))
             prefix+='\n今回の新規findings.id候補：'+json.dumps(new_ids)+'。既存仮説を使うだけならfindingsを空にしてactions.hypothesisへ既存の別名／IDを指定する。主張・事前登録を変更するなら新規IDで別仮説を定義する。'
@@ -901,6 +902,7 @@ class Scientist:
             prefix=prepend(prefix,payload['job_agenda'])
             if assigned_context and payload.get('link_rejections'):
                 prefix+='\n担当外要求の差し戻し：'+json.dumps(payload['link_rejections'][-1],ensure_ascii=False,separators=(',',':'))
+            if 'link_view_json' not in locals():link_view_json=None
             compact_history=False
             history_chars=6000
             omitted_visual_results=0
@@ -954,6 +956,10 @@ class Scientist:
                 if not fits() and payload.get('repair_response') and not implementation_repair:
                     prefix=prefix.replace(payload['repair_response'][:3000],payload['repair_response'][:1000])
                     text=render()
+                if not fits() and assigned_context and link_view_json is not None:
+                    compact_json=json.dumps(prompt_view(assigned_context,compact=True),ensure_ascii=False,separators=(',',':'))
+                    if compact_json!=link_view_json:
+                        prefix=prefix.replace(link_view_json,compact_json);link_view_json=compact_json;text=render()
                 for item in visible[:-1]:
                     if fits():break
                     if "result" in item:
