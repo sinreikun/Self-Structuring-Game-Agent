@@ -312,6 +312,22 @@ def register_unnamed_state(store,ids,phase='before'):
     return register_state(store,'',list(ids),phase,state=state)
 
 
+def current_situation(store):
+    """Situation tag of the newest recorded event, or None when unknown.
+
+    The play loop tags each completed event with its identified situation;
+    the newest tag is where the game stands now. This reader is tag-only
+    on purpose: it runs inside context building, whose identification
+    work is measured elsewhere, and an untagged newest event honestly
+    means the current situation was not identified at that step. The
+    caller holds the store lock."""
+    latest=store.db.execute('SELECT coalesce(max(id),0) FROM events').fetchone()[0]
+    if not latest:return None
+    if not store.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='event_situations'").fetchone():return None
+    row=store.db.execute('SELECT situation FROM event_situations WHERE event=?',(latest,)).fetchone()
+    return row[0] if row else None
+
+
 def anchored(store,claim,rows):
     """Keep only samples taken in the claim's registered situation.
 

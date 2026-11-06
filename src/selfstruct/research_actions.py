@@ -212,6 +212,58 @@ def hypothesis_id(payload,request):
     return value
 
 
+def situation_mismatch(scientist,hypothesis):
+    """Structured notice when an experiment targets a change-rate claim
+    anchored to a situation the game is not currently in.
+
+    Situated samples count only when they start in the claim's situation
+    (transitions.anchored), so running the experiment elsewhere spends the
+    Job's inputs on samples that can never count. The Host refuses the
+    request without charge and returns both situation IDs as facts.
+
+    Scope: change-rate claims only. Transition claims verify every
+    sample's from-state individually at counting time, and their
+    registration flow starts from candidates of the current screen, so
+    the stale-anchor failure observed in production does not arise there.
+
+    A sample starting now is treated as in-situation by the same tests
+    the counting path applies: the newest event's play-loop situation
+    tag, or identification of its before-frame against the claim's own
+    representative pool. An unknown current situation never blocks:
+    identification may simply have failed, which must not starve
+    experimentation."""
+    from . import transitions
+    store=scientist.store
+    with store.lock:
+        try:row=store.db.execute('SELECT situation FROM claims WHERE knowledge=?',(hypothesis,)).fetchone()
+        except Exception:row=None
+        if not row or row[0] is None:return None
+        anchor=row[0]
+        latest=store.db.execute('SELECT coalesce(max(id),0) FROM events').fetchone()[0]
+        if not latest:return None
+        tagged=None
+        if store.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='event_situations'").fetchone():
+            tag_row=store.db.execute('SELECT situation FROM event_situations WHERE event=?',(latest,)).fetchone()
+            if tag_row:tagged=tag_row[0]
+        if tagged==anchor:return None
+        refs=[r for r in transitions.representatives(store) if r['state']==anchor]
+        identified=None
+        if refs:
+            try:identified=transitions.identify_event(store,latest,'before',refs)
+            except (ValueError,OSError):identified=None
+        if identified==anchor:return None
+        current=tagged
+        if current is None:
+            all_refs=transitions.representatives(store)
+            if all_refs:
+                try:current=transitions.identify_event(store,latest,'before',all_refs)
+                except (ValueError,OSError):current=None
+    if current is None or current==anchor:return None
+    return {'state':'rejected','code':'situation_mismatch','action_charged':False,
+            'hypothesis':hypothesis,'claim_type':'change_rate','claim_situation':anchor,'current_situation':current,
+            'detail':f'標本は主張の状況 {anchor} で開始したものだけが数えられます。現在の状況は {current} です。ここで実験しても標本になりません。現在の状況の主張を扱うか、状況 {anchor} に戻ってから実験してください。'}
+
+
 def procedure_view(scientist,payload,route):
     claim=route.get('claim') or {}
     kind=claim.get('claim_type')
@@ -434,6 +486,10 @@ def execute(scientist,jid,payload,request,token):
         from .inline_claims import accept
         receipt=accept(scientist,jid,payload,request,token,hypothesis)
         if receipt and receipt.get('state')=='claim_required':return receipt,None,None
+        mismatch=situation_mismatch(scientist,hypothesis)
+        if mismatch:
+            payload.setdefault('situation_mismatches',[]).append(mismatch)
+            return mismatch,None,None
         identifier=scientist.experiments.submit(jid,token,request,hypothesis)
         scientist.activity.update(experiment=f'研究Job {jid[:8]}：Experiment {identifier[:8]} の結果待ち',next='Playerで許可入力を試し、同じ研究へ結果を返します')
         while not scientist.stop_event.wait(.05):
@@ -542,7 +598,7 @@ def action_budget_used(payload):
     """Bill performed work; gate refusals and unchanged observe references are free."""
     def exempt(record):
         result=record.get('result',{})
-        if result.get('code')=='outside_assigned_link':return True
+        if result.get('code') in ('outside_assigned_link','situation_mismatch'):return True
         if record.get('request',{}).get('op')=='observe' and record.get('state')=='duplicate' and result.get('unchanged'):return True
         if record.get('request',{}).get('op')=='experiment' and result.get('state') in ('registration_required','claim_required'):return True
         return (record.get('request',{}).get('op')=='experiment'
@@ -895,9 +951,10 @@ def _experiment_context(scientist,jid):
                 group['claim_type']='transition'
                 group['evaluation_requirements']={'scope':'current_job_only','preregistered':True,'registered_target':dict(transition),'matching_post_registration_samples':len(selected),'missing_samples':max(0,16-len(selected)),'from_state_absent_or_unknown':not selected}
             result['hypotheses'].append(group)
-    from .transitions import context as transition_context
+    from .transitions import context as transition_context, current_situation
     with scientist.store.lock:
         result['state_transitions']=transition_context(scientist.store,getattr(scientist,'experiments',None),jid)
+        result['current_situation']=current_situation(scientist.store)
     result['plans_remaining']=max(0,result['plan_limit']-result['plans_used'])
     result['inputs_remaining']=max(0,result['input_limit']-result['requested_inputs'])
     result['note']='completed/changedは入力別内訳を持つ観測数で統計的な支持・反証ではない。完了経験だけを計数。未送信・中断は成功扱いしない。未登録なら新しい仮説と今後の実験が必要。異なる仮説・入力の標本は混ぜない。'

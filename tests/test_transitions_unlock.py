@@ -52,6 +52,7 @@ def test_fixed_context_and_scores_equal_legacy(tmp_path, monkeypatch):
         # transition context; everything else must match the legacy fixture.
         for key in ('situation_cards', 'skills'):
             actual['state_transitions'].pop(key, None)
+            actual.pop('current_situation', None)
         assert actual == expected
         assert scores == expected_scores and len(scores) > 0
         assert expected['hypotheses'][0]['evaluation_requirements']['matching_post_registration_samples'] == 1
